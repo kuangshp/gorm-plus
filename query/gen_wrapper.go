@@ -6,6 +6,82 @@ import (
 	"gorm.io/gorm"
 )
 
+// ================== IGenWrapper：gorm-gen 类型安全链式构造器 ==================
+//
+// IGenWrapper 是专为 gorm-gen 生成的 Do 对象设计的链式条件构造器。
+// 与 IQueryBuilder（基于字符串列名）的区别：
+//
+//	IQueryBuilder：.Eq("user_id", 123)   → 字符串列名，运行时才报错
+//	IGenWrapper：  .Always(dao.User.ID.Eq(123)) → 字段对象，编译期类型检查，IDE 可跳转
+//
+// ── 核心优势 ─────────────────────────────────────────────────
+//
+//   - 编译期类型安全：字段名、字段类型均由 gorm-gen 保证，不存在列名拼写错误
+//   - IDE 可跳转：字段对象可以直接跳转到 model 定义
+//   - 与 Do 对象无缝衔接：Apply() 返回原始 Do 对象，继续 gorm-gen 原生链式调用
+//   - 条件隔离：所有条件包在一层括号内，与 Do 对象上已有的条件完全隔离，不会产生 OR 污染
+//
+// ── 使用流程 ─────────────────────────────────────────────────
+//
+//  1. GenWrap(do) 创建 wrapper
+//  2. 链式添加条件（EqIfNotZero / InIfNotEmpty / RawWhere 等）
+//  3. Apply() 将条件应用到 Do 对象，返回原始 Do
+//  4. 继续使用 Do 对象的原生方法（Find / Scan / Order / LeftJoin 等）
+//
+// ── 快速上手 ─────────────────────────────────────────────────
+//
+//	// 分页列表
+//	entities, total, err := query.GenWrap(dao.OrderEntity.WithContext(ctx)).
+//	    Always(dao.OrderEntity.TenantID.Eq(tenantID)).      // 固定条件（也可交由多租户插件自动注入）
+//	    EqIfNotZero(dao.OrderEntity.UserID.Eq(userID), userID).
+//	    EqIfNotNil(dao.OrderEntity.Status.Eq(*statusPtr), statusPtr).
+//	    LikeIfNotEmpty(dao.OrderEntity.OrderNo.Like(keyword), keyword).
+//	    GteIfNotZero(dao.OrderEntity.CreatedAt.Gte(startTime), startTime).
+//	    LteIfNotZero(dao.OrderEntity.CreatedAt.Lte(endTime), endTime).
+//	    InIfNotEmpty(dao.OrderEntity.DeptID.In(deptIDs...), deptIDs).
+//	    Apply().
+//	    Order(dao.OrderEntity.CreatedAt.Desc()).
+//	    FindByPage(offset, limit)
+//
+//	// 联表查询
+//	var result []OrderWithUserVO
+//	err := query.GenWrap(dao.OrderEntity.WithContext(ctx)).
+//	    Always(dao.OrderEntity.Status.Eq(int64(2))).
+//	    GteIfNotZero(dao.OrderEntity.Amount.Gte(minAmount), minAmount).
+//	    Apply().
+//	    Select(dao.OrderEntity.ID, dao.OrderEntity.OrderNo, dao.UserEntity.Username).
+//	    LeftJoin(dao.UserEntity, dao.OrderEntity.UserID.EqCol(dao.UserEntity.ID)).
+//	    Scan(&result)
+//
+//	// OR 条件分组
+//	entities, err := query.GenWrap(dao.UserEntity.WithContext(ctx)).
+//	    Always(dao.UserEntity.Status.Eq(int64(1))).
+//	    OrGroup(func(w query.IGenWrapper[*dao.userEntityDo]) {
+//	        w.Always(dao.UserEntity.RoleID.Eq(int64(1))).
+//	            OrGroup(func(w query.IGenWrapper[*dao.userEntityDo]) {
+//	                w.Always(dao.UserEntity.RoleID.Eq(int64(2))).
+//	                    Always(dao.UserEntity.DeptID.Eq(deptID))
+//	            })
+//	    }).
+//	    Apply().Find()
+//	// → WHERE (status = 1) AND ((role_id = 1) OR (role_id = 2 AND dept_id = ?))
+//
+//	// 子查询
+//	subDB := dao.DeptEntity.WithContext(ctx).
+//	    Select(dao.DeptEntity.ID).
+//	    Where(dao.DeptEntity.Status.Eq(int64(1))).
+//	    UnderlyingDB()
+//	entities, err := query.GenWrap(dao.UserEntity.WithContext(ctx)).
+//	    SubQueryIn(dao.UserEntity.DeptID, subDB). // WHERE dept_id IN (SELECT id FROM dept WHERE status = 1)
+//	    Apply().Find()
+//
+// ── 注意事项 ─────────────────────────────────────────────────
+//
+//   - ⚠️ bool 字段勿用 EqIfNotZero（false 会被当零值跳过）→ 改用 If(expr, true/false)
+//   - ⚠️ Page() 与 Limit()/Offset() 互斥，Page 优先
+//   - ⚠️ groupWrapper.Apply() 在 WhereGroup/OrGroup 回调内被调用时会 panic（设计上不允许）
+//   - FromDo(do) 与 GenWrap(do) 等价，仅语义区别（FromDo 表示衔接已有 Do）
+
 // ================== 条件结构 ==================
 
 // condType 条件类型：AND 或 OR
