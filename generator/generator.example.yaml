@@ -6,6 +6,6 @@ password: "123456"
 database: gin-admin-api
 out_path: ./internal/dal/dao
 model_pkg_path: ./internal/dal/model/entity
-repo_path: ./internal/dal/repository
+repo_path: ./internal/dal/repository1
 api_path: ./apps/admin/desc
 package: gin-admin-api

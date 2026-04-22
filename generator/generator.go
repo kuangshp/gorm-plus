@@ -425,9 +425,8 @@ func Generate(cfg *Config) error {
 		}
 	}
 	apiTmplPath := filepath.Join(templateDir, "api_template.txt")
-	repoInterfaceTmplPath := filepath.Join(templateDir, "repository_interface_template.txt")
-	repoBaseTmplPath := filepath.Join(templateDir, "repository_base_template.txt")
-	repoExtTmplPath := filepath.Join(templateDir, "repository_ext_template.txt")
+	repoGenTmplPath := filepath.Join(templateDir, "repository_gen_template.txt")
+	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
 
 	// 确保路径有"."前缀
 	if !strings.HasPrefix(cfg.OutPath, ".") {
@@ -523,12 +522,12 @@ func Generate(cfg *Config) error {
 			os.MkdirAll(repoDir, 0755)
 		}
 
-		// 1. 生成基础 repository (xxx_base.go) - 始终重新生成
-		repoBaseContent, err := generateRepositoryFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoBaseTmplPath)
+		// 1. 生成基础 repository1 (xxx_base.go) - 始终重新生成
+		repoBaseContent, err := generateRepositoryFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath)
 		if err != nil {
 			fmt.Printf("生成repository基础内容失败: %v\n", err)
 		} else {
-			repoBaseFileName := fmt.Sprintf("%s/%s_base.go", repoDir, strings.ToLower(modelName))
+			repoBaseFileName := fmt.Sprintf("%s/%s_gen.go", repoDir, strings.ToLower(modelName))
 			err = os.WriteFile(repoBaseFileName, []byte(repoBaseContent), 0644)
 			if err != nil {
 				fmt.Printf("写入repository基础文件失败: %v\n", err)
@@ -537,26 +536,8 @@ func Generate(cfg *Config) error {
 			}
 		}
 
-		// 2. 生成接口定义 (xxx_interface.go) - 如果已存在则跳过
-		repoInterfaceContent, err := generateRepositoryInterfaceFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoInterfaceTmplPath)
-		if err != nil {
-			fmt.Printf("生成repository接口内容失败: %v\n", err)
-		} else {
-			repoInterfaceFileName := fmt.Sprintf("%s/%s_interface.go", repoDir, strings.ToLower(modelName))
-			if _, err := os.Stat(repoInterfaceFileName); os.IsNotExist(err) {
-				err = os.WriteFile(repoInterfaceFileName, []byte(repoInterfaceContent), 0644)
-				if err != nil {
-					fmt.Printf("写入repository接口文件失败: %v\n", err)
-				} else {
-					fmt.Printf("repository接口文件已生成: %s\n", repoInterfaceFileName)
-				}
-			} else {
-				fmt.Printf("repository接口文件已存在，不覆盖更新: %s\n", repoInterfaceFileName)
-			}
-		}
-
-		// 3. 生成扩展 repository (xxx.go) - 如果已存在则跳过
-		repoExtContent, err := generateRepositoryExtFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoExtTmplPath)
+		// 2. 生成扩展 repository1 (xxx.go) - 如果已存在则跳过
+		repoExtContent, err := generateRepositoryExtFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath)
 		if err != nil {
 			fmt.Printf("生成repository扩展内容失败: %v\n", err)
 		} else {
@@ -572,95 +553,44 @@ func Generate(cfg *Config) error {
 				fmt.Printf("repository扩展文件已存在，不覆盖更新: %s\n", repoExtFileName)
 			}
 		}
+	}
 
-		if cfg.ApiPath != "" {
-			apiDir := cfg.ApiPath
-			if _, err := os.Stat(apiDir); os.IsNotExist(err) {
-				os.MkdirAll(apiDir, 0755)
-			}
-
-			if tableName != "" {
-				columns, err := getTableColumns(db, tableName)
-				if err != nil {
-					return fmt.Errorf("获取表结构失败: %w", err)
-				}
-				modelName := Case2Camel(strings.ToUpper(tableName[:1]) + tableName[1:])
-				apiContent, err := generateApiFile(tableName, columns, modelName, db, apiTmplPath)
-				if err != nil {
-					return fmt.Errorf("生成api内容失败: %w", err)
-				}
-				apiFileName := fmt.Sprintf("%s/%s.api", apiDir, tableName)
-				// 检查文件是否已存在
-				if _, err := os.Stat(apiFileName); os.IsNotExist(err) {
-					err = os.WriteFile(apiFileName, []byte(apiContent), 0644)
-					if err != nil {
-						return fmt.Errorf("写入api文件失败: %w", err)
-					}
-					fmt.Printf("api文件已生成: %s\n", apiFileName)
-
-					goctlPath := getGoctlPath()
-					cmd := exec.Command(goctlPath, "api", "go", "-api", apiFileName, "--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
-					cmd.Dir = "."
-					output, err := cmd.CombinedOutput()
-					if err != nil {
-						fmt.Printf("执行goctl失败: %v\n%s\n", err, output)
-					} else {
-						fmt.Printf("go-zero代码生成成功\n%s\n", output)
-					}
-				} else {
-					fmt.Printf("api文件已存在，不覆盖更新: %s\n", apiFileName)
-				}
-			}
+	if cfg.ApiPath != "" {
+		apiDir := cfg.ApiPath
+		if _, err := os.Stat(apiDir); os.IsNotExist(err) {
+			os.MkdirAll(apiDir, 0755)
 		}
 
-		if cfg.RepoPath != "" && tableName != "" {
-			repoDir := cfg.RepoPath
-			if _, err := os.Stat(repoDir); os.IsNotExist(err) {
-				os.MkdirAll(repoDir, 0755)
-			}
-
-			// 1. 生成基础 repository (xxx_base.go) - 始终重新生成
-			repoBaseContent, err := generateRepositoryFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoBaseTmplPath)
+		if tableName != "" {
+			columns, err := getTableColumns(db, tableName)
 			if err != nil {
-				return fmt.Errorf("生成repository基础内容失败: %w", err)
+				return fmt.Errorf("获取表结构失败: %w", err)
 			}
-			repoBaseFileName := fmt.Sprintf("%s/%s_base.go", repoDir, strings.ToLower(modelName))
-			err = os.WriteFile(repoBaseFileName, []byte(repoBaseContent), 0644)
+			modelName := Case2Camel(strings.ToUpper(tableName[:1]) + tableName[1:])
+			apiContent, err := generateApiFile(tableName, columns, modelName, db, apiTmplPath)
 			if err != nil {
-				return fmt.Errorf("写入repository基础文件失败: %w", err)
+				return fmt.Errorf("生成api内容失败: %w", err)
 			}
-			fmt.Printf("repository基础文件已生成: %s\n", repoBaseFileName)
-
-			// 2. 生成接口定义 (xxx_interface.go) - 如果已存在则跳过
-			repoInterfaceContent, err := generateRepositoryInterfaceFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoInterfaceTmplPath)
-			if err != nil {
-				return fmt.Errorf("生成repository接口内容失败: %w", err)
-			}
-			repoInterfaceFileName := fmt.Sprintf("%s/%s_interface.go", repoDir, strings.ToLower(modelName))
-			if _, err := os.Stat(repoInterfaceFileName); os.IsNotExist(err) {
-				err = os.WriteFile(repoInterfaceFileName, []byte(repoInterfaceContent), 0644)
+			apiFileName := fmt.Sprintf("%s/%s.api", apiDir, tableName)
+			// 检查文件是否已存在
+			if _, err := os.Stat(apiFileName); os.IsNotExist(err) {
+				err = os.WriteFile(apiFileName, []byte(apiContent), 0644)
 				if err != nil {
-					return fmt.Errorf("写入repository接口文件失败: %w", err)
+					return fmt.Errorf("写入api文件失败: %w", err)
 				}
-				fmt.Printf("repository接口文件已生成: %s\n", repoInterfaceFileName)
-			} else {
-				fmt.Printf("repository接口文件已存在，不覆盖更新: %s\n", repoInterfaceFileName)
-			}
+				fmt.Printf("api文件已生成: %s\n", apiFileName)
 
-			// 3. 生成扩展 repository (xxx.go) - 如果已存在则跳过
-			repoExtContent, err := generateRepositoryExtFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoExtTmplPath)
-			if err != nil {
-				return fmt.Errorf("生成repository扩展内容失败: %w", err)
-			}
-			repoExtFileName := fmt.Sprintf("%s/%s.go", repoDir, strings.ToLower(modelName))
-			if _, err := os.Stat(repoExtFileName); os.IsNotExist(err) {
-				err = os.WriteFile(repoExtFileName, []byte(repoExtContent), 0644)
+				goctlPath := getGoctlPath()
+				cmd := exec.Command(goctlPath, "api", "go", "-api", apiFileName, "--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
+				cmd.Dir = "."
+				output, err := cmd.CombinedOutput()
 				if err != nil {
-					return fmt.Errorf("写入repository扩展文件失败: %w", err)
+					fmt.Printf("执行goctl失败: %v\n%s\n", err, output)
+				} else {
+					fmt.Printf("go-zero代码生成成功\n%s\n", output)
 				}
-				fmt.Printf("repository扩展文件已生成: %s\n", repoExtFileName)
 			} else {
-				fmt.Printf("repository扩展文件已存在，不覆盖更新: %s\n", repoExtFileName)
+				fmt.Printf("api文件已存在，不覆盖更新: %s\n", apiFileName)
 			}
 		}
 	}

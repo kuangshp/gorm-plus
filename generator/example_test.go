@@ -16,7 +16,7 @@ func ExampleGenerate() {
 		Database:     "gin-admin-api",
 		OutPath:      "./query/dao",
 		ModelPkgPath: "./query/model",
-		RepoPath:     "./query/repository",
+		RepoPath:     "./query/repository1",
 		ApiPath:      "./apps/admin/desc",
 		Package:      "esim-api",
 	}
