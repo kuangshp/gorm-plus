@@ -226,18 +226,18 @@ func RegisterTenant[T comparable](db *gorm.DB, cfg tenant.TenantConfig[T]) error
 }
 
 // AddExcludeTable 运行时动态添加不参与租户过滤的表。
-func AddExcludeTable(tables ...string) {
-	tenant.AddExcludeTable(tables...)
+func AddExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
+	return tenant.AddExcludeTable[T](db, tables...)
 }
 
 // RemoveExcludeTable 运行时动态移除排除表。
-func RemoveExcludeTable(tables ...string) {
-	tenant.RemoveExcludeTable(tables...)
+func RemoveExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
+	return tenant.RemoveExcludeTable[T](db, tables...)
 }
 
 // ExcludedTables 返回当前所有排除表的快照。
-func ExcludedTables() []string {
-	return tenant.ExcludedTables()
+func ExcludedTables[T comparable](db *gorm.DB) ([]string, error) {
+	return tenant.ExcludedTables[T](db)
 }
 
 // SkipTenant 返回跳过租户过滤的 context（超管操作、跨租户统计专用）。
@@ -299,5 +299,6 @@ func GenWrap[D query.GenDao[D]](do D) query.IGenWrapper[D] {
 }
 
 type IGenWrapper[D query.GenDao[D]] = query.IGenWrapper[D]
-type GenDao[D any] = query.GenDao[D]
+
+// type GenDao[D any] = query.GenDao[D]
 type AggResult = query.AggResult
