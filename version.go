@@ -1,3 +1,3 @@
-package gorm_plus
+package gormplus
 
 const Version = "v1.0.2"
