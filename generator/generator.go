@@ -3,6 +3,7 @@ package generator
 import (
 	"bufio"
 	"bytes"
+	_ "embed"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,32 @@ import (
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
 )
+
+// 将模板文件嵌入二进制，无论在哪个目录执行都可以正常访问
+//
+//go:embed template/api_template.txt
+var embeddedApiTemplate string
+
+//go:embed template/dto_template.txt
+var embeddedDtoTemplate string
+
+//go:embed template/repository_gen_template.txt
+var embeddedRepoGenTemplate string
+
+//go:embed template/repository_template.txt
+var embeddedRepoTemplate string
+
+//go:embed template/vo_template.txt
+var embeddedVoTemplate string
+
+// embeddedTemplates 内嵌模板映射表，key 为模板文件名
+var embeddedTemplates = map[string]string{
+	"api_template.txt":            embeddedApiTemplate,
+	"dto_template.txt":            embeddedDtoTemplate,
+	"repository_gen_template.txt": embeddedRepoGenTemplate,
+	"repository_template.txt":     embeddedRepoTemplate,
+	"vo_template.txt":             embeddedVoTemplate,
+}
 
 func getGoctlPath() string {
 	cmd := exec.Command("which", "go")
@@ -213,15 +240,23 @@ func generateValidateRule(col ColumnInfo) string {
 }
 
 func loadTemplate(templatePath string) (*template.Template, error) {
-	content, err := os.ReadFile(templatePath)
-	if err != nil {
-		return nil, err
-	}
 	templateName := filepath.Base(templatePath)
 	funcMap := template.FuncMap{
 		"lowerFirst": lowerFirst,
 	}
-	return template.New(templateName).Funcs(funcMap).Parse(string(content))
+
+	// 优先尝试从文件系统加载（方便用户自定义覆盖模板）
+	fileContent, err := os.ReadFile(templatePath)
+	if err == nil {
+		return template.New(templateName).Funcs(funcMap).Parse(string(fileContent))
+	}
+
+	// 文件不存在时，回退到内嵌模板
+	embeddedContent, ok := embeddedTemplates[templateName]
+	if !ok {
+		return nil, fmt.Errorf("模板文件 %q 不存在，且没有对应的内嵌模板: %w", templatePath, err)
+	}
+	return template.New(templateName).Funcs(funcMap).Parse(embeddedContent)
 }
 
 func generateApiFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
