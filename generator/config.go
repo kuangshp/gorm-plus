@@ -20,8 +20,10 @@ type Config struct {
 	// 生成路径配置
 	OutPath      string `yaml:"out_path"`       // dao输出路径，如 "./query/dao"
 	ModelPkgPath string `yaml:"model_pkg_path"` // model包路径，如 "./query/model"
-	RepoPath     string `yaml:"repo_path"`      // repository输出路径，如 "./query/repository1"
+	RepoPath     string `yaml:"repo_path"`      // repository输出路径，如 "./query/repository"
 	ApiPath      string `yaml:"api_path"`       // api desc路径，如 "./apps/admin/desc"
+	VoPath       string `yaml:"vo_path"`        // vo输出路径，如 "./query/vo"
+	DtoPath      string `yaml:"dto_path"`       // dto输出路径，如 "./apps/admin/dto"
 
 	// 项目包名
 	Package string `yaml:"package"` // 项目包名，如 "esim-api"

@@ -42,8 +42,32 @@ func Case2Camel(name string) string {
 }
 
 func LowerCamelCase(name string) string {
+	// 如果已经是小写开头且没有大写字母，直接返回
+	if len(name) > 0 && name[0] >= 'a' && name[0] <= 'z' {
+		hasUpper := false
+		for _, c := range name[1:] {
+			if c >= 'A' && c <= 'Z' {
+				hasUpper = true
+				break
+			}
+		}
+		if !hasUpper {
+			return name
+		}
+	}
+	if name == "ID" {
+		return "id"
+	}
+	if len(name) >= 2 && strings.HasSuffix(name, "ID") && name[:2] != "id" {
+		prefix := name[:len(name)-2]
+		return LowerCamelCase(prefix) + "Id"
+	}
 	name = Case2Camel(name)
 	return strings.ToLower(name[:1]) + name[1:]
+}
+
+func lowerFirst(name string) string {
+	return LowerCamelCase(name)
 }
 
 var inputLines []string
@@ -128,6 +152,13 @@ type ApiTemplateData struct {
 	Columns      []ColumnInfo
 }
 
+type VoTemplateData struct {
+	TableName    string
+	ModelName    string
+	TableComment string
+	Columns      []ColumnInfo
+}
+
 type RepositoryTemplateData struct {
 	ModelName       string
 	ModelNameLower  string
@@ -187,7 +218,10 @@ func loadTemplate(templatePath string) (*template.Template, error) {
 		return nil, err
 	}
 	templateName := filepath.Base(templatePath)
-	return template.New(templateName).Parse(string(content))
+	funcMap := template.FuncMap{
+		"lowerFirst": lowerFirst,
+	}
+	return template.New(templateName).Funcs(funcMap).Parse(string(content))
 }
 
 func generateApiFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
@@ -359,6 +393,87 @@ func generateRepositoryExtFile(columns []ColumnInfo, modelName string, pkg strin
 	return buf.String(), nil
 }
 
+func generateVoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
+	tmpl, err := loadTemplate(tmplPath)
+	if err != nil {
+		return "", fmt.Errorf("加载模板失败: %w", err)
+	}
+
+	columnData := make([]ColumnInfo, len(columns))
+	for i, col := range columns {
+		columnData[i] = ColumnInfo{
+			Name:      col.Name,
+			Type:      col.Type,
+			FieldName: Case2Camel(col.Name),
+			FieldType: getGoType(col.Type),
+			CanNull:   col.CanNull,
+			IsKey:     col.IsKey,
+			Comment:   col.Comment,
+		}
+	}
+
+	tableComment, _ := getTableComment(db, tableName)
+	if tableComment == "" {
+		tableComment = modelName
+	}
+
+	data := VoTemplateData{
+		TableName:    tableName,
+		ModelName:    modelName,
+		TableComment: tableComment,
+		Columns:      columnData,
+	}
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, data)
+	if err != nil {
+		return "", fmt.Errorf("渲染模板失败: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+func generateDtoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
+	tmpl, err := loadTemplate(tmplPath)
+	if err != nil {
+		return "", fmt.Errorf("加载模板失败: %w", err)
+	}
+
+	columnData := make([]ColumnInfo, len(columns))
+	for i, col := range columns {
+		columnData[i] = ColumnInfo{
+			Name:      col.Name,
+			Type:      col.Type,
+			FieldName: Case2Camel(col.Name),
+			FieldType: getGoType(col.Type),
+			CanNull:   col.CanNull,
+			IsKey:     col.IsKey,
+			Comment:   col.Comment,
+			Validate:  generateValidateRule(col),
+		}
+	}
+
+	tableComment, _ := getTableComment(db, tableName)
+	if tableComment == "" {
+		tableComment = modelName
+	}
+
+	data := VoTemplateData{
+		TableName:    tableName,
+		ModelName:    modelName,
+		TableComment: tableComment,
+		Columns:      columnData,
+	}
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, data)
+	if err != nil {
+		return "", fmt.Errorf("渲染模板失败: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
 func getGoType(sqlType string) string {
 	sqlType = strings.ToLower(sqlType)
 	if strings.Contains(sqlType, "varchar") || strings.Contains(sqlType, "text") || strings.Contains(sqlType, "char") {
@@ -425,8 +540,10 @@ func Generate(cfg *Config) error {
 		}
 	}
 	apiTmplPath := filepath.Join(templateDir, "api_template.txt")
+	dtoTmplPath := filepath.Join(templateDir, "dto_template.txt")
 	repoGenTmplPath := filepath.Join(templateDir, "repository_gen_template.txt")
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
+	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
 
 	// 确保路径有"."前缀
 	if !strings.HasPrefix(cfg.OutPath, ".") {
@@ -440,6 +557,12 @@ func Generate(cfg *Config) error {
 	}
 	if !strings.HasPrefix(cfg.ApiPath, ".") {
 		cfg.ApiPath = "." + cfg.ApiPath
+	}
+	if !strings.HasPrefix(cfg.VoPath, ".") {
+		cfg.VoPath = "." + cfg.VoPath
+	}
+	if !strings.HasPrefix(cfg.DtoPath, ".") {
+		cfg.DtoPath = "." + cfg.DtoPath
 	}
 
 	g := gen.NewGenerator(gen.Config{
@@ -456,13 +579,16 @@ func Generate(cfg *Config) error {
 	g.UseDB(db)
 
 	dataMap := map[string]func(detailType gorm.ColumnType) (dataType string){
-		"tinyint":   func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"smallint":  func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"mediumint": func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"bigint":    func(detailType gorm.ColumnType) (dataType string) { return "int64" },
 		"int":       func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"json":      func(detailType gorm.ColumnType) (dataType string) { return "JSON" },
-		"decimal":   func(detailType gorm.ColumnType) (dataType string) { return "Decimal" },
+		"int2":      func(detailType gorm.ColumnType) (dataType string) { return "int64" },
+		"int4":      func(detailType gorm.ColumnType) (dataType string) { return "int64" },
+		"mediumint": func(detailType gorm.ColumnType) (dataType string) { return "int64" },
+		"smallint":  func(detailType gorm.ColumnType) (dataType string) { return "int64" },
+		"integer":   func(detailType gorm.ColumnType) (dataType string) { return "int64" },
+		"tinyint":   func(detailType gorm.ColumnType) (dataType string) { return "int64" },
+		"bigint":    func(detailType gorm.ColumnType) (dataType string) { return "int64" },
+		"json":      func(detailType gorm.ColumnType) (dataType string) { return "datatypes.JSON" },
+		"decimal":   func(detailType gorm.ColumnType) (dataType string) { return "decimal.Decimal" },
 	}
 	g.WithDataTypeMap(dataMap)
 
@@ -591,6 +717,46 @@ func Generate(cfg *Config) error {
 				}
 			} else {
 				fmt.Printf("api文件已存在，不覆盖更新: %s\n", apiFileName)
+			}
+		}
+	}
+
+	if cfg.VoPath != "" && tableName != "" {
+		voDir := cfg.VoPath
+		if _, err := os.Stat(voDir); os.IsNotExist(err) {
+			os.MkdirAll(voDir, 0755)
+		}
+
+		voContent, err := generateVoFile(tableName, columns, modelName, db, voTmplPath)
+		if err != nil {
+			fmt.Printf("生成vo内容失败: %v\n", err)
+		} else {
+			voFileName := fmt.Sprintf("%s/%sVo.go", voDir, strings.ToLower(modelName))
+			err = os.WriteFile(voFileName, []byte(voContent), 0644)
+			if err != nil {
+				fmt.Printf("写入vo文件失败: %v\n", err)
+			} else {
+				fmt.Printf("vo文件已生成: %s\n", voFileName)
+			}
+		}
+	}
+
+	if cfg.DtoPath != "" && tableName != "" {
+		dtoDir := cfg.DtoPath
+		if _, err := os.Stat(dtoDir); os.IsNotExist(err) {
+			os.MkdirAll(dtoDir, 0755)
+		}
+
+		dtoContent, err := generateDtoFile(tableName, columns, modelName, db, dtoTmplPath)
+		if err != nil {
+			fmt.Printf("生成dto内容失败: %v\n", err)
+		} else {
+			dtoFileName := fmt.Sprintf("%s/%sDto.go", dtoDir, strings.ToLower(modelName))
+			err = os.WriteFile(dtoFileName, []byte(dtoContent), 0644)
+			if err != nil {
+				fmt.Printf("写入dto文件失败: %v\n", err)
+			} else {
+				fmt.Printf("dto文件已生成: %s\n", dtoFileName)
 			}
 		}
 	}

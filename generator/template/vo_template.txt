@@ -1,0 +1,10 @@
+package model
+
+// {{.ModelName}}Vo {{.TableComment}}视图对象
+type {{.ModelName}}Vo struct {
+{{- range .Columns}}
+{{- if ne .Name "deleted_at"}}
+	{{.FieldName}} {{.FieldType}} `json:"{{lowerFirst .FieldName}}"` // {{.Comment}}
+{{- end}}
+{{- end}}
+}

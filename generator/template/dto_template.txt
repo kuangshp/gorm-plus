@@ -1,0 +1,19 @@
+package dto
+
+// Create{{.ModelName}}DTO 创建{{.TableComment}}请求
+type Create{{.ModelName}}DTO struct {
+{{- range .Columns}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at"))}}
+{{- $fieldName := lowerFirst .FieldName}}
+{{- $validate := .Validate}}
+{{- $comment := .Comment}}
+	{{.FieldName}} {{.FieldType}} {{if $validate}}`json:"{{$fieldName}}" validate:"{{$validate}}"`{{else}}`json:"{{$fieldName}}"`{{end}} // {{$comment}}
+{{- end}}
+{{- end}}
+}
+
+// Modify{{.ModelName}}DTO 修改{{.TableComment}}请求
+type Modify{{.ModelName}}DTO struct {
+	ID int64 `json:"id" validate:"required,number,gte=1"` // 主键id
+	Create{{.ModelName}}DTO
+}
