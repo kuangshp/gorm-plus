@@ -6,12 +6,12 @@ import (
 
 	"gorm.io/gorm"
 
-	"gorm-plus/datasource"
-	"gorm-plus/generator"
-	"gorm-plus/plugin"
-	"gorm-plus/query"
-	"gorm-plus/sf"
-	"gorm-plus/tenant"
+	"github.com/kuangshp/gorm-plus/datasource"
+	"github.com/kuangshp/gorm-plus/generator"
+	"github.com/kuangshp/gorm-plus/plugin"
+	"github.com/kuangshp/gorm-plus/query"
+	"github.com/kuangshp/gorm-plus/sf"
+	"github.com/kuangshp/gorm-plus/tenant"
 )
 
 // ================== 统一入口 ==================
