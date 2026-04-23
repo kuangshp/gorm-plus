@@ -25,7 +25,7 @@ type iDefault{{.ModelName}}Repository interface {
 	// ModifyById 根据ID修改
 	ModifyById(ctx context.Context, {{.ModelNameLower}}Id int64, m *{{.ModelPkgName}}.{{.ModelName}}Entity) error
 	// GetList 获取列表
-	GetList(ctx context.Context, status int64) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, err error)
+	GetList(ctx context.Context) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, err error)
 	// GetPage 分页获取
 	GetPage(ctx context.Context, pageNumber int64, pageSize int64) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
 	// GetById 根据ID获取详情
@@ -73,8 +73,8 @@ func (r *default{{.ModelName}}Repository) ModifyById(ctx context.Context, {{.Mod
 	}
 	return nil
 }
-func (r *default{{.ModelName}}Repository) GetList(ctx context.Context,status int64) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
-	return dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.Status.Eq(status)).Order(dao.{{.ModelName}}Entity.ID.Desc()).Find()
+func (r *default{{.ModelName}}Repository) GetList(ctx context.Context) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+	return dao.{{.ModelName}}Entity.WithContext(ctx).Order(dao.{{.ModelName}}Entity.ID.Desc()).Find()
 }
 
 func (r *default{{.ModelName}}Repository) GetPage(ctx context.Context, pageNumber int64, pageSize int64) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
