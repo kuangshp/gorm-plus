@@ -8,6 +8,7 @@ import (
 
 	"gorm-plus/datasource"
 	"gorm-plus/generator"
+	"gorm-plus/plugin"
 	"gorm-plus/query"
 	"gorm-plus/sf"
 	"gorm-plus/tenant"
@@ -265,6 +266,36 @@ type SlowQueryInfo = query.SlowQueryInfo
 //	})
 func RegisterSlowQuery(db *gorm.DB, cfg query.SlowQueryConfig) error {
 	return query.RegisterSlowQuery(db, cfg)
+}
+
+// -------------------- 自动填充插件 --------------------
+
+// AutoFillConfig 自动填充插件配置
+type AutoFillConfig = plugin.AutoFillConfig
+
+// FieldConfig 单个字段配置
+type FieldConfig = plugin.FieldConfig
+
+// CtxContextKey1 context key 常量
+var CtxContextKey1 = plugin.CtxContextKey1
+
+// CtxContextKey2 context key 常量
+var CtxContextKey2 = plugin.CtxContextKey2
+
+// CtxContextKey3 context key 常量
+var CtxContextKey3 = plugin.CtxContextKey3
+
+// CtxContextKey4 context key 常量
+var CtxContextKey4 = plugin.CtxContextKey4
+
+// NewAutoFillPlugin 创建自动填充插件
+func NewAutoFillPlugin(cfg plugin.AutoFillConfig) *plugin.AutoFillPlugin {
+	return plugin.NewAutoFillPlugin(cfg)
+}
+
+// CtxGetter 从 context 读取 T 值
+func CtxGetter[T comparable](key any) plugin.FieldGetter {
+	return plugin.CtxGetter[T](key)
 }
 
 // -------------------- 代码生成器 --------------------

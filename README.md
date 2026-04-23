@@ -2,7 +2,7 @@
 
 基于 [gorm-gen](https://github.com/go-gorm/gen) 的增强扩展包。
 
-提供：**链式条件构造器** · **SingleFlight 缓存** · **多租户自动注入** · **多数据源自动切换** · **慢查询监控**
+提供：**链式条件构造器** · **SingleFlight 缓存** · **多租户自动注入** · **多数据源自动切换** · **自动填充插件** · **慢查询监控**
 
 ## 功能特性
 
@@ -12,7 +12,13 @@
 - **单飞模式 (singleflight)**: 内置 singleflight 请求合并 + 本地缓存，有效防止缓存击穿
 - **双引擎支持**: 同时支持原生 GORM 和 gorm-gen 生成的代码
 
-### 2. 代码生成器 (generator)
+### 2. 自动填充插件 (plugin)
+
+- **自动填充**: Create / Update / Save 时自动从 context 中获取值填充到对应字段
+- **灵活配置**: 支持自定义字段名、取值函数、创建/更新独立控制
+- **零侵入**: 业务层代码无需任何修改
+
+### 3. 代码生成器 (generator)
 
 - **数据库表同步**: 直接从数据库表结构生成 Model、Repository、API 文件
 - **多文件生成**: 自动生成基础 repository (`xxx_base.go`)、接口定义 (`xxx_interface.go`)、扩展实现 (`xxx.go`)
@@ -40,6 +46,8 @@ gorm-plus/
 │   └── tenant.go          # 多租户 gorm 插件（自动注入 + 自动跳过）
 ├── datasource/
 │   └── manager.go         # 多数据源管理（自动切换 + 读写分离）
+├── plugin/
+│   └── autoOperator.go     # 自动填充插件（Create/Update 自动填充字段）
 ├── generator/
 │   ├── config.go
 │   ├── generator.go
@@ -116,7 +124,83 @@ tenantID := tenant.TenantIDFromCtx(ctx)
 
 ---
 
-## 二、多数据源自动切换（datasource/manager.go）
+## 二、自动填充插件（plugin/autoOperator.go）
+
+### 功能说明
+
+在 Create / Update / Save 等写入操作时，自动从 context 中获取值并填充到对应字段。
+
+### 注册
+
+```go
+// 方式一：使用 gorm-plus 导出的便捷函数
+err := gormplus.NewAutoFillPlugin(gormplus.AutoFillConfig{
+    Fields: []gormplus.FieldConfig{
+        {
+            Name:     "Creator",
+            Getter:   CtxGetter[int64](gormplus.CtxContextKey1),
+            OnCreate: true,
+        },
+        {
+            Name:     "Updater",
+            Getter:   CtxGetter[int64](gormplus.CtxContextKey2),
+            OnUpdate: true,
+        },
+    },
+}).Initialize(db)
+
+// 方式二
+	db.Use(plugin.NewAutoFillPlugin(plugin.AutoFillConfig{
+		Fields: []plugin.FieldConfig{
+			{
+				Name:     "created_by",
+				Getter:   plugin.CtxGetter[int64](plugin.CtxContextKey1),
+				OnCreate: true,
+				OnUpdate: false, // 创建人不随更新改变
+			},
+			{
+				Name:     "updated_by",
+				Getter:   plugin.CtxGetter[int64](plugin.CtxContextKey1),
+				OnCreate: true,
+				OnUpdate: true,
+			},
+			{
+				Name:     "created_name",
+				Getter:   plugin.CtxGetter[string](plugin.CtxContextKey2),
+				OnCreate: true,
+				OnUpdate: true,
+			},
+		},
+	}))
+```
+
+### 在中间件中填充数据
+
+```go
+// 这里以gin为参考示例
+func OperatorMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 从 JWT claims 或 session 中拿用户名
+		accountId, exists := c.Get("accountId")
+		fmt.Println("OperatorMiddleware 拿到的 accountId:", accountId, "exists:", exists)
+		ctx := context.WithValue(c.Request.Context(), plugin.CtxContextKey1, accountId)
+		ctx = context.WithValue(c.Request.Context(), plugin.CtxContextKey2, "admin")
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+}
+```
+
+### 使用
+
+```go
+dao.AccountEntity.WithContext(ctx.Request.Context()).
+		Create(&entity.AccountEntity{})
+```
+
+---
+
+## 三、多数据源自动切换（datasource/manager.go）
 
 ### 注册
 
@@ -220,7 +304,7 @@ defer DS.Close()
 
 ---
 
-## 三、链式条件构造器
+## 四、链式条件构造器
 
 ### IQueryBuilder（原生 gorm）
 
@@ -260,7 +344,7 @@ list, total, err := query.ScanPage[OrderVO](q, pageNum, pageSize)  // 联表 VO
 
 ---
 
-## 四、SF 查询缓存
+## 五、SF 查询缓存
 
 ```go
 // 5 分钟缓存（默认）
@@ -283,7 +367,7 @@ defer sf.StopSFCache()
 
 ---
 
-## 五、慢查询监控
+## 六、慢查询监控
 
 ```go
 err := query.RegisterSlowQuery(db, query.SlowQueryConfig{
@@ -301,7 +385,7 @@ err := query.RegisterSlowQuery(db, query.SlowQueryConfig{
 
 ---
 
-## 六、推荐初始化顺序
+## 七、推荐初始化顺序
 
 ```go
 func main() {
@@ -340,7 +424,7 @@ func main() {
 
 ---
 
-## 七、代码生成器
+## 八、代码生成器
 
 ```go
 import "github.com/kuangshp/gorm-plus/generator"
