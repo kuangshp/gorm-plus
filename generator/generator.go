@@ -597,25 +597,7 @@ func Generate(cfg *Config) error {
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
 	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
 
-	// 确保路径有"."前缀
-	if !strings.HasPrefix(cfg.OutPath, ".") {
-		cfg.OutPath = "." + cfg.OutPath
-	}
-	if !strings.HasPrefix(cfg.ModelPkgPath, ".") {
-		cfg.ModelPkgPath = "." + cfg.ModelPkgPath
-	}
-	if !strings.HasPrefix(cfg.RepoPath, ".") {
-		cfg.RepoPath = "." + cfg.RepoPath
-	}
-	if !strings.HasPrefix(cfg.ApiPath, ".") {
-		cfg.ApiPath = "." + cfg.ApiPath
-	}
-	if !strings.HasPrefix(cfg.VoPath, ".") {
-		cfg.VoPath = "." + cfg.VoPath
-	}
-	if !strings.HasPrefix(cfg.DtoPath, ".") {
-		cfg.DtoPath = "." + cfg.DtoPath
-	}
+	// 路径为空表示该功能未配置，保持空值，后续按空值判断是否生成
 
 	g := gen.NewGenerator(gen.Config{
 		OutPath:           cfg.OutPath,
@@ -683,18 +665,19 @@ func Generate(cfg *Config) error {
 	g.ApplyBasic(allModel...)
 	g.Execute()
 
-	var columns []ColumnInfo
-	var modelName string
-	if tableName != "" {
-		var err error
-		columns, err = getTableColumns(db, tableName)
-		if err != nil {
-			return fmt.Errorf("获取表结构失败: %w", err)
-		}
-		modelName = Case2Camel(strings.ToUpper(tableName[:1]) + tableName[1:])
+	// 未输入表名时只生成数据模型，不继续生成 repo/vo/dto/api
+	if tableName == "" {
+		fmt.Println("生成完成!")
+		return nil
 	}
 
-	if cfg.RepoPath != "" && tableName != "" {
+	columns, err := getTableColumns(db, tableName)
+	if err != nil {
+		return fmt.Errorf("获取表结构失败: %w", err)
+	}
+	modelName := Case2Camel(strings.ToUpper(tableName[:1]) + tableName[1:])
+
+	if cfg.RepoPath != "" {
 		repoDir := cfg.RepoPath
 		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 			os.MkdirAll(repoDir, 0755)
@@ -739,41 +722,34 @@ func Generate(cfg *Config) error {
 			os.MkdirAll(apiDir, 0755)
 		}
 
-		if tableName != "" {
-			columns, err := getTableColumns(db, tableName)
+		apiContent, err := generateApiFile(tableName, columns, modelName, db, apiTmplPath)
+		if err != nil {
+			return fmt.Errorf("生成api内容失败: %w", err)
+		}
+		apiFileName := fmt.Sprintf("%s/%s.api", apiDir, tableName)
+		// 检查文件是否已存在
+		if _, err := os.Stat(apiFileName); os.IsNotExist(err) {
+			err = os.WriteFile(apiFileName, []byte(apiContent), 0644)
 			if err != nil {
-				return fmt.Errorf("获取表结构失败: %w", err)
+				return fmt.Errorf("写入api文件失败: %w", err)
 			}
-			modelName := Case2Camel(strings.ToUpper(tableName[:1]) + tableName[1:])
-			apiContent, err := generateApiFile(tableName, columns, modelName, db, apiTmplPath)
-			if err != nil {
-				return fmt.Errorf("生成api内容失败: %w", err)
-			}
-			apiFileName := fmt.Sprintf("%s/%s.api", apiDir, tableName)
-			// 检查文件是否已存在
-			if _, err := os.Stat(apiFileName); os.IsNotExist(err) {
-				err = os.WriteFile(apiFileName, []byte(apiContent), 0644)
-				if err != nil {
-					return fmt.Errorf("写入api文件失败: %w", err)
-				}
-				fmt.Printf("api文件已生成: %s\n", apiFileName)
+			fmt.Printf("api文件已生成: %s\n", apiFileName)
 
-				goctlPath := getGoctlPath()
-				cmd := exec.Command(goctlPath, "api", "go", "-api", apiFileName, "--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
-				cmd.Dir = "."
-				output, err := cmd.CombinedOutput()
-				if err != nil {
-					fmt.Printf("执行goctl失败: %v\n%s\n", err, output)
-				} else {
-					fmt.Printf("go-zero代码生成成功\n%s\n", output)
-				}
+			goctlPath := getGoctlPath()
+			cmd := exec.Command(goctlPath, "api", "go", "-api", apiFileName, "--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
+			cmd.Dir = "."
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				fmt.Printf("执行goctl失败: %v\n%s\n", err, output)
 			} else {
-				fmt.Printf("api文件已存在，不覆盖更新: %s\n", apiFileName)
+				fmt.Printf("go-zero代码生成成功\n%s\n", output)
 			}
+		} else {
+			fmt.Printf("api文件已存在，不覆盖更新: %s\n", apiFileName)
 		}
 	}
 
-	if cfg.VoPath != "" && tableName != "" {
+	if cfg.VoPath != "" {
 		voDir := cfg.VoPath
 		if _, err := os.Stat(voDir); os.IsNotExist(err) {
 			os.MkdirAll(voDir, 0755)
@@ -793,7 +769,7 @@ func Generate(cfg *Config) error {
 		}
 	}
 
-	if cfg.DtoPath != "" && tableName != "" {
+	if cfg.DtoPath != "" {
 		dtoDir := cfg.DtoPath
 		if _, err := os.Stat(dtoDir); os.IsNotExist(err) {
 			os.MkdirAll(dtoDir, 0755)
