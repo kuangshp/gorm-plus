@@ -530,13 +530,30 @@ func Generate(cfg *Config) error {
 	// 获取模板路径 - 优先使用环境变量或当前工作目录
 	templateDir := os.Getenv("GENERATOR_TEMPLATE_DIR")
 	if templateDir == "" {
-		cwd, _ := os.Getwd()
-		// 尝试相对于当前工作目录的路径
-		templateDir = filepath.Join(cwd, "generator", "template")
-		if _, err := os.Stat(templateDir); os.IsNotExist(err) {
-			// 尝试相对于可执行文件的路径
-			exePath, _ := os.Executable()
-			templateDir = filepath.Join(filepath.Dir(exePath), "generator", "template")
+		// 尝试相对于可执行文件的路径
+		exePath, err := os.Executable()
+		if err == nil {
+			// 对于 go run，可执行文件在缓存目录，需要找到源码目录
+			// 尝试向上查找 generator/template 目录
+			checkDir := filepath.Dir(exePath)
+			for i := 0; i < 10; i++ {
+				testDir := filepath.Join(checkDir, "generator", "template")
+				if _, statErr := os.Stat(testDir); statErr == nil {
+					templateDir = testDir
+					break
+				}
+				// 继续向上查找
+				parent := filepath.Dir(checkDir)
+				if parent == checkDir {
+					break
+				}
+				checkDir = parent
+			}
+		}
+		// 如果还是没找到，尝试相对于当前工作目录的路径
+		if templateDir == "" {
+			cwd, _ := os.Getwd()
+			templateDir = filepath.Join(cwd, "generator", "template")
 		}
 	}
 	apiTmplPath := filepath.Join(templateDir, "api_template.txt")
