@@ -69,6 +69,12 @@ err := tenant.RegisterTenant(db, tenant.TenantConfig{
     ExcludeTables: []string{"sys_config", "sys_dict"},       // 不参与过滤的表
     // GetTenantID 留空自动使用 DefaultGetTenantID
 })
+
+// 或者
+plugin.NewTenantPlugin(plugin.TenantConfig[string]{
+    TenantField:   "tenant_id",
+    ExcludeTables: []string{"sys_config", "sys_dict"},
+})
 ```
 
 ### Middleware 注入租户 ID（Gin 示例）
@@ -184,7 +190,8 @@ func OperatorMiddleware() gin.HandlerFunc {
 		accountId, exists := c.Get("accountId")
 		fmt.Println("OperatorMiddleware 拿到的 accountId:", accountId, "exists:", exists)
 		ctx := context.WithValue(c.Request.Context(), plugin.CtxContextKey1, accountId)
-		ctx = context.WithValue(c.Request.Context(), plugin.CtxContextKey2, "admin")
+    // 注册一个用户名
+		ctx = context.WithValue(ctx, plugin.CtxContextKey2, "admin")
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}

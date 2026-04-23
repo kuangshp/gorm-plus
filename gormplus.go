@@ -226,6 +226,10 @@ func RegisterTenant[T comparable](db *gorm.DB, cfg tenant.TenantConfig[T]) error
 	return tenant.RegisterTenant[T](db, cfg)
 }
 
+func NewTenantPlugin[T comparable](cfg tenant.TenantConfig[T]) (gorm.Plugin, error) {
+	return tenant.NewTenantPlugin[T](cfg)
+}
+
 // AddExcludeTable 运行时动态添加不参与租户过滤的表。
 func AddExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
 	return tenant.AddExcludeTable[T](db, tables...)

@@ -231,6 +231,21 @@ func RegisterTenant[T comparable](db *gorm.DB, cfg TenantConfig[T]) error {
 	return db.Use(p)
 }
 
+// NewTenantPlugin 工厂函数，与 NewAutoFillPlugin 风格一致
+func NewTenantPlugin[T comparable](cfg TenantConfig[T]) (gorm.Plugin, error) {
+	if cfg.TenantField == "" {
+		return nil, fmt.Errorf("NewTenantPlugin: TenantField 不能为空")
+	}
+	if cfg.GetTenantID == nil {
+		cfg.GetTenantID = DefaultGetTenantID[T]
+	}
+	excludeSet := make(map[string]struct{}, len(cfg.ExcludeTables))
+	for _, t := range cfg.ExcludeTables {
+		excludeSet[strings.ToLower(t)] = struct{}{}
+	}
+	return &tenantPlugin[T]{cfg: cfg, excludeSet: excludeSet}, nil
+}
+
 // ---- 动态排除表（通过 DB 获取插件实例，避免全局变量类型断言 bug）----
 
 // getPlugin 从 gorm DB 的插件注册表中取出对应类型的租户插件。
