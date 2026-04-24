@@ -8,6 +8,7 @@
 //   - 简单分组（WhereGroup / OrGroup）：传入多个 field.Expr，组内 AND 连接，自动加括号
 //   - 函数分组（WhereGroupFn / OrGroupFn）：传入函数，组内可使用完整 wrapper 能力（WhereIf / Like 等）
 //   - 原生 SQL 条件（RawWhere / RawOrWhere / RawWhereIf）
+//   - 表别名（As）：联表查询时为当前模型设置别名
 //
 // gorm-gen 原生已支持的能力（Eq/Gt/Lt/Order/Limit/Count/Find 等）请在 Apply() 后直接调用。
 //
@@ -56,6 +57,19 @@
 //	        w.LLike(dao.AccountEntity.Username, username).
 //	          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
 //	    }).Apply().Find()
+//
+// # 表别名（As）
+//
+//	// 联表查询时为当前模型设置别名，之后 RawWhere 等条件中可用别名前缀
+//	// WHERE n.status = 1，联表 LEFT JOIN sys_user u ON u.user_id = n.create_by
+//	db.Wrap(dao.NotifyEntity.WithContext(ctx)).
+//	    As("n").
+//	    WhereIf(status != 0, dao.NotifyEntity.Status.Eq(status)).
+//	    RawWhere("n.title LIKE ?", "%"+keyword+"%").
+//	    Apply().
+//	    Select("n.id", "n.title", "u.username AS creator").
+//	    Joins("LEFT JOIN sys_user u ON u.user_id = n.create_by").
+//	    Find()
 package query
 
 import (
@@ -128,11 +142,17 @@ type GenDo[T any] interface {
 //	    Limit(20).
 //	    Find()
 func Wrap[T GenDo[T]](do T) IGenWrapper[T] {
+	// 从 DO 的底层 DB 中提取原始 ctx，Apply 时复用，避免 ctx 丢失（traceID / 租户信息等）
+	ctx := do.UnderlyingDB().Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &GenWrapper[T]{
 		do:    do,
+		ctx:   ctx,
 		group: newCondGroup(),
 		replaceDB: func(newDB *gorm.DB) T {
-			newDO := do.WithContext(context.Background())
+			newDO := do.WithContext(ctx)
 			newDO.ReplaceDB(newDB)
 			return newDO
 		},
@@ -144,6 +164,20 @@ func Wrap[T GenDo[T]](do T) IGenWrapper[T] {
 // IGenWrapper 扩展条件构建器接口，只包含 gorm-gen 原生不支持的能力。
 // 所有方法均支持链式调用，最终通过 Apply() 返回原生 DO。
 type IGenWrapper[T GenDo[T]] interface {
+	// As 为当前模型表设置别名，适合联表查询时区分字段归属。
+	// 建议在其他条件方法之前调用。
+	//
+	//   // WHERE n.status = 1，联表 LEFT JOIN sys_user u ON u.user_id = n.create_by
+	//   db.Wrap(dao.NotifyEntity.WithContext(ctx)).
+	//       As("n").
+	//       WhereIf(status != 0, dao.NotifyEntity.Status.Eq(status)).
+	//       RawWhere("n.title LIKE ?", "%"+keyword+"%").
+	//       Apply().
+	//       Select("n.id", "n.title", "u.username AS creator").
+	//       Joins("LEFT JOIN sys_user u ON u.user_id = n.create_by").
+	//       Find()
+	As(alias string) IGenWrapper[T]
+
 	// Like 双侧模糊：WHERE col LIKE '%val%'，val 为空时跳过。
 	//
 	//   .Like(dao.AccountEntity.Username, "admin")
@@ -212,13 +246,6 @@ type IGenWrapper[T GenDo[T]] interface {
 	//       w.LLike(dao.AccountEntity.Username, username).
 	//         WhereIf(status != 0, dao.AccountEntity.Status.Eq(status))
 	//   })
-	//
-	//   // 配合主查询：WHERE org_id = 1 AND (username LIKE '%admin' AND role = 2)
-	//   .WhereIf(true, dao.AccountEntity.OrgID.Eq(orgID)).
-	//    WhereGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
-	//        w.LLike(dao.AccountEntity.Username, username).
-	//          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
-	//    })
 	WhereGroupFn(fn func(IGenWrapper[T])) IGenWrapper[T]
 
 	// OrGroupFn 将 fn 内构建的条件用括号包裹后以 OR 连接到主查询。
@@ -230,12 +257,6 @@ type IGenWrapper[T GenDo[T]] interface {
 	//        w.LLike(dao.AccountEntity.Username, username).
 	//          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
 	//    })
-	//
-	//   // 组内还可以继续嵌套 RawWhere
-	//   .OrGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
-	//       w.WhereIf(orgID != 0, dao.AccountEntity.OrgID.Eq(orgID)).
-	//         RawWhere("deleted_at IS NULL")
-	//   })
 	OrGroupFn(fn func(IGenWrapper[T])) IGenWrapper[T]
 
 	// RawWhere 追加一段原生 SQL 作为 AND 条件，支持占位符 ?。
@@ -245,7 +266,6 @@ type IGenWrapper[T GenDo[T]] interface {
 	//
 	//   // 子查询场景
 	//   .RawWhere("id IN (SELECT account_id FROM vip WHERE level > ?)", 2)
-	//   => WHERE (id IN (SELECT account_id FROM vip WHERE level > 2))
 	RawWhere(sql string, args ...any) IGenWrapper[T]
 
 	// RawOrWhere 追加一段原生 SQL 作为 OR 条件。
@@ -270,11 +290,6 @@ type IGenWrapper[T GenDo[T]] interface {
 	//       Order(dao.AccountEntity.CreatedAt.Desc()).
 	//       Limit(pageSize).Offset((page-1)*pageSize).
 	//       Find()
-	//
-	//   total, err := db.Wrap(dao.AccountEntity.WithContext(ctx)).
-	//       LLike(dao.AccountEntity.Username, username).
-	//       Apply().
-	//       Count()
 	Apply() T
 }
 
@@ -282,6 +297,8 @@ type IGenWrapper[T GenDo[T]] interface {
 
 type GenWrapper[T GenDo[T]] struct {
 	do        T
+	ctx       context.Context // 保存原始 ctx，Apply 时复用
+	alias     string          // 表别名，As() 设置后在 Apply 时注入到底层 DB
 	group     *condGroup
 	replaceDB func(*gorm.DB) T
 }
@@ -305,7 +322,7 @@ func (w *GenWrapper[T]) addGroup(exprs []field.Expr, typ condType) {
 }
 
 func (w *GenWrapper[T]) addFnGroup(fn func(IGenWrapper[T]), typ condType) {
-	sub := &GenWrapper[T]{do: w.do, group: newCondGroup(), replaceDB: w.replaceDB}
+	sub := &GenWrapper[T]{do: w.do, ctx: w.ctx, group: newCondGroup(), replaceDB: w.replaceDB}
 	fn(sub)
 	if !sub.group.isEmpty() {
 		w.group.add(&condItem{subGroup: sub.group, typ: typ, isFnGroup: true})
@@ -318,6 +335,11 @@ func (w *GenWrapper[T]) like(col field.Expr, pattern string) {
 			w.addExpr(expr, condAnd)
 		}
 	}
+}
+
+func (w *GenWrapper[T]) As(alias string) IGenWrapper[T] {
+	w.alias = alias
+	return w
 }
 
 func (w *GenWrapper[T]) Like(col field.Expr, val string) IGenWrapper[T] {
@@ -387,10 +409,17 @@ func (w *GenWrapper[T]) RawWhereIf(condition bool, sql string, args ...any) IGen
 }
 
 func (w *GenWrapper[T]) Apply() T {
-	if w.group.isEmpty() {
-		return w.do
+	db := w.do.UnderlyingDB()
+	// 注入表别名：gorm 支持 "table_name alias" 格式
+	if w.alias != "" {
+		db = db.Table(db.Statement.Table + " " + w.alias)
 	}
-	return w.replaceDB(applyCondGroup(w.do.UnderlyingDB(), w.group))
+	if !w.group.isEmpty() {
+		db = applyCondGroup(db, w.group)
+	}
+	newDO := w.do.WithContext(w.ctx)
+	newDO.ReplaceDB(db)
+	return newDO
 }
 
 // ================== SQL 构建（内部） ==================
@@ -399,7 +428,6 @@ func applyCondGroup(db *gorm.DB, group *condGroup) *gorm.DB {
 	for _, item := range group.conds {
 		switch {
 		case item.isFnGroup:
-			// 函数分组：递归构建子组，加括号后 AND/OR 连接
 			subDB := applyCondGroup(db.Session(&gorm.Session{NewDB: true}), item.subGroup)
 			if item.typ == condOr {
 				db = db.Or(subDB)
@@ -407,7 +435,6 @@ func applyCondGroup(db *gorm.DB, group *condGroup) *gorm.DB {
 				db = db.Where(subDB)
 			}
 		case item.isGroup:
-			// 简单分组：多个 expr 逐个 AND 后加括号
 			subDB := db.Session(&gorm.Session{NewDB: true})
 			for _, expr := range item.exprs {
 				subDB = subDB.Where(expr)
@@ -418,14 +445,12 @@ func applyCondGroup(db *gorm.DB, group *condGroup) *gorm.DB {
 				db = db.Where(subDB)
 			}
 		case item.isRaw:
-			// 原生 SQL
 			if item.typ == condOr {
 				db = db.Or(item.rawSQL, item.rawArgs...)
 			} else {
 				db = db.Where(item.rawSQL, item.rawArgs...)
 			}
 		default:
-			// 普通 field.Expr
 			if item.typ == condOr {
 				db = db.Or(item.expr)
 			} else {

@@ -1,19 +1,8 @@
 // Package db 提供基于原生 gorm 的链式查询条件构建工具。
 //
-// # 初始化
-//
-// 程序启动时调用 Init 注入全局 *gorm.DB：
-//
-//	func main() {
-//	    dsn := "user:pass@tcp(127.0.0.1:3306)/dbname?charset=utf8mb4&parseTime=True"
-//	    gormDB, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-//	    if err != nil { ... }
-//	    db.Init(gormDB)
-//	}
-//
 // # 快速上手
 //
-//	built := db.NewQuery[model.Account](ctx).
+//	built := query.NewQuery[model.Account](gormDB, ctx).
 //	    LLike("username", username).
 //	    WhereIf(status != 0, "status = ?", status).
 //	    BetweenIfNotZero("created_at", start, end).
@@ -32,16 +21,16 @@
 // # 条件分组
 //
 //	// AND 分组：WHERE (username LIKE '%kw%' OR email LIKE '%kw%')
-//	db.NewQuery[model.Account](ctx).
-//	    WhereGroup(func(q db.IQueryBuilder) {
+//	query.NewQuery[model.Account](gormDB, ctx).
+//	    WhereGroup(func(q query.IQueryBuilder) {
 //	        q.Like("username", keyword).
 //	          WhereIf(true, "email LIKE ?", "%"+keyword+"%")
 //	    }).Build().Find(&list)
 //
 //	// OR 分组：WHERE status = 1 OR (role = 99 AND org_id = 10)
-//	db.NewQuery[model.Account](ctx).
+//	query.NewQuery[model.Account](gormDB, ctx).
 //	    WhereIf(true, "status = ?", 1).
-//	    OrGroup(func(q db.IQueryBuilder) {
+//	    OrGroup(func(q query.IQueryBuilder) {
 //	        q.WhereIf(role != 0, "role = ?", role).
 //	          WhereIf(orgID != 0, "org_id = ?", orgID)
 //	    }).Build().Find(&list)
@@ -54,26 +43,23 @@ import (
 	"gorm.io/gorm"
 )
 
-// globalDB 全局 *gorm.DB 实例，由 Init 注入。
-var globalDB *gorm.DB
-
-// Init 注入全局 *gorm.DB，程序启动时调用一次。
+// NewQuery 创建扩展条件构造器。
+// db 由调用方传入，支持多数据源、多租户、测试替换等场景；ctx 用于链路追踪、超时控制等。
 //
-//	db.Init(gormDB)
-func Init(db *gorm.DB) {
-	globalDB = db
-}
-
-// NewQuery 创建扩展条件构造器，自动绑定 ctx 和数据模型，无需手动传 *gorm.DB。
-//
-//	db.NewQuery[model.Account](ctx).
+//	// 常规用法
+//	query.NewQuery[model.Account](gormDB, ctx).
 //	    LLike("username", username).
 //	    WhereIf(status != 0, "status = ?", status).
 //	    Build().
 //	    Order("created_at DESC").Limit(20).Find(&list)
-func NewQuery[T any](ctx context.Context) IQueryBuilder {
+//
+//	// 多数据源场景
+//	query.NewQuery[model.Account](tenantDB, ctx).
+//	    WhereIf(status != 0, "status = ?", status).
+//	    Build().Find(&list)
+func NewQuery[T any](db *gorm.DB, ctx context.Context) IQueryBuilder {
 	return &Builder{
-		db: globalDB.WithContext(ctx).Model(new(T)),
+		db: db.WithContext(ctx).Model(new(T)),
 	}
 }
 
@@ -149,7 +135,7 @@ type IQueryBuilder interface {
 	// Build 结束扩展条件构建，返回已注入所有条件的原生 *gorm.DB。
 	// 之后可继续调用所有 gorm 原生方法：Select / Joins / Order / Limit / Find / Count 等。
 	//
-	//   built := db.NewQuery[model.Account](ctx).
+	//   built := query.NewQuery[model.Account](gormDB, ctx).
 	//       LLike("username", username).
 	//       WhereIf(status != 0, "status = ?", status).
 	//       Build()
@@ -260,8 +246,8 @@ func applyClause(db *gorm.DB, c *clause) *gorm.DB {
 // FindByPage 泛型分页查询，返回 (数据列表, 总数, error)。
 // 适合结果直接映射到 model struct 的简单列表查询。
 //
-//	list, total, err := db.FindByPage[model.Account](
-//	    db.NewQuery[model.Account](ctx).
+//	list, total, err := query.FindByPage[model.Account](
+//	    query.NewQuery[model.Account](gormDB, ctx).
 //	        LLike("username", username).
 //	        WhereIf(status != 0, "status = ?", status).
 //	        Build().
@@ -293,8 +279,8 @@ func FindByPage[T any](q *gorm.DB, pageNum, pageSize int) ([]T, int64, error) {
 //	    DeptName string `json:"deptName"` // 来自 join
 //	}
 //
-//	list, total, err := db.ScanByPage[AccountVO](
-//	    db.NewQuery[model.Account](ctx).
+//	list, total, err := query.ScanByPage[AccountVO](
+//	    query.NewQuery[model.Account](gormDB, ctx).
 //	        LLike("a.username", username).
 //	        WhereIf(status != 0, "a.status = ?", status).
 //	        Build().
