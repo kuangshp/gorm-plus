@@ -1,90 +1,73 @@
+// Package db 提供基于 gorm-gen 的查询条件构建扩展工具。
+//
+// # 设计原则
+//
+// 本包只封装 gorm-gen 原生 DO 不支持的能力：
+//   - 模糊查询自动拼 %（Like / LLike / RLike）
+//   - 可选条件（WhereIf / BetweenIfNotZero）
+//   - 简单分组（WhereGroup / OrGroup）：传入多个 field.Expr，组内 AND 连接，自动加括号
+//   - 函数分组（WhereGroupFn / OrGroupFn）：传入函数，组内可使用完整 wrapper 能力（WhereIf / Like 等）
+//   - 原生 SQL 条件（RawWhere / RawOrWhere / RawWhereIf）
+//
+// gorm-gen 原生已支持的能力（Eq/Gt/Lt/Order/Limit/Count/Find 等）请在 Apply() 后直接调用。
+//
+// # 快速上手
+//
+//	// 场景：账号列表查询，username 后缀模糊，status 非零时过滤，按创建时间倒序，分页
+//	accountList, err := db.Wrap(dao.AccountEntity.WithContext(ctx)).
+//	    LLike(dao.AccountEntity.Username, username).
+//	    WhereIf(status != 0, dao.AccountEntity.Status.Eq(status)).
+//	    Apply().
+//	    Order(dao.AccountEntity.CreatedAt.Desc()).
+//	    Limit(20).Offset(0).
+//	    Find()
+//
+// # 简单分组（WhereGroup / OrGroup）
+//
+//	// AND 分组：WHERE (username LIKE '%kw%' AND status = 1)
+//	db.Wrap(dao.AccountEntity.WithContext(ctx)).
+//	    WhereGroup(
+//	        dao.AccountEntity.Username.Like("%kw%"),
+//	        dao.AccountEntity.Status.Eq(1),
+//	    ).Apply().Find()
+//
+//	// OR 分组：WHERE status = 1 OR (role = 2 AND dept_id = 10)
+//	db.Wrap(dao.AccountEntity.WithContext(ctx)).
+//	    WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+//	    OrGroup(
+//	        dao.AccountEntity.Role.Eq(2),
+//	        dao.AccountEntity.DeptID.Eq(10),
+//	    ).Apply().Find()
+//
+// # 函数分组（WhereGroupFn / OrGroupFn）
+//
+//	// AND 函数分组：组内可用 WhereIf / Like 等完整能力
+//	// WHERE (username LIKE '%admin%' AND status = 1)  -- status=0 时无 status 条件
+//	db.Wrap(dao.AccountEntity.WithContext(ctx)).
+//	    WhereGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
+//	        w.LLike(dao.AccountEntity.Username, username).
+//	          WhereIf(status != 0, dao.AccountEntity.Status.Eq(status))
+//	    }).Apply().Find()
+//
+//	// OR 函数分组：WHERE org_id = 1 OR (username LIKE '%admin' AND role = 99)
+//	db.Wrap(dao.AccountEntity.WithContext(ctx)).
+//	    WhereIf(true, dao.AccountEntity.OrgID.Eq(orgID)).
+//	    OrGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
+//	        w.LLike(dao.AccountEntity.Username, username).
+//	          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
+//	    }).Apply().Find()
 package query
 
 import (
-	"gorm.io/gen"
+	"context"
+	"reflect"
+
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
 )
 
-// ================== IGenWrapper：gorm-gen 类型安全链式构造器 ==================
-//
-// IGenWrapper 是专为 gorm-gen 生成的 Do 对象设计的链式条件构造器。
-// 与 IQueryBuilder（基于字符串列名）的区别：
-//
-//	IQueryBuilder：.Eq("user_id", 123)   → 字符串列名，运行时才报错
-//	IGenWrapper：  .Always(dao.User.ID.Eq(123)) → 字段对象，编译期类型检查，IDE 可跳转
-//
-// ── 核心优势 ─────────────────────────────────────────────────
-//
-//   - 编译期类型安全：字段名、字段类型均由 gorm-gen 保证，不存在列名拼写错误
-//   - IDE 可跳转：字段对象可以直接跳转到 model 定义
-//   - 与 Do 对象无缝衔接：Apply() 返回原始 Do 对象，继续 gorm-gen 原生链式调用
-//   - 条件隔离：所有条件包在一层括号内，与 Do 对象上已有的条件完全隔离，不会产生 OR 污染
-//
-// ── 使用流程 ─────────────────────────────────────────────────
-//
-//  1. GenWrap(do) 创建 wrapper
-//  2. 链式添加条件（EqIfNotZero / InIfNotEmpty / RawWhere 等）
-//  3. Apply() 将条件应用到 Do 对象，返回原始 Do
-//  4. 继续使用 Do 对象的原生方法（Find / Scan / Order / LeftJoin 等）
-//
-// ── 快速上手 ─────────────────────────────────────────────────
-//
-//	// 分页列表
-//	entities, total, err := query.GenWrap(dao.OrderEntity.WithContext(ctx)).
-//	    Always(dao.OrderEntity.TenantID.Eq(tenantID)).      // 固定条件（也可交由多租户插件自动注入）
-//	    EqIfNotZero(dao.OrderEntity.UserID.Eq(userID), userID).
-//	    EqIfNotNil(dao.OrderEntity.Status.Eq(*statusPtr), statusPtr).
-//	    LikeIfNotEmpty(dao.OrderEntity.OrderNo.Like(keyword), keyword).
-//	    GteIfNotZero(dao.OrderEntity.CreatedAt.Gte(startTime), startTime).
-//	    LteIfNotZero(dao.OrderEntity.CreatedAt.Lte(endTime), endTime).
-//	    InIfNotEmpty(dao.OrderEntity.DeptID.In(deptIDs...), deptIDs).
-//	    Apply().
-//	    Order(dao.OrderEntity.CreatedAt.Desc()).
-//	    FindByPage(offset, limit)
-//
-//	// 联表查询
-//	var result []OrderWithUserVO
-//	err := query.GenWrap(dao.OrderEntity.WithContext(ctx)).
-//	    Always(dao.OrderEntity.Status.Eq(int64(2))).
-//	    GteIfNotZero(dao.OrderEntity.Amount.Gte(minAmount), minAmount).
-//	    Apply().
-//	    Select(dao.OrderEntity.ID, dao.OrderEntity.OrderNo, dao.UserEntity.Username).
-//	    LeftJoin(dao.UserEntity, dao.OrderEntity.UserID.EqCol(dao.UserEntity.ID)).
-//	    Scan(&result)
-//
-//	// OR 条件分组
-//	entities, err := query.GenWrap(dao.UserEntity.WithContext(ctx)).
-//	    Always(dao.UserEntity.Status.Eq(int64(1))).
-//	    OrGroup(func(w query.IGenWrapper[*dao.userEntityDo]) {
-//	        w.Always(dao.UserEntity.RoleID.Eq(int64(1))).
-//	            OrGroup(func(w query.IGenWrapper[*dao.userEntityDo]) {
-//	                w.Always(dao.UserEntity.RoleID.Eq(int64(2))).
-//	                    Always(dao.UserEntity.DeptID.Eq(deptID))
-//	            })
-//	    }).
-//	    Apply().Find()
-//	// → WHERE (status = 1) AND ((role_id = 1) OR (role_id = 2 AND dept_id = ?))
-//
-//	// 子查询
-//	subDB := dao.DeptEntity.WithContext(ctx).
-//	    Select(dao.DeptEntity.ID).
-//	    Where(dao.DeptEntity.Status.Eq(int64(1))).
-//	    UnderlyingDB()
-//	entities, err := query.GenWrap(dao.UserEntity.WithContext(ctx)).
-//	    SubQueryIn(dao.UserEntity.DeptID, subDB). // WHERE dept_id IN (SELECT id FROM dept WHERE status = 1)
-//	    Apply().Find()
-//
-// ── 注意事项 ─────────────────────────────────────────────────
-//
-//   - ⚠️ bool 字段勿用 EqIfNotZero（false 会被当零值跳过）→ 改用 If(expr, true/false)
-//   - ⚠️ Page() 与 Limit()/Offset() 互斥，Page 优先
-//   - ⚠️ groupWrapper.Apply() 在 WhereGroup/OrGroup 回调内被调用时会 panic（设计上不允许）
-//   - FromDo(do) 与 GenWrap(do) 等价，仅语义区别（FromDo 表示衔接已有 Do）
+// ================== 内部条件结构 ==================
 
-// ================== 条件结构 ==================
-
-// condType 条件类型：AND 或 OR
 type condType int
 
 const (
@@ -92,895 +75,357 @@ const (
 	condOr
 )
 
-// condItem 单个条件项，支持四种模式：
-//   - 普通表达式：expr 非 nil，isRaw=false，isNested=false
-//   - 嵌套分组：isNested=true，subCond 非 nil
-//   - 原生 SQL：isRaw=true，subDB=nil
-//   - 子查询：isRaw=true，subDB 非 nil，rawSQL 含占位符
+// condItem 表示一个条件节点，支持四种形态：
+//   - 普通 field.Expr（gorm-gen 列表达式）
+//   - 简单分组（WhereGroup / OrGroup）：多个 expr 加括号，组内 AND 连接
+//   - 函数分组（WhereGroupFn / OrGroupFn）：组内可用完整 wrapper 能力
+//   - 原生 SQL（RawWhere / RawOrWhere）
 type condItem struct {
-	expr     field.Expr
-	subCond  *condGroup
-	subDB    *gorm.DB // 子查询，非 nil 时走子查询渲染路径
-	rawSQL   string
-	rawArgs  []any
-	typ      condType
-	isNested bool
-	isRaw    bool
+	expr      field.Expr   // 普通列表达式
+	exprs     []field.Expr // 简单分组内的多个表达式
+	subGroup  *condGroup   // 函数分组内构建出的条件组
+	rawSQL    string       // 原生 SQL 模板
+	rawArgs   []any        // 原生 SQL 参数
+	typ       condType     // condAnd 或 condOr
+	isGroup   bool         // 简单分组节点
+	isFnGroup bool         // 函数分组节点
+	isRaw     bool         // 原生 SQL 节点
 }
 
-// condGroup 条件组
 type condGroup struct {
 	conds []*condItem
-	typ   condType
 }
 
-func newCondGroup(typ condType) *condGroup {
-	return &condGroup{conds: make([]*condItem, 0), typ: typ}
+func newCondGroup() *condGroup {
+	return &condGroup{conds: make([]*condItem, 0)}
 }
 
 func (g *condGroup) add(item *condItem) { g.conds = append(g.conds, item) }
 func (g *condGroup) isEmpty() bool      { return len(g.conds) == 0 }
 
-// ================== GenDao 约束 ==================
+// ================== 泛型约束 ==================
 
-// GenDao 对 gorm-gen Do 对象的完整约束。
-type GenDao[D any] interface {
-	gen.Dao
+// GenDo 是对 gorm-gen 生成的 DO 的最小接口约束。
+// gorm-gen 生成的每个实体 DO 均自动满足此接口。
+type GenDo[T any] interface {
 	UnderlyingDB() *gorm.DB
-	ReplaceDB(*gorm.DB) D
+	WithContext(ctx context.Context) T
+	ReplaceDB(db *gorm.DB)
+}
+
+// ================== Wrap 入口 ==================
+
+// Wrap 将 gorm-gen 生成的 DO 包裹为 IGenWrapper，开启扩展条件链式构建。
+// 调用 Apply() 后返回原生 DO，可继续使用所有 gorm-gen 原生方法。
+//
+// 示例：
+//
+//	accountList, err := db.Wrap(dao.AccountEntity.WithContext(ctx)).
+//	    LLike(dao.AccountEntity.Username, username).
+//	    WhereIf(status != 0, dao.AccountEntity.Status.Eq(status)).
+//	    Apply().
+//	    Order(dao.AccountEntity.CreatedAt.Desc()).
+//	    Limit(20).
+//	    Find()
+func Wrap[T GenDo[T]](do T) IGenWrapper[T] {
+	return &GenWrapper[T]{
+		do:    do,
+		group: newCondGroup(),
+		replaceDB: func(newDB *gorm.DB) T {
+			newDO := do.WithContext(context.Background())
+			newDO.ReplaceDB(newDB)
+			return newDO
+		},
+	}
 }
 
 // ================== IGenWrapper 接口 ==================
-//
-// gorm-gen 链式条件构造器，基于字段对象（类型安全，IDE 可跳转，编译期检查）。
-//
-// ⚠️ 注意事项：
-//   - bool 字段请勿用 EqIfNotZero（false 会被跳过），改用 If(expr, true)
-//   - OR 条件强制通过 OrGroup 使用，避免与前置条件产生歧义
-//   - Page() 与 Limit()/Offset() 互斥，Page 优先
-//   - 所有条件最终会包在一层括号内（防止与已有 Do 条件产生 OR 污染）
-//   - Raw SQL 会自动包括一层括号，防止优先级歧义
-//
-// 快速使用：
-//
-//	entities, err := query.GenWrap(dao.InterviewEntity.WithContext(ctx)).
-//	    Always(dao.InterviewEntity.Status.Eq(int64(global.InterviewStatusSuccess))).
-//	    EqIfNotZero(dao.InterviewEntity.DeptID.Eq(deptId), deptId).
-//	    GteIfNotZero(dao.InterviewEntity.StartTime.Gte(startDate), startDate).
-//	    LteIfNotZero(dao.InterviewEntity.StartTime.Lte(endDate), endDate).
-//	    InIfNotEmpty(dao.InterviewEntity.ID.In(ids...), ids).
-//	    Apply().
-//	    LeftJoin(dao.ContractEntity, dao.InterviewEntity.ContractID.EqCol(dao.ContractEntity.ID)).
-//	    Select(dao.InterviewEntity.ID, dao.ContractEntity.PaymentType).
-//	    Order(dao.InterviewEntity.StartTime.Desc()).
-//	    Scan(&result)
-type IGenWrapper[D GenDao[D]] interface {
-	// -------- SELECT 指定字段 --------
+
+// IGenWrapper 扩展条件构建器接口，只包含 gorm-gen 原生不支持的能力。
+// 所有方法均支持链式调用，最终通过 Apply() 返回原生 DO。
+type IGenWrapper[T GenDo[T]] interface {
+	// Like 双侧模糊：WHERE col LIKE '%val%'，val 为空时跳过。
 	//
-	// 支持字符串、field.Expr（gorm-gen 字段对象）、CaseWhenBuilder 混用。
-	// Apply() 会在 ReplaceDB 前将 Select 应用到底层 DB。
+	//   .Like(dao.AccountEntity.Username, "admin")
+	//   => WHERE username LIKE '%admin%'
+	Like(col field.Expr, val string) IGenWrapper[T]
+
+	// LLike 左侧模糊：WHERE col LIKE '%val'，val 为空时跳过。
 	//
-	// 示例：
-	//   // 纯字段对象
-	//   .Select(dao.Order.ID, dao.Order.Amount)
+	//   .LLike(dao.AccountEntity.Username, "admin")
+	//   => WHERE username LIKE '%admin'
+	LLike(col field.Expr, val string) IGenWrapper[T]
+
+	// RLike 右侧模糊：WHERE col LIKE 'val%'，val 为空时跳过。
 	//
-	//   // 混用字符串 + 字段对象 + CASE WHEN
-	//   .Select(
-	//       dao.Order.ID,
-	//       "dept_name",
-	//       query.NewCase().When("status=1", "'待审核'").Else("'其他'").As("status_name"),
+	//   .RLike(dao.AccountEntity.Username, "admin")
+	//   => WHERE username LIKE 'admin%'
+	RLike(col field.Expr, val string) IGenWrapper[T]
+
+	// BetweenIfNotZero 范围查询：WHERE col BETWEEN min AND max。
+	// min 或 max 任一为零值时整体跳过。
+	//
+	//   .BetweenIfNotZero(dao.AccountEntity.CreatedAt, startTime, endTime)
+	//   => WHERE created_at BETWEEN '2024-01-01' AND '2024-12-31'
+	BetweenIfNotZero(col field.Expr, min, max any) IGenWrapper[T]
+
+	// WhereIf condition 为 true 时追加一个或多个 AND 条件，否则整体跳过。
+	//
+	//   .WhereIf(status != 0, dao.AccountEntity.Status.Eq(status))
+	//   => WHERE status = 1  （status=0 时无此条件）
+	//
+	//   // 同时追加多个条件（全部 AND 连接）
+	//   .WhereIf(role != 0,
+	//       dao.AccountEntity.Role.Eq(role),
+	//       dao.AccountEntity.IsActive.Eq(true),
 	//   )
+	//   => WHERE role = 2 AND is_active = true
+	WhereIf(condition bool, exprs ...field.Expr) IGenWrapper[T]
+
+	// WhereGroup 将多个 field.Expr 用括号包裹后以 AND 连接到主查询，组内条件以 AND 连接。
+	// 适合组内条件固定、无需条件控制的简单场景。
+	// 需要组内 WhereIf / Like 等能力时请使用 WhereGroupFn。
 	//
-	//   // 原生表达式（用 field.NewUnsafeFieldRaw）
-	//   .Select(dao.Order.ID, field.NewUnsafeFieldRaw("COUNT(*) AS total"))
-	Select(cols ...any) IGenWrapper[D]
+	//   .WhereGroup(
+	//       dao.AccountEntity.Role.Eq(1),
+	//       dao.AccountEntity.Status.Eq(1),
+	//   )
+	//   => WHERE (role = 1 AND status = 1)
+	WhereGroup(exprs ...field.Expr) IGenWrapper[T]
 
-	// -------- 基础条件 --------
-
-	// Always 无条件加入 WHERE，也是传入子查询表达式的入口。
-	Always(expr field.Expr) IGenWrapper[D]
-
-	// If 根据 bool 决定是否加入 WHERE。
-	If(expr field.Expr, condition bool) IGenWrapper[D]
-
-	// -------- 语义条件 --------
-
-	// EqIfNotZero 等于，val 为零值时跳过。⚠️ 不适用于 bool 字段。
-	EqIfNotZero(expr field.Expr, val any) IGenWrapper[D]
-
-	// EqIfNotNil 等于，val 为 nil 时跳过。
-	EqIfNotNil(expr field.Expr, val any) IGenWrapper[D]
-
-	// NeIfNotZero 不等于，val 为零值时跳过。
-	NeIfNotZero(expr field.Expr, val any) IGenWrapper[D]
-
-	// GtIfNotZero 大于，val 为零值时跳过。
-	GtIfNotZero(expr field.Expr, val any) IGenWrapper[D]
-
-	// GteIfNotZero 大于等于，val 为零值时跳过。
-	GteIfNotZero(expr field.Expr, val any) IGenWrapper[D]
-
-	// LtIfNotZero 小于，val 为零值时跳过。
-	LtIfNotZero(expr field.Expr, val any) IGenWrapper[D]
-
-	// LteIfNotZero 小于等于，val 为零值时跳过。
-	LteIfNotZero(expr field.Expr, val any) IGenWrapper[D]
-
-	// LikeIfNotEmpty LIKE %val%，val 为空时跳过。
-	LikeIfNotEmpty(expr field.Expr, val string) IGenWrapper[D]
-
-	// InIfNotEmpty IN，vals 为空时跳过。
-	InIfNotEmpty(expr field.Expr, val any) IGenWrapper[D]
-
-	// NotInIfNotEmpty NOT IN，vals 为空时跳过。
-	NotInIfNotEmpty(expr field.Expr, val any) IGenWrapper[D]
-
-	// BetweenIfNotZero BETWEEN，min 和 max 同时非零才生效。
-	BetweenIfNotZero(expr field.Expr, min, max any) IGenWrapper[D]
-
-	// -------- 核心能力 --------
-
-	// WhereIf 条件为 true 时批量加入 AND WHERE。
-	WhereIf(condition bool, exprs ...field.Expr) IGenWrapper[D]
-
-	// -------- 分组 --------
+	// OrGroup 将多个 field.Expr 用括号包裹后以 OR 连接到主查询，组内条件以 AND 连接。
+	// 需要组内 WhereIf / Like 等能力时请使用 OrGroupFn。
 	//
-	// ⚠️ OR 条件强制通过 OrGroup 使用，禁止裸 OR 散落在链式调用中。
+	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+	//    OrGroup(
+	//        dao.AccountEntity.Role.Eq(99),
+	//        dao.AccountEntity.DeptID.Eq(10),
+	//    )
+	//   => WHERE status = 1 OR (role = 99 AND dept_id = 10)
+	OrGroup(exprs ...field.Expr) IGenWrapper[T]
 
-	// WhereGroup 创建一个 AND 组合条件块（括号内 AND 连接）。
-	// 示例：
-	//   .WhereGroup(func(w IGenWrapper[D]) {
-	//       w.EqIfNotZero(dao.Entity.A, a).
-	//         OrGroup(func(w IGenWrapper[D]) { w.Always(dao.Entity.B.Eq(b)) })
+	// WhereGroupFn 将 fn 内构建的条件用括号包裹后以 AND 连接到主查询。
+	// 组内可使用完整 wrapper 能力：WhereIf / Like / LLike / BetweenIfNotZero / RawWhere 等。
+	//
+	//   // WHERE (username LIKE '%admin' AND status = 1)  -- status=0 时无 status 条件
+	//   .WhereGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
+	//       w.LLike(dao.AccountEntity.Username, username).
+	//         WhereIf(status != 0, dao.AccountEntity.Status.Eq(status))
 	//   })
-	//   → WHERE (a = ? OR (b = ?))
-	WhereGroup(fn func(IGenWrapper[D])) IGenWrapper[D]
-
-	// OrGroup 创建一个 OR 组合条件块（括号内 AND 连接，整体以 OR 接入父层）。
-	// 示例：
-	//   .Always(dao.Entity.X.Eq(1)).
-	//    OrGroup(func(w IGenWrapper[D]) {
-	//        w.EqIfNotZero(dao.Entity.Y, y).EqIfNotZero(dao.Entity.Z, z)
+	//
+	//   // 配合主查询：WHERE org_id = 1 AND (username LIKE '%admin' AND role = 2)
+	//   .WhereIf(true, dao.AccountEntity.OrgID.Eq(orgID)).
+	//    WhereGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
+	//        w.LLike(dao.AccountEntity.Username, username).
+	//          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
 	//    })
-	//   → WHERE (x = 1) OR (y = ? AND z = ?)
-	OrGroup(fn func(IGenWrapper[D])) IGenWrapper[D]
+	WhereGroupFn(fn func(IGenWrapper[T])) IGenWrapper[T]
 
-	// -------- 原生 SQL --------
+	// OrGroupFn 将 fn 内构建的条件用括号包裹后以 OR 连接到主查询。
+	// 组内可使用完整 wrapper 能力：WhereIf / Like / LLike / BetweenIfNotZero / RawWhere 等。
 	//
-	// 适用于 gorm-gen 字段方法无法表达的复杂场景（函数、JSON、全文检索等）。
-	// ⚠️ Raw SQL 会自动包一层括号，防止运算符优先级歧义。
-	// 示例（自动括号效果）：
-	//   .RawWhere("a = 1 OR b = 2")  → WHERE (a = 1 OR b = 2)
-
-	// RawWhere 无条件加入原生 AND WHERE。
-	// 示例：
-	//   .RawWhere("DATE(created_at) = ?", "2024-01-01")
-	//   .RawWhere("JSON_CONTAINS(tags, ?)", `["go","gorm"]`)
-	//   .RawWhere("amount BETWEEN ? AND ?", 100, 500)
-	RawWhere(sql string, args ...any) IGenWrapper[D]
-
-	// RawOrWhere 无条件加入原生 OR WHERE（括号内）。
-	// 示例：
-	//   .Always(dao.Order.Status.Eq(1)).RawOrWhere("amount > ?", 1000)
-	//   → WHERE (status = 1) OR (amount > 1000)
-	RawOrWhere(sql string, args ...any) IGenWrapper[D]
-
-	// RawWhereIf 条件成立时加入原生 AND WHERE。
-	// 示例：
-	//   .RawWhereIf(keyword != "", "MATCH(title, body) AGAINST(?)", keyword)
-	RawWhereIf(condition bool, sql string, args ...any) IGenWrapper[D]
-
-	// -------- 子查询 --------
+	//   // WHERE status = 1 OR (username LIKE '%admin' AND role = 99)
+	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+	//    OrGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
+	//        w.LLike(dao.AccountEntity.Username, username).
+	//          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
+	//    })
 	//
-	// 参数使用 *gorm.DB，由调用方通过 Do 对象链式方法构造后传入。
-	// 构造方式：dao.XxxEntity.WithContext(ctx).Select(dao.Xxx.ID).Where(...).UnderlyingDB()
+	//   // 组内还可以继续嵌套 RawWhere
+	//   .OrGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
+	//       w.WhereIf(orgID != 0, dao.AccountEntity.OrgID.Eq(orgID)).
+	//         RawWhere("deleted_at IS NULL")
+	//   })
+	OrGroupFn(fn func(IGenWrapper[T])) IGenWrapper[T]
+
+	// RawWhere 追加一段原生 SQL 作为 AND 条件，支持占位符 ?。
 	//
-	// 示例：
-	//   subDB := dao.Dept.WithContext(ctx).
-	//       Select(dao.Dept.ID).
-	//       Where(dao.Dept.Status.Eq(1)).
-	//       UnderlyingDB()
+	//   .RawWhere("deleted_at IS NULL AND org_id = ?", orgID)
+	//   => WHERE (deleted_at IS NULL AND org_id = 1)
 	//
-	//   // IN：WHERE dept_id IN (SELECT id FROM dept WHERE status = 1)
-	//   .SubQueryIn(dao.User.DeptID, subDB)
+	//   // 子查询场景
+	//   .RawWhere("id IN (SELECT account_id FROM vip WHERE level > ?)", 2)
+	//   => WHERE (id IN (SELECT account_id FROM vip WHERE level > 2))
+	RawWhere(sql string, args ...any) IGenWrapper[T]
+
+	// RawOrWhere 追加一段原生 SQL 作为 OR 条件。
 	//
-	//   // NOT IN：WHERE dept_id NOT IN (SELECT id FROM dept WHERE ...)
-	//   .SubQueryNotIn(dao.User.DeptID, subDB)
+	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+	//    RawOrWhere("role = ? AND dept_id = ?", 99, 10)
+	//   => WHERE status = 1 OR (role = 99 AND dept_id = 10)
+	RawOrWhere(sql string, args ...any) IGenWrapper[T]
+
+	// RawWhereIf condition 为 true 时才追加原生 SQL AND 条件。
 	//
-	//   // EXISTS：WHERE EXISTS (SELECT id FROM orders WHERE ...)
-	//   .SubQueryExists(subDB)
+	//   .RawWhereIf(orgID > 0, "org_id = ?", orgID)
+	//   => WHERE (org_id = 1)  （orgID=0 时无此条件）
+	RawWhereIf(condition bool, sql string, args ...any) IGenWrapper[T]
+
+	// Apply 结束扩展条件构建，返回已注入所有条件的原生 DO。
+	// 之后可继续调用 gorm-gen 原生方法：Order / Limit / Offset / Count / Find 等。
 	//
-	//   // NOT EXISTS：WHERE NOT EXISTS (SELECT ...)
-	//   .SubQueryNotExists(subDB)
+	//   list, err := db.Wrap(dao.AccountEntity.WithContext(ctx)).
+	//       LLike(dao.AccountEntity.Username, username).
+	//       Apply().
+	//       Order(dao.AccountEntity.CreatedAt.Desc()).
+	//       Limit(pageSize).Offset((page-1)*pageSize).
+	//       Find()
 	//
-	//   // 标量比较：WHERE score = (SELECT MAX(score) FROM exam WHERE ...)
-	//   .SubQueryEq(dao.User.Score, subDB)
-	//   .SubQueryGt(dao.User.Score, subDB)
-	//
-	//   // OR 版本：
-	//   .OrSubQueryIn(dao.User.DeptID, subDB)
-
-	// SubQueryIn WHERE col IN (SELECT ...)
-	SubQueryIn(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryNotIn WHERE col NOT IN (SELECT ...)
-	SubQueryNotIn(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryExists WHERE EXISTS (SELECT ...)
-	SubQueryExists(sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryNotExists WHERE NOT EXISTS (SELECT ...)
-	SubQueryNotExists(sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryEq WHERE col = (SELECT 单值)
-	SubQueryEq(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryNe WHERE col != (SELECT 单值)
-	SubQueryNe(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryGt WHERE col > (SELECT 单值)
-	SubQueryGt(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryGte WHERE col >= (SELECT 单值)
-	SubQueryGte(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryLt WHERE col < (SELECT 单值)
-	SubQueryLt(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// SubQueryLte WHERE col <= (SELECT 单值)
-	SubQueryLte(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// OrSubQueryIn OR col IN (SELECT ...)
-	OrSubQueryIn(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// OrSubQueryNotIn OR col NOT IN (SELECT ...)
-	OrSubQueryNotIn(col field.Expr, sub *gorm.DB) IGenWrapper[D]
-
-	// OrSubQueryExists OR EXISTS (SELECT ...)
-	OrSubQueryExists(sub *gorm.DB) IGenWrapper[D]
-
-	// OrSubQueryNotExists OR NOT EXISTS (SELECT ...)
-	OrSubQueryNotExists(sub *gorm.DB) IGenWrapper[D]
-
-	// -------- 排序 --------
-
-	// OrderAsc 升序排列。
-	OrderAsc(columns ...field.Expr) IGenWrapper[D]
-
-	// OrderDesc 降序排列。
-	OrderDesc(columns ...field.Expr) IGenWrapper[D]
-
-	// -------- 分页 --------
-
-	// Page 分页，page 从 1 开始，⚠️ 与 Limit()/Offset() 互斥，Page 优先。
-	// 示例：.Page(2, 20) → LIMIT 20 OFFSET 20
-	Page(page, size int) IGenWrapper[D]
-
-	// Limit 直接设置返回条数，与 Page() 互斥。
-	Limit(n int) IGenWrapper[D]
-
-	// Offset 直接设置跳过条数，与 Page() 互斥。
-	Offset(n int) IGenWrapper[D]
-
-	// -------- 输出 --------
-
-	// Apply 将所有条件应用到 Do，返回原始 Do 继续 gorm-gen 链式调用。
-	Apply() D
+	//   total, err := db.Wrap(dao.AccountEntity.WithContext(ctx)).
+	//       LLike(dao.AccountEntity.Username, username).
+	//       Apply().
+	//       Count()
+	Apply() T
 }
 
-// ================== condBuilder：统一条件构建内核 ==================
-//
-// GenWrapper 和 groupWrapper 的条件逻辑完全相同，抽取到 condBuilder 统一实现。
-// GenWrapper  持有 condBuilder 作为根节点，同时管理排序、分页、Do 对象。
-// groupWrapper 持有 condBuilder 作为子节点，Apply/Page/Limit/Offset 均为空操作。
+// ================== GenWrapper 实现 ==================
 
-type condBuilder[D GenDao[D]] struct {
-	do     D
-	group  *condGroup
-	orders *[]field.Expr
+type GenWrapper[T GenDo[T]] struct {
+	do        T
+	group     *condGroup
+	replaceDB func(*gorm.DB) T
 }
 
-func newCondBuilder[D GenDao[D]](do D, group *condGroup, orders *[]field.Expr) *condBuilder[D] {
-	return &condBuilder[D]{do: do, group: group, orders: orders}
+func (w *GenWrapper[T]) addExpr(expr field.Expr, typ condType) {
+	w.group.add(&condItem{expr: expr, typ: typ})
 }
 
-func (b *condBuilder[D]) addExpr(expr field.Expr, typ condType) {
-	b.group.add(&condItem{expr: expr, typ: typ})
-}
-
-func (b *condBuilder[D]) addRaw(sql string, args []any, typ condType) {
+func (w *GenWrapper[T]) addRaw(sql string, args []any, typ condType) {
 	if sql == "" {
 		return
 	}
-	b.group.add(&condItem{rawSQL: "(" + sql + ")", rawArgs: args, typ: typ, isRaw: true})
+	w.group.add(&condItem{rawSQL: "(" + sql + ")", rawArgs: args, typ: typ, isRaw: true})
 }
 
-func (b *condBuilder[D]) addGroup(sub *condGroup, typ condType) {
-	if !sub.isEmpty() {
-		b.group.add(&condItem{subCond: sub, typ: typ, isNested: true})
-	}
-}
-
-// addSubQuery 添加子查询条件。
-//   - col 非 nil：rawSQL 形如 "? IN (?)"，渲染时 col.RawExpr() 作为第一个参数
-//   - col 为 nil：rawSQL 形如 "EXISTS (?)"，渲染时只传 subDB
-func (b *condBuilder[D]) addSubQuery(rawSQL string, col field.Expr, sub *gorm.DB, typ condType) {
-	b.group.add(&condItem{expr: col, subDB: sub, rawSQL: rawSQL, typ: typ, isRaw: true})
-}
-
-func (b *condBuilder[D]) buildSub(typ condType, fn func(IGenWrapper[D])) *condGroup {
-	sub := newCondGroup(typ)
-	fn(&groupWrapper[D]{condBuilder: newCondBuilder(b.do, sub, b.orders)})
-	return sub
-}
-
-func (b *condBuilder[D]) always(expr field.Expr) {
-	b.addExpr(expr, condAnd)
-}
-
-func (b *condBuilder[D]) ifCond(expr field.Expr, condition bool) {
-	if condition {
-		b.addExpr(expr, condAnd)
-	}
-}
-
-func (b *condBuilder[D]) whereIf(condition bool, exprs ...field.Expr) {
-	if !condition {
+func (w *GenWrapper[T]) addGroup(exprs []field.Expr, typ condType) {
+	if len(exprs) == 0 {
 		return
 	}
-	for _, expr := range exprs {
-		b.addExpr(expr, condAnd)
+	w.group.add(&condItem{exprs: exprs, typ: typ, isGroup: true})
+}
+
+func (w *GenWrapper[T]) addFnGroup(fn func(IGenWrapper[T]), typ condType) {
+	sub := &GenWrapper[T]{do: w.do, group: newCondGroup(), replaceDB: w.replaceDB}
+	fn(sub)
+	if !sub.group.isEmpty() {
+		w.group.add(&condItem{subGroup: sub.group, typ: typ, isFnGroup: true})
 	}
 }
 
-func (b *condBuilder[D]) eqIfNotZero(expr field.Expr, val any)       { b.ifCond(expr, !isZeroVal(val)) }
-func (b *condBuilder[D]) eqIfNotNil(expr field.Expr, val any)        { b.ifCond(expr, !isNilVal(val)) }
-func (b *condBuilder[D]) neIfNotZero(expr field.Expr, val any)       { b.ifCond(expr, !isZeroVal(val)) }
-func (b *condBuilder[D]) gtIfNotZero(expr field.Expr, val any)       { b.ifCond(expr, !isZeroVal(val)) }
-func (b *condBuilder[D]) gteIfNotZero(expr field.Expr, val any)      { b.ifCond(expr, !isZeroVal(val)) }
-func (b *condBuilder[D]) ltIfNotZero(expr field.Expr, val any)       { b.ifCond(expr, !isZeroVal(val)) }
-func (b *condBuilder[D]) lteIfNotZero(expr field.Expr, val any)      { b.ifCond(expr, !isZeroVal(val)) }
-func (b *condBuilder[D]) likeIfNotEmpty(expr field.Expr, val string) { b.ifCond(expr, val != "") }
-func (b *condBuilder[D]) inIfNotEmpty(expr field.Expr, val any)      { b.ifCond(expr, !isEmptyVal(val)) }
-func (b *condBuilder[D]) notInIfNotEmpty(expr field.Expr, val any)   { b.ifCond(expr, !isEmptyVal(val)) }
-func (b *condBuilder[D]) betweenIfNotZero(expr field.Expr, min, max any) {
-	b.ifCond(expr, !isZeroVal(min) && !isZeroVal(max))
-}
-
-func (b *condBuilder[D]) rawWhere(sql string, args ...any)   { b.addRaw(sql, args, condAnd) }
-func (b *condBuilder[D]) rawOrWhere(sql string, args ...any) { b.addRaw(sql, args, condOr) }
-func (b *condBuilder[D]) rawWhereIf(condition bool, sql string, args ...any) {
-	if condition {
-		b.addRaw(sql, args, condAnd)
-	}
-}
-
-// ---- 子查询内部方法 ----
-
-func (b *condBuilder[D]) subQueryIn(col field.Expr, sub *gorm.DB, ct condType) {
-	b.addSubQuery("? IN (?)", col, sub, ct)
-}
-func (b *condBuilder[D]) subQueryNotIn(col field.Expr, sub *gorm.DB, ct condType) {
-	b.addSubQuery("? NOT IN (?)", col, sub, ct)
-}
-func (b *condBuilder[D]) subQueryExists(sub *gorm.DB, ct condType) {
-	b.addSubQuery("EXISTS (?)", nil, sub, ct)
-}
-func (b *condBuilder[D]) subQueryNotExists(sub *gorm.DB, ct condType) {
-	b.addSubQuery("NOT EXISTS (?)", nil, sub, ct)
-}
-func (b *condBuilder[D]) subQueryEq(col field.Expr, sub *gorm.DB, ct condType) {
-	b.addSubQuery("? = (?)", col, sub, ct)
-}
-func (b *condBuilder[D]) subQueryNe(col field.Expr, sub *gorm.DB, ct condType) {
-	b.addSubQuery("? != (?)", col, sub, ct)
-}
-func (b *condBuilder[D]) subQueryGt(col field.Expr, sub *gorm.DB, ct condType) {
-	b.addSubQuery("? > (?)", col, sub, ct)
-}
-func (b *condBuilder[D]) subQueryGte(col field.Expr, sub *gorm.DB, ct condType) {
-	b.addSubQuery("? >= (?)", col, sub, ct)
-}
-func (b *condBuilder[D]) subQueryLt(col field.Expr, sub *gorm.DB, ct condType) {
-	b.addSubQuery("? < (?)", col, sub, ct)
-}
-func (b *condBuilder[D]) subQueryLte(col field.Expr, sub *gorm.DB, ct condType) {
-	b.addSubQuery("? <= (?)", col, sub, ct)
-}
-
-func (b *condBuilder[D]) whereGroup(fn func(IGenWrapper[D])) {
-	b.addGroup(b.buildSub(condAnd, fn), condAnd)
-}
-
-func (b *condBuilder[D]) orGroup(fn func(IGenWrapper[D])) {
-	b.addGroup(b.buildSub(condAnd, fn), condOr)
-}
-
-func (b *condBuilder[D]) orderAsc(orders *[]field.Expr, columns ...field.Expr) {
-	*orders = append(*orders, columns...)
-}
-
-func (b *condBuilder[D]) orderDesc(orders *[]field.Expr, columns ...field.Expr) {
-	for _, col := range columns {
-		if d, ok := any(col).(interface{ Desc() field.Expr }); ok {
-			*orders = append(*orders, d.Desc())
+func (w *GenWrapper[T]) like(col field.Expr, pattern string) {
+	if pattern != "" {
+		if expr, ok := callFieldMethod(col, "Like", pattern).(field.Expr); ok {
+			w.addExpr(expr, condAnd)
 		}
 	}
 }
 
-// ================== GenWrapper ==================
-
-// GenWrapper gorm-gen 链式条件构造器（根节点）
-type GenWrapper[D GenDao[D]] struct {
-	*condBuilder[D]
-	do        D
-	orders    []field.Expr
-	selects   []any
-	page      int
-	pageSize  int
-	limit     int
-	offset    int
-	hasOffset bool
+func (w *GenWrapper[T]) Like(col field.Expr, val string) IGenWrapper[T] {
+	w.like(col, "%"+val+"%")
+	return w
 }
-
-// GenWrap 从干净 Do 对象创建 GenWrapper。
-func GenWrap[D GenDao[D]](do D) IGenWrapper[D] {
-	w := &GenWrapper[D]{do: do, orders: make([]field.Expr, 0)}
-	w.condBuilder = newCondBuilder(do, newCondGroup(condAnd), &w.orders)
+func (w *GenWrapper[T]) LLike(col field.Expr, val string) IGenWrapper[T] {
+	w.like(col, "%"+val)
+	return w
+}
+func (w *GenWrapper[T]) RLike(col field.Expr, val string) IGenWrapper[T] {
+	w.like(col, val+"%")
 	return w
 }
 
-// FromDo 将已有 Do 对象包装为 GenWrapper，原有条件保留。
-// 建议优先使用 GenWrap，仅在需要衔接已有 Do 时使用 FromDo。
-func FromDo[D GenDao[D]](do D) IGenWrapper[D] {
-	return GenWrap(do)
-}
-
-func (w *GenWrapper[D]) Select(cols ...any) IGenWrapper[D] {
-	w.selects = append(w.selects, cols...)
-	return w
-}
-
-func (w *GenWrapper[D]) Always(expr field.Expr) IGenWrapper[D] {
-	w.always(expr)
-	return w
-}
-
-func (w *GenWrapper[D]) If(expr field.Expr, condition bool) IGenWrapper[D] {
-	w.ifCond(expr, condition)
-	return w
-}
-
-func (w *GenWrapper[D]) EqIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	w.eqIfNotZero(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) EqIfNotNil(expr field.Expr, val any) IGenWrapper[D] {
-	w.eqIfNotNil(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) NeIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	w.neIfNotZero(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) GtIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	w.gtIfNotZero(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) GteIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	w.gteIfNotZero(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) LtIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	w.ltIfNotZero(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) LteIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	w.lteIfNotZero(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) LikeIfNotEmpty(expr field.Expr, val string) IGenWrapper[D] {
-	w.likeIfNotEmpty(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) InIfNotEmpty(expr field.Expr, val any) IGenWrapper[D] {
-	w.inIfNotEmpty(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) NotInIfNotEmpty(expr field.Expr, val any) IGenWrapper[D] {
-	w.notInIfNotEmpty(expr, val)
-	return w
-}
-
-func (w *GenWrapper[D]) BetweenIfNotZero(expr field.Expr, min, max any) IGenWrapper[D] {
-	w.betweenIfNotZero(expr, min, max)
-	return w
-}
-
-func (w *GenWrapper[D]) WhereIf(condition bool, exprs ...field.Expr) IGenWrapper[D] {
-	w.whereIf(condition, exprs...)
-	return w
-}
-
-func (w *GenWrapper[D]) WhereGroup(fn func(IGenWrapper[D])) IGenWrapper[D] {
-	w.whereGroup(fn)
-	return w
-}
-
-func (w *GenWrapper[D]) OrGroup(fn func(IGenWrapper[D])) IGenWrapper[D] {
-	w.orGroup(fn)
-	return w
-}
-
-func (w *GenWrapper[D]) RawWhere(sql string, args ...any) IGenWrapper[D] {
-	w.rawWhere(sql, args...)
-	return w
-}
-
-func (w *GenWrapper[D]) RawOrWhere(sql string, args ...any) IGenWrapper[D] {
-	w.rawOrWhere(sql, args...)
-	return w
-}
-
-func (w *GenWrapper[D]) RawWhereIf(condition bool, sql string, args ...any) IGenWrapper[D] {
-	w.rawWhereIf(condition, sql, args...)
-	return w
-}
-
-// ---- 子查询接口实现（GenWrapper）----
-
-func (w *GenWrapper[D]) SubQueryIn(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryIn(col, sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryNotIn(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryNotIn(col, sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryExists(sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryExists(sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryNotExists(sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryNotExists(sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryEq(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryEq(col, sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryNe(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryNe(col, sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryGt(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryGt(col, sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryGte(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryGte(col, sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryLt(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryLt(col, sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) SubQueryLte(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryLte(col, sub, condAnd)
-	return w
-}
-func (w *GenWrapper[D]) OrSubQueryIn(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryIn(col, sub, condOr)
-	return w
-}
-func (w *GenWrapper[D]) OrSubQueryNotIn(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryNotIn(col, sub, condOr)
-	return w
-}
-func (w *GenWrapper[D]) OrSubQueryExists(sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryExists(sub, condOr)
-	return w
-}
-func (w *GenWrapper[D]) OrSubQueryNotExists(sub *gorm.DB) IGenWrapper[D] {
-	w.subQueryNotExists(sub, condOr)
-	return w
-}
-
-func (w *GenWrapper[D]) OrderAsc(columns ...field.Expr) IGenWrapper[D] {
-	w.orderAsc(&w.orders, columns...)
-	return w
-}
-
-func (w *GenWrapper[D]) OrderDesc(columns ...field.Expr) IGenWrapper[D] {
-	w.orderDesc(&w.orders, columns...)
-	return w
-}
-
-func (w *GenWrapper[D]) Page(page, size int) IGenWrapper[D] {
-	if page > 0 && size > 0 {
-		w.page = page
-		w.pageSize = size
+func (w *GenWrapper[T]) BetweenIfNotZero(col field.Expr, min, max any) IGenWrapper[T] {
+	if !isZeroVal(min) && !isZeroVal(max) {
+		if expr, ok := callFieldMethod(col, "Between", min, max).(field.Expr); ok {
+			w.addExpr(expr, condAnd)
+		}
 	}
 	return w
 }
 
-func (w *GenWrapper[D]) Limit(n int) IGenWrapper[D] {
-	if n > 0 {
-		w.limit = n
+func (w *GenWrapper[T]) WhereIf(condition bool, exprs ...field.Expr) IGenWrapper[T] {
+	if condition {
+		for _, expr := range exprs {
+			w.addExpr(expr, condAnd)
+		}
 	}
 	return w
 }
 
-func (w *GenWrapper[D]) Offset(n int) IGenWrapper[D] {
-	if n >= 0 {
-		w.offset = n
-		w.hasOffset = true
+func (w *GenWrapper[T]) WhereGroup(exprs ...field.Expr) IGenWrapper[T] {
+	w.addGroup(exprs, condAnd)
+	return w
+}
+
+func (w *GenWrapper[T]) OrGroup(exprs ...field.Expr) IGenWrapper[T] {
+	w.addGroup(exprs, condOr)
+	return w
+}
+
+func (w *GenWrapper[T]) WhereGroupFn(fn func(IGenWrapper[T])) IGenWrapper[T] {
+	w.addFnGroup(fn, condAnd)
+	return w
+}
+
+func (w *GenWrapper[T]) OrGroupFn(fn func(IGenWrapper[T])) IGenWrapper[T] {
+	w.addFnGroup(fn, condOr)
+	return w
+}
+
+func (w *GenWrapper[T]) RawWhere(sql string, args ...any) IGenWrapper[T] {
+	w.addRaw(sql, args, condAnd)
+	return w
+}
+func (w *GenWrapper[T]) RawOrWhere(sql string, args ...any) IGenWrapper[T] {
+	w.addRaw(sql, args, condOr)
+	return w
+}
+func (w *GenWrapper[T]) RawWhereIf(condition bool, sql string, args ...any) IGenWrapper[T] {
+	if condition {
+		w.addRaw(sql, args, condAnd)
 	}
 	return w
 }
 
-// Apply 将所有条件、排序、分页应用到 Do，返回原始 Do 继续链式调用。
-func (w *GenWrapper[D]) Apply() D {
-	if w.group.isEmpty() && len(w.orders) == 0 && len(w.selects) == 0 && w.page == 0 && w.limit == 0 && !w.hasOffset {
+func (w *GenWrapper[T]) Apply() T {
+	if w.group.isEmpty() {
 		return w.do
 	}
-
-	db := w.do.UnderlyingDB()
-
-	// SELECT
-	if len(w.selects) > 0 {
-		db = db.Select(resolveSelects(w.selects))
-	}
-
-	// 根条件组统一包一层括号，与 Do 已有条件隔离
-	if !w.group.isEmpty() {
-		db = db.Where(func(tx *gorm.DB) *gorm.DB {
-			return applyCondGroup(tx, w.group)
-		})
-	}
-
-	for _, order := range w.orders {
-		db = db.Order(order)
-	}
-
-	if w.page > 0 && w.pageSize > 0 {
-		db = db.Limit(w.pageSize).Offset((w.page - 1) * w.pageSize)
-	} else {
-		if w.limit > 0 {
-			db = db.Limit(w.limit)
-		}
-		if w.hasOffset {
-			db = db.Offset(w.offset)
-		}
-	}
-
-	return w.do.ReplaceDB(db)
+	return w.replaceDB(applyCondGroup(w.do.UnderlyingDB(), w.group))
 }
 
-// ================== groupWrapper ==================
-
-// groupWrapper 分组内部包装器，供 WhereGroup/OrGroup 回调使用。
-// ⚠️ Apply/Page/Limit/Offset 在此上下文无意义：Apply() 调用直接 panic，其余静默忽略。
-type groupWrapper[D GenDao[D]] struct {
-	*condBuilder[D]
-}
-
-func (g *groupWrapper[D]) Always(expr field.Expr) IGenWrapper[D] {
-	g.always(expr)
-	return g
-}
-
-func (g *groupWrapper[D]) If(expr field.Expr, condition bool) IGenWrapper[D] {
-	g.ifCond(expr, condition)
-	return g
-}
-
-func (g *groupWrapper[D]) EqIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	g.eqIfNotZero(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) EqIfNotNil(expr field.Expr, val any) IGenWrapper[D] {
-	g.eqIfNotNil(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) NeIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	g.neIfNotZero(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) GtIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	g.gtIfNotZero(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) GteIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	g.gteIfNotZero(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) LtIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	g.ltIfNotZero(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) LteIfNotZero(expr field.Expr, val any) IGenWrapper[D] {
-	g.lteIfNotZero(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) LikeIfNotEmpty(expr field.Expr, val string) IGenWrapper[D] {
-	g.likeIfNotEmpty(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) InIfNotEmpty(expr field.Expr, val any) IGenWrapper[D] {
-	g.inIfNotEmpty(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) NotInIfNotEmpty(expr field.Expr, val any) IGenWrapper[D] {
-	g.notInIfNotEmpty(expr, val)
-	return g
-}
-
-func (g *groupWrapper[D]) BetweenIfNotZero(expr field.Expr, min, max any) IGenWrapper[D] {
-	g.betweenIfNotZero(expr, min, max)
-	return g
-}
-
-func (g *groupWrapper[D]) WhereIf(condition bool, exprs ...field.Expr) IGenWrapper[D] {
-	g.whereIf(condition, exprs...)
-	return g
-}
-
-func (g *groupWrapper[D]) WhereGroup(fn func(IGenWrapper[D])) IGenWrapper[D] {
-	g.whereGroup(fn)
-	return g
-}
-
-func (g *groupWrapper[D]) OrGroup(fn func(IGenWrapper[D])) IGenWrapper[D] {
-	g.orGroup(fn)
-	return g
-}
-
-func (g *groupWrapper[D]) RawWhere(sql string, args ...any) IGenWrapper[D] {
-	g.rawWhere(sql, args...)
-	return g
-}
-
-func (g *groupWrapper[D]) RawOrWhere(sql string, args ...any) IGenWrapper[D] {
-	g.rawOrWhere(sql, args...)
-	return g
-}
-
-func (g *groupWrapper[D]) RawWhereIf(condition bool, sql string, args ...any) IGenWrapper[D] {
-	g.rawWhereIf(condition, sql, args...)
-	return g
-}
-
-// ---- 子查询接口实现（groupWrapper）----
-
-func (g *groupWrapper[D]) SubQueryIn(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryIn(col, sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryNotIn(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryNotIn(col, sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryExists(sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryExists(sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryNotExists(sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryNotExists(sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryEq(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryEq(col, sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryNe(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryNe(col, sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryGt(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryGt(col, sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryGte(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryGte(col, sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryLt(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryLt(col, sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) SubQueryLte(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryLte(col, sub, condAnd)
-	return g
-}
-func (g *groupWrapper[D]) OrSubQueryIn(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryIn(col, sub, condOr)
-	return g
-}
-func (g *groupWrapper[D]) OrSubQueryNotIn(col field.Expr, sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryNotIn(col, sub, condOr)
-	return g
-}
-func (g *groupWrapper[D]) OrSubQueryExists(sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryExists(sub, condOr)
-	return g
-}
-func (g *groupWrapper[D]) OrSubQueryNotExists(sub *gorm.DB) IGenWrapper[D] {
-	g.subQueryNotExists(sub, condOr)
-	return g
-}
-
-func (g *groupWrapper[D]) OrderAsc(columns ...field.Expr) IGenWrapper[D] {
-	g.orderAsc(g.orders, columns...)
-	return g
-}
-
-func (g *groupWrapper[D]) OrderDesc(columns ...field.Expr) IGenWrapper[D] {
-	g.orderDesc(g.orders, columns...)
-	return g
-}
-
-func (g *groupWrapper[D]) Page(_, _ int) IGenWrapper[D]   { return g }
-func (g *groupWrapper[D]) Limit(_ int) IGenWrapper[D]     { return g }
-func (g *groupWrapper[D]) Offset(_ int) IGenWrapper[D]    { return g }
-func (g *groupWrapper[D]) Select(_ ...any) IGenWrapper[D] { return g } // 分组内无意义，静默忽略
-
-func (g *groupWrapper[D]) Apply() D {
-	panic("query: groupWrapper.Apply() must not be called inside WhereGroup/OrGroup callback")
-}
-
-// ================== SQL 构建 ==================
+// ================== SQL 构建（内部） ==================
 
 func applyCondGroup(db *gorm.DB, group *condGroup) *gorm.DB {
 	for _, item := range group.conds {
 		switch {
-		case item.isRaw && item.subDB != nil:
-			// 子查询：col 非 nil 时 col.RawExpr() 作为第一个参数，subDB 作为最后一个参数
-			// gorm 会将 *gorm.DB 类型的参数自动展开为子查询 SQL
-			var args []any
-			if item.expr != nil {
-				args = []any{item.expr.RawExpr(), item.subDB}
+		case item.isFnGroup:
+			// 函数分组：递归构建子组，加括号后 AND/OR 连接
+			subDB := applyCondGroup(db.Session(&gorm.Session{NewDB: true}), item.subGroup)
+			if item.typ == condOr {
+				db = db.Or(subDB)
 			} else {
-				args = []any{item.subDB}
+				db = db.Where(subDB)
+			}
+		case item.isGroup:
+			// 简单分组：多个 expr 逐个 AND 后加括号
+			subDB := db.Session(&gorm.Session{NewDB: true})
+			for _, expr := range item.exprs {
+				subDB = subDB.Where(expr)
 			}
 			if item.typ == condOr {
-				db = db.Or(item.rawSQL, args...)
+				db = db.Or(subDB)
 			} else {
-				db = db.Where(item.rawSQL, args...)
+				db = db.Where(subDB)
 			}
 		case item.isRaw:
-			// 普通原生 SQL（addRaw 阶段已自动包括括号）
+			// 原生 SQL
 			if item.typ == condOr {
 				db = db.Or(item.rawSQL, item.rawArgs...)
 			} else {
 				db = db.Where(item.rawSQL, item.rawArgs...)
 			}
-		case item.isNested && item.subCond != nil:
-			scope := buildNestedScope(item.subCond)
-			if item.typ == condOr {
-				db = db.Or(scope)
-			} else {
-				db = db.Where(scope)
-			}
 		default:
+			// 普通 field.Expr
 			if item.typ == condOr {
 				db = db.Or(item.expr)
 			} else {
@@ -991,8 +436,23 @@ func applyCondGroup(db *gorm.DB, group *condGroup) *gorm.DB {
 	return db
 }
 
-func buildNestedScope(group *condGroup) func(*gorm.DB) *gorm.DB {
-	return func(tx *gorm.DB) *gorm.DB {
-		return applyCondGroup(tx, group)
+// ================== 工具函数 ==================
+
+// callFieldMethod 通过反射调用 gorm-gen 生成的列字段方法（如 Like / Between）。
+// gorm-gen 为每个列生成了对应的类型安全方法，但 field.Expr 接口层面无法静态调用，只能反射。
+func callFieldMethod(col field.Expr, method string, args ...any) any {
+	v := reflect.ValueOf(col)
+	m := v.MethodByName(method)
+	if !m.IsValid() {
+		return nil
 	}
+	in := make([]reflect.Value, len(args))
+	for i, arg := range args {
+		in[i] = reflect.ValueOf(arg)
+	}
+	res := m.Call(in)
+	if len(res) == 0 {
+		return nil
+	}
+	return res[0].Interface()
 }

@@ -1,3 +1,4 @@
+// Package query 慢查询
 package query
 
 import (
@@ -168,34 +169,54 @@ func (p *slowQueryPlugin) Initialize(db *gorm.DB) error {
 	}
 	ops := []opDef{
 		{
-			name:   "query",
-			before: func(n string, f func(*gorm.DB)) error { return db.Callback().Query().Before("gorm:query").Register(n, f) },
-			after:  func(n string, f func(*gorm.DB)) error { return db.Callback().Query().After("gorm:after_query").Register(n, f) },
+			name: "query",
+			before: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Query().Before("gorm:query").Register(n, f)
+			},
+			after: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Query().After("gorm:after_query").Register(n, f)
+			},
 		},
 		{
-			name:   "create",
-			before: func(n string, f func(*gorm.DB)) error { return db.Callback().Create().Before("gorm:create").Register(n, f) },
-			after:  func(n string, f func(*gorm.DB)) error { return db.Callback().Create().After("gorm:after_create").Register(n, f) },
+			name: "create",
+			before: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Create().Before("gorm:create").Register(n, f)
+			},
+			after: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Create().After("gorm:after_create").Register(n, f)
+			},
 		},
 		{
-			name:   "update",
-			before: func(n string, f func(*gorm.DB)) error { return db.Callback().Update().Before("gorm:update").Register(n, f) },
-			after:  func(n string, f func(*gorm.DB)) error { return db.Callback().Update().After("gorm:after_update").Register(n, f) },
+			name: "update",
+			before: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Update().Before("gorm:update").Register(n, f)
+			},
+			after: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Update().After("gorm:after_update").Register(n, f)
+			},
 		},
 		{
-			name:   "delete",
-			before: func(n string, f func(*gorm.DB)) error { return db.Callback().Delete().Before("gorm:delete").Register(n, f) },
-			after:  func(n string, f func(*gorm.DB)) error { return db.Callback().Delete().After("gorm:after_delete").Register(n, f) },
+			name: "delete",
+			before: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Delete().Before("gorm:delete").Register(n, f)
+			},
+			after: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Delete().After("gorm:after_delete").Register(n, f)
+			},
 		},
 		{
 			name:   "row",
 			before: func(n string, f func(*gorm.DB)) error { return db.Callback().Row().Before("gorm:row").Register(n, f) },
-			after:  func(n string, f func(*gorm.DB)) error { return db.Callback().Row().After("gorm:after_row").Register(n, f) },
+			after: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Row().After("gorm:after_row").Register(n, f)
+			},
 		},
 		{
 			name:   "raw",
 			before: func(n string, f func(*gorm.DB)) error { return db.Callback().Raw().Before("gorm:raw").Register(n, f) },
-			after:  func(n string, f func(*gorm.DB)) error { return db.Callback().Raw().After("gorm:after_raw").Register(n, f) },
+			after: func(n string, f func(*gorm.DB)) error {
+				return db.Callback().Raw().After("gorm:after_raw").Register(n, f)
+			},
 		},
 	}
 
