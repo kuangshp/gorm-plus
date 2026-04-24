@@ -11,7 +11,6 @@ import (
 	"github.com/kuangshp/gorm-plus/plugin"
 	"github.com/kuangshp/gorm-plus/query"
 	"github.com/kuangshp/gorm-plus/sf"
-	"github.com/kuangshp/gorm-plus/tenant"
 )
 
 // ================== 统一入口 ==================
@@ -72,21 +71,17 @@ var (
 // 使用示例：
 //
 //	list, total, err := gormplus.FindByPage[*model.Order](
-//	    gormplus.Query(db.WithContext(ctx).Model(&model.Order{})),
-//	        EqIfNotZero("user_id", userID).
-//	        LikeIfNotEmpty("order_no", keyword).
-//	        OrderByDesc("created_at"),
+//	    gormplus.Query[*model.Order](db, ctx).
+//	        WhereIf(userID != 0, "`user_id` = ?", userID).
+//	        Like("order_no", keyword).
+//	        Order("created_at DESC").
+//	        Build(),
 //	    pageNum, pageSize,
 //	)
 var Query = query.NewQuery
 
-// IQueryBuilder 原生 gorm 条件构造器接口（基于字符串列名）。
-//
-// 如需使用 gorm-gen 类型安全的链式条件构造器，请直接使用：
-//
-//	wrapper := query.GenWrap(dao.OrderEntity.WithContext(ctx))
-//
-// GenWrap 可避免字符串列名拼写错误，实现编译期类型检查。
+// IQueryBuilder 原生 gorm 扩展条件构造器。
+// 链式拼装扩展条件后调用 Build() 返回原生 *gorm.DB，继续使用所有 gorm 原生方法。
 type IQueryBuilder = query.IQueryBuilder
 
 // FindByPage 泛型分页查询，返回 (数据列表, 总数, error)。
@@ -94,12 +89,14 @@ type IQueryBuilder = query.IQueryBuilder
 // 示例：
 //
 //	list, total, err := gormplus.FindByPage[*model.Order](
-//	    gormplus.Query(db.WithContext(ctx).Model(&model.Order{})),
-//	        EqIfNotZero("user_id", userID).
-//	        OrderByDesc("created_at"),
+//	    gormplus.Query[*model.Order](db, ctx).
+//	        WhereIf(userID != 0, "`user_id` = ?", userID).
+//	        Like("order_no", keyword).
+//	        Build().
+//	        Order("created_at DESC"),
 //	    pageNum, pageSize,
 //	)
-func FindByPage[T any](q query.IQueryBuilder, pageNum, pageSize int) ([]T, int64, error) {
+func FindByPage[T any](q *gorm.DB, pageNum, pageSize int) ([]T, int64, error) {
 	return query.FindByPage[T](q, pageNum, pageSize)
 }
 
@@ -109,14 +106,15 @@ func FindByPage[T any](q query.IQueryBuilder, pageNum, pageSize int) ([]T, int64
 //
 //	type OrderVO struct { ID int64; OrderNo string; Username string }
 //	list, total, err := gormplus.ScanByPage[OrderVO](
-//	    gormplus.Query(db.WithContext(ctx).Model(&model.Order{})),
+//	    gormplus.Query[*model.Order](db, ctx).
 //	        Select("o.id", "o.order_no", "u.username").
-//	        LeftJoin("sys_user u ON u.id = o.user_id").
-//	        EqIfNotZero("o.user_id", userID).
-//	        OrderByDesc("o.created_at"),
+//	        Joins("LEFT JOIN sys_user u ON u.id = o.user_id").
+//	        WhereIf(userID != 0, "o.user_id = ?", userID).
+//	        Build().
+//	        Order("o.created_at DESC"),
 //	    pageNum, pageSize,
 //	)
-func ScanByPage[T any](q query.IQueryBuilder, pageNum, pageSize int) ([]T, int64, error) {
+func ScanByPage[T any](q *gorm.DB, pageNum, pageSize int) ([]T, int64, error) {
 	return query.ScanByPage[T](q, pageNum, pageSize)
 }
 
@@ -134,8 +132,9 @@ func ScanByPage[T any](q query.IQueryBuilder, pageNum, pageSize int) ([]T, int64
 //
 //	list, err := gormplus.SF(func() ([]*model.Order, error) {
 //	    var result []*model.Order
-//	    err := gormplus.Query(db.WithContext(ctx).Model(&model.Order{})).
-//	        EqIfNotZero("user_id", userID).
+//	    err := gormplus.Query[*model.Order](db, ctx).
+//	        WhereIf(userID != 0, "`user_id` = ?", userID).
+//	        Build().
 //	        Find(&result)
 //	    return result, err
 //	}, "Order.List", map[string]any{"user_id": userID, "page": pageNum}, 30*time.Second)
@@ -157,8 +156,9 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 //
 //	order, err := gormplus.SFNoCache(func() (*model.Order, error) {
 //	    var o model.Order
-//	    err := gormplus.Query(db.WithContext(ctx).Model(&model.Order{})).
-//	        EqIfNotZero("id", orderID).
+//	    err := gormplus.Query[*model.Order](db, ctx).
+//	        WhereIf(orderID != 0, "`id` = ?", orderID).
+//	        Build().
 //	        First(&o)
 //	    return &o, err
 //	}, "Order.Detail", map[string]any{"id": orderID})
@@ -197,7 +197,7 @@ var DefaultSFTTL = sf.DefaultSFTTL
 // -------------------- 多租户插件 --------------------
 
 // TenantConfig 多租户插件配置（租户 ID 类型为 string）
-type TenantConfig[T comparable] = tenant.TenantConfig[T]
+type TenantConfig[T comparable] = plugin.TenantConfig[T]
 
 // WithTenantID 将租户 ID 写入 context。
 // 示例：
@@ -205,13 +205,13 @@ type TenantConfig[T comparable] = tenant.TenantConfig[T]
 //	gormplus.WithTenantID(ctx, "tenant-abc")         // string 租户
 //	gormplus.WithTenantID(ctx, int64(123))            // int64 租户
 func WithTenantID[T comparable](ctx context.Context, tenantID T) context.Context {
-	return tenant.WithTenantID(ctx, tenantID)
+	return plugin.WithTenantID(ctx, tenantID)
 }
 
 // TenantIDFromCtx 从 context 读取租户 ID。
 // 类型参数必须与写入时一致，否则返回零值。
 func TenantIDFromCtx[T comparable](ctx context.Context) T {
-	return tenant.TenantIDFromCtx[T](ctx)
+	return plugin.TenantIDFromCtx[T](ctx)
 }
 
 // RegisterTenant 向指定 DB 注册多租户插件。
@@ -222,32 +222,32 @@ func TenantIDFromCtx[T comparable](ctx context.Context) T {
 //	    TenantField:   "tenant_id",
 //	    ExcludeTables: []string{"sys_config", "sys_dict"},
 //	})
-func RegisterTenant[T comparable](db *gorm.DB, cfg tenant.TenantConfig[T]) error {
-	return tenant.RegisterTenant[T](db, cfg)
+func RegisterTenant[T comparable](db *gorm.DB, cfg plugin.TenantConfig[T]) error {
+	return plugin.RegisterTenant[T](db, cfg)
 }
 
-func NewTenantPlugin[T comparable](cfg tenant.TenantConfig[T]) (gorm.Plugin, error) {
-	return tenant.NewTenantPlugin[T](cfg)
+func NewTenantPlugin[T comparable](cfg plugin.TenantConfig[T]) (gorm.Plugin, error) {
+	return plugin.NewTenantPlugin[T](cfg)
 }
 
 // AddExcludeTable 运行时动态添加不参与租户过滤的表。
 func AddExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
-	return tenant.AddExcludeTable[T](db, tables...)
+	return plugin.AddExcludeTable[T](db, tables...)
 }
 
 // RemoveExcludeTable 运行时动态移除排除表。
 func RemoveExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
-	return tenant.RemoveExcludeTable[T](db, tables...)
+	return plugin.RemoveExcludeTable[T](db, tables...)
 }
 
 // ExcludedTables 返回当前所有排除表的快照。
 func ExcludedTables[T comparable](db *gorm.DB) ([]string, error) {
-	return tenant.ExcludedTables[T](db)
+	return plugin.ExcludedTables[T](db)
 }
 
 // SkipTenant 返回跳过租户过滤的 context（超管操作、跨租户统计专用）。
 func SkipTenant(ctx context.Context) context.Context {
-	return tenant.SkipTenant(ctx)
+	return plugin.SkipTenant(ctx)
 }
 
 // -------------------- 慢查询监控 --------------------
@@ -328,12 +328,20 @@ func Generate(cfg *generator.Config) error {
 	return generator.Generate(cfg)
 }
 
-// GenWrap 从干净 Do 对象创建 GenWrapper。
-func GenWrap[D query.GenDao[D]](do D) query.IGenWrapper[D] {
-	return query.GenWrap(do)
+// GenWrap 将 gorm-gen 生成的 DO 包裹为 IGenWrapper，开启扩展条件链式构建。
+// 调用 Apply() 后返回原生 DO，可继续使用所有 gorm-gen 原生方法。
+//
+//	accountList, err := gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
+//	    LLike(dao.AccountEntity.Username, username).
+//	    WhereIf(status != 0, dao.AccountEntity.Status.Eq(status)).
+//	    Apply().
+//	    Order(dao.AccountEntity.CreatedAt.Desc()).
+//	    Limit(20).
+//	    Find()
+func GenWrap[D query.GenDo[D]](do D) query.IGenWrapper[D] {
+	return query.Wrap(do)
 }
 
-type IGenWrapper[D query.GenDao[D]] = query.IGenWrapper[D]
-
-// type GenDao[D any] = query.GenDao[D]
-type AggResult = query.AggResult
+// IGenWrapper 扩展条件构建器接口，只包含 gorm-gen 原生不支持的能力。
+// 所有方法均支持链式调用，最终通过 Apply() 返回原生 DO。
+type IGenWrapper[D query.GenDo[D]] = query.IGenWrapper[D]
