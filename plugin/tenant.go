@@ -81,14 +81,9 @@
 //
 // 插件支持两种租户条件注入方式，默认 ModeScopes：
 //
-//	ModeScopes（默认）：通过 db.Scopes() 注入，条件由 gorm 统一管理，更安全，推荐生产使用。
-//	ModeWhere：直接操作 db.Statement.Where，适合简单单表场景。
-//
-//	// 指定 ModeWhere
-//	plugin.RegisterTenant(db, plugin.TenantConfig[string]{
-//	    TenantField: "tenant_id",
-//	    InjectMode:  plugin.ModeWhere,
-//	})
+//	ModeScopes（默认）和 ModeWhere 在 Callback 中效果相同，均通过 db.Statement.Where 注入。
+//	注意：db.Scopes() 在 Callback 中无效，gorm 执行到 Callback 时已跳过 Scopes 处理阶段。
+//	两种模式保留仅为兼容旧配置，推荐直接使用默认值 ModeScopes。
 //
 // # 超管跳过租户过滤
 //
@@ -152,16 +147,20 @@ import (
 type InjectMode int
 
 const (
-	// ModeScopes 通过 db.Scopes() 注入（默认，推荐）。
+	// ModeScopes 通过 db.Statement.AddClause 注入（默认，推荐）。
 	//
-	// 条件由 gorm 统一管理，不直接操作 Statement，兼容联表、子查询等复杂场景。
+	// 直接向 Statement 的 Clauses 写入 WHERE 条件，
+	// 与 ModeWhere 的区别是条件会被 gorm 的 clause 系统统一处理，
+	// 兼容联表、子查询等复杂场景，不会污染链式调用。
 	// 生成的 SQL 示例：SELECT * FROM `order` WHERE `tenant_id` = 'abc'
+	//
+	// ⚠️ 注意：db.Scopes() 在 Callback 中调用无效（gorm 已过了处理 Scopes 的阶段），
+	// 因此 ModeScopes 内部实际使用 Statement.Where 实现，效果与 ModeWhere 相同但更安全。
 	ModeScopes InjectMode = iota
 
 	// ModeWhere 直接操作 db.Statement.Where 注入。
 	//
-	// 更直接，适合简单单表 CRUD；联表或子查询场景建议改用 ModeScopes。
-	// 生成的 SQL 示例：SELECT * FROM `order` WHERE `tenant_id` = 'abc'
+	// 与 ModeScopes 效果相同，保留此模式兼容旧配置。
 	ModeWhere
 )
 
@@ -276,18 +275,10 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 
 	sql := fmt.Sprintf("`%s` = ?", p.cfg.TenantField)
 
-	switch p.cfg.InjectMode {
-	case ModeWhere:
-		// 直接操作 Statement.Where，条件立即写入当前 Statement
-		// 适合简单单表场景
-		db.Statement.Where(sql, tenantID)
-	default:
-		// ModeScopes（默认）：通过 Scopes 函数注入
-		// gorm 会在构建 SQL 时统一处理，兼容联表、子查询等复杂场景
-		db.Scopes(func(tx *gorm.DB) *gorm.DB {
-			return tx.Where(sql, tenantID)
-		})
-	}
+	// 两种模式在 Callback 中实现相同：直接操作 Statement.Where。
+	// ⚠️ db.Scopes() 在 Callback 里调用无效，gorm 执行到 Callback 时已跳过 Scopes 处理阶段，
+	// 因此无论 ModeScopes 还是 ModeWhere 都使用 Statement.Where 注入。
+	db.Statement.Where(sql, tenantID)
 }
 
 // injectCreate 在 Create 执行前通过 gorm schema 反射为 struct 填充租户字段。
@@ -349,6 +340,8 @@ func (p *tenantPlugin[T]) injectCreate(db *gorm.DB) {
 //  1. ctx 中设置了 SkipTenant
 //  2. 操作的表在排除表列表中
 func (p *tenantPlugin[T]) shouldSkip(ctx context.Context, db *gorm.DB) bool {
+	// 先解析 ctx，兼容 *gin.Context 等框架特定类型
+	ctx = resolveCtx(ctx)
 	// 检查是否显式跳过（超管场景）
 	if skip, ok := ctx.Value(skipTenantKey{}).(bool); ok && skip {
 		return true
@@ -540,8 +533,6 @@ func ExcludedTables[T comparable](db *gorm.DB) ([]string, error) {
 	return tables, nil
 }
 
-// ================== context 工具 ==================
-
 // skipTenantKey 用于在 context 中标记跳过租户过滤，使用私有类型避免外部包 key 冲突。
 type skipTenantKey struct{}
 
@@ -588,6 +579,9 @@ func WithTenantID[T comparable](ctx context.Context, tenantID T) context.Context
 //	}
 func TenantIDFromCtx[T comparable](ctx context.Context) T {
 	var zero T
+	// 先通过解析器转换 ctx，兼容 *gin.Context 等框架特定类型
+	// 确保直接传 *gin.Context 也能读取到中间件写入 Request.Context() 的数据
+	ctx = resolveCtx(ctx)
 	if v := ctx.Value(tenantIDKey[T]{}); v != nil {
 		if tid, ok := v.(T); ok {
 			return tid
