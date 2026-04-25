@@ -676,10 +676,10 @@ func Generate(cfg *Config) error {
 	}
 
 	// 未输入表名时只生成数据模型，不继续生成 repo/vo/dto/api
-	if tableName == "" {
-		fmt.Println("生成完成!")
-		return nil
-	}
+	//if tableName == "" {
+	//	fmt.Println("生成完成!")
+	//	return nil
+	//}
 
 	columns, err := getTableColumns(db, tableName)
 	if err != nil {
