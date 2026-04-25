@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -21,19 +20,69 @@ import (
 //   - 连接池独立配置，提供生产推荐默认值
 //   - 【自动切换】通过 context 携带数据源名，无需每次手动传 name
 //   - 【自动读写分离】通过 context 标记读/写意图，自动选主库或从库
+//   - 支持任意 gorm 驱动（MySQL / PostgreSQL / SQLite / SQL Server 等）
 //   - 运行时热注册，Ping 健康检查，优雅关闭
 //
-// ── 推荐用法（自动切换）──────────────────────────────────────
+// ── 第一步：注册数据源（main.go 启动时调用一次）────────────────
 //
-//  1. 启动时初始化全局 Manager：
+// 驱动通过 NodeConfig.Dialector 传入，不内置任何驱动依赖。
+//
+// MySQL（需 go get gorm.io/driver/mysql）：
+//
+//	import "gorm.io/driver/mysql"
 //
 //	var DS = datasource.NewManager()
-//	DS.Register("default", datasource.GroupConfig{...})
-//	DS.Register("analytics", datasource.GroupConfig{...})
+//	DS.Register("default", datasource.GroupConfig{
+//	    Master: datasource.NodeConfig{
+//	        Dialector: mysql.Open("root:pwd@tcp(master:3306)/mydb?charset=utf8mb4&parseTime=True&loc=Local"),
+//	        Pool: datasource.PoolConfig{MaxOpen: 50, MaxIdle: 10},
+//	    },
+//	    Slaves: []datasource.NodeConfig{
+//	        {Dialector: mysql.Open("root:pwd@tcp(slave1:3306)/mydb?charset=utf8mb4&parseTime=True&loc=Local")},
+//	        {Dialector: mysql.Open("root:pwd@tcp(slave2:3306)/mydb?charset=utf8mb4&parseTime=True&loc=Local")},
+//	    },
+//	})
 //
-//  2. Middleware 中将数据源名写入 context（可与多租户 Middleware 叠加）：
+// PostgreSQL（需 go get gorm.io/driver/postgres）：
 //
-//	// 固定数据源
+//	import "gorm.io/driver/postgres"
+//
+//	DS.Register("pg", datasource.GroupConfig{
+//	    Master: datasource.NodeConfig{
+//	        Dialector: postgres.Open("host=localhost user=root password=pwd dbname=mydb port=5432 sslmode=disable TimeZone=Asia/Shanghai"),
+//	    },
+//	})
+//
+// SQLite（需 go get gorm.io/driver/sqlite，适合单元测试）：
+//
+//	import "gorm.io/driver/sqlite"
+//
+//	DS.Register("test", datasource.GroupConfig{
+//	    Master: datasource.NodeConfig{
+//	        Dialector: sqlite.Open(":memory:"),
+//	    },
+//	})
+//
+// SQL Server（需 go get gorm.io/driver/sqlserver）：
+//
+//	import "gorm.io/driver/sqlserver"
+//
+//	DS.Register("mssql", datasource.GroupConfig{
+//	    Master: datasource.NodeConfig{
+//	        Dialector: sqlserver.Open("sqlserver://user:pwd@localhost:1433?database=mydb"),
+//	    },
+//	})
+//
+// 多数据源（不同业务库分开注册）：
+//
+//	DS.Register("default",   datasource.GroupConfig{Master: datasource.NodeConfig{Dialector: mysql.Open(mainDSN)}})
+//	DS.Register("analytics", datasource.GroupConfig{Master: datasource.NodeConfig{Dialector: mysql.Open(analyticsDSN)}})
+//	DS.Register("archive",   datasource.GroupConfig{Master: datasource.NodeConfig{Dialector: postgres.Open(archiveDSN)}})
+//
+// ── 第二步：Middleware 写入 context（可选，推荐与读写分离配合使用）──
+//
+// 固定数据源：
+//
 //	func DSMiddleware(name string) gin.HandlerFunc {
 //	    return func(c *gin.Context) {
 //	        ctx := datasource.WithName(c.Request.Context(), name)
@@ -42,37 +91,60 @@ import (
 //	    }
 //	}
 //
-//	// 读写分离：GET 请求走从库，其余走主库
+// 读写分离（GET 走从库，其余走主库）：
+//
 //	func RWMiddleware(name string) gin.HandlerFunc {
 //	    return func(c *gin.Context) {
 //	        ctx := datasource.WithName(c.Request.Context(), name)
 //	        if c.Request.Method == http.MethodGet {
-//	            ctx = datasource.WithRead(ctx)  // 标记为读
+//	            ctx = datasource.WithRead(ctx)  // 读操作 → 从库
 //	        } else {
-//	            ctx = datasource.WithWrite(ctx) // 标记为写
+//	            ctx = datasource.WithWrite(ctx) // 写操作 → 主库
 //	        }
 //	        c.Request = c.Request.WithContext(ctx)
 //	        c.Next()
 //	    }
 //	}
 //
-//  3. Repository 层用 DS.Auto(ctx) 自动获取 DB，无需关心数据源名和读写：
+// ── 第三步：Repository 层获取 DB ─────────────────────────────
 //
-//	func (r *OrderRepo) List(ctx context.Context, ...) ([]*Order, error) {
-//	    db, err := DS.Auto(ctx)  // 自动读 context → 选数据源 → 选主/从
+// 推荐：Auto(ctx) 自动读取 context 决定数据源和读写（与 Middleware 配合）：
+//
+//	func (r *OrderRepo) List(ctx context.Context) ([]*Order, error) {
+//	    db, err := DS.Auto(ctx) // 自动：数据源=context中的名称，读=从库
 //	    if err != nil { return nil, err }
-//	    return ..., db.Find(&list).Error
+//	    var list []*Order
+//	    return list, db.WithContext(ctx).Find(&list).Error
 //	}
 //
 //	func (r *OrderRepo) Create(ctx context.Context, o *Order) error {
-//	    db, err := DS.Auto(ctx)  // 写标记 → 自动走主库
-//	    ...
+//	    db, err := DS.Auto(ctx) // 自动：数据源=context中的名称，写=主库
+//	    if err != nil { return err }
+//	    return db.WithContext(ctx).Create(o).Error
 //	}
 //
-//  4. 也可以显式指定（不依赖 Middleware）：
+// 显式指定（不依赖 Middleware，直接指定数据源名和读写）：
 //
-//	db, err := DS.WriteCtx(ctx, "default")   // 明确用主库
-//	db, err := DS.ReadCtx(ctx, "analytics")  // 明确用从库
+//	db, err := DS.Write("default")              // 主库
+//	db, err := DS.Read("default")               // 从库
+//	db, err := DS.WriteCtx(ctx, "analytics")    // 指定数据源主库
+//	db, err := DS.ReadCtx(ctx, "analytics")     // 指定数据源从库
+//
+// ── 第四步：优雅退出 ─────────────────────────────────────────
+//
+//	func main() {
+//	    defer DS.Close() // 关闭所有数据库连接
+//	}
+//
+// ── 健康检查 ─────────────────────────────────────────────────
+//
+//	results := DS.Ping()
+//	// map[string]error{"default:master": nil, "default:slave0": nil}
+//	for label, err := range results {
+//	    if err != nil {
+//	        log.Printf("数据源 %s 不可用: %v", label, err)
+//	    }
+//	}
 
 // ── 连接池配置 ────────────────────────────────────────────────
 
@@ -100,11 +172,32 @@ var DefaultPool = PoolConfig{
 
 // NodeConfig 单个数据库节点配置
 type NodeConfig struct {
-	// DSN gorm 连接字符串（必填）
+	// Dialector gorm 方言驱动（与 DSN 二选一，优先级高于 DSN）。
+	// 支持任意 gorm 驱动：MySQL、PostgreSQL、SQLite、SQL Server 等。
+	//
+	// MySQL 示例：
+	//   Dialector: mysql.Open("root:pwd@tcp(127.0.0.1:3306)/mydb?charset=utf8mb4&parseTime=True")
+	//
+	// PostgreSQL 示例：
+	//   Dialector: postgres.Open("host=localhost user=root password=pwd dbname=mydb port=5432 sslmode=disable")
+	//
+	// SQLite 示例：
+	//   Dialector: sqlite.Open("mydb.db")
+	//
+	// 同时配置 Dialector 和 DSN 时，Dialector 优先。
+	Dialector gorm.Dialector
+
+	// DSN gorm 连接字符串（向后兼容，Dialector 为 nil 时使用）。
+	// ⚠️ 使用 DSN 时内部默认使用 MySQL 驱动，如需其他数据库请改用 Dialector。
+	//
 	// 示例："root:pwd@tcp(127.0.0.1:3306)/mydb?charset=utf8mb4&parseTime=True&loc=Local"
+	//
+	// Deprecated: 建议改用 Dialector 明确指定驱动，避免隐式依赖 MySQL。
 	DSN string
+
 	// Pool 连接池配置，零值字段自动使用 DefaultPool
 	Pool PoolConfig
+
 	// GormConfig 自定义 gorm 配置，nil 时使用内置默认配置（Warn 级别日志）
 	GormConfig *gorm.Config
 }
@@ -166,8 +259,8 @@ func NewManager() *Manager {
 // 第一个注册的数据源自动成为默认数据源（Auto 在 context 无数据源名时使用）。
 // Master.DSN 为空时 panic。
 func (m *Manager) Register(name string, cfg GroupConfig) {
-	if cfg.Master.DSN == "" {
-		panic(fmt.Sprintf("datasource.Register: 数据源 [%s] 的主库 DSN 不能为空", name))
+	if cfg.Master.Dialector == nil && cfg.Master.DSN == "" {
+		panic(fmt.Sprintf("datasource.Register: 数据源 [%s] 的主库必须配置 Dialector 或 DSN", name))
 	}
 	g := &dbGroup{master: &dbNode{cfg: cfg.Master}}
 	for _, s := range cfg.Slaves {
@@ -365,7 +458,26 @@ func openDB(cfg NodeConfig) (*gorm.DB, error) {
 	if gormCfg == nil {
 		gormCfg = &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)}
 	}
-	db, err := gorm.Open(mysql.Open(cfg.DSN), gormCfg)
+
+	// 优先使用 Dialector，支持任意 gorm 驱动（MySQL / PostgreSQL / SQLite 等）
+	dialector := cfg.Dialector
+	if dialector == nil {
+		// 向后兼容：DSN 非空时报错提示用户改用 Dialector
+		if cfg.DSN == "" {
+			return nil, fmt.Errorf("datasource: Dialector 和 DSN 不能同时为空，请通过 NodeConfig.Dialector 传入数据库驱动")
+		}
+		return nil, fmt.Errorf(
+			"datasource: 不再内置 MySQL 驱动依赖，请改用 NodeConfig.Dialector 明确指定驱动。\n" +
+				"示例（MySQL）：\n" +
+				"  import \"gorm.io/driver/mysql\"\n" +
+				"  NodeConfig{Dialector: mysql.Open(\"" + cfg.DSN + "\")}\n" +
+				"示例（PostgreSQL）：\n" +
+				"  import \"gorm.io/driver/postgres\"\n" +
+				"  NodeConfig{Dialector: postgres.Open(dsn)}",
+		)
+	}
+
+	db, err := gorm.Open(dialector, gormCfg)
 	if err != nil {
 		return nil, fmt.Errorf("datasource: 连接数据库失败: %w", err)
 	}

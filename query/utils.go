@@ -1,5 +1,7 @@
 package query
 
+import "reflect"
+
 // ================== 工具函数 ==================
 func isZeroVal(v any) bool {
 	if v == nil {
@@ -35,6 +37,7 @@ func isZeroVal(v any) bool {
 	case bool:
 		return !val
 	default:
-		return false
+		rv := reflect.ValueOf(v)
+		return rv.IsZero()
 	}
 }
