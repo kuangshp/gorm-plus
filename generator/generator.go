@@ -662,8 +662,18 @@ func Generate(cfg *Config) error {
 		allModel = g.GenerateAllTable(fieldOpts...)
 	}
 
-	g.ApplyBasic(allModel...)
-	g.Execute()
+	//g.ApplyBasic(allModel...)
+	//g.Execute()
+
+	if tableName != "" {
+		fmt.Printf("生成表 %s 的模型...\n", tableName)
+		g.GenerateModel(tableName, fieldOpts...)
+	} else {
+		fmt.Println("生成所有表的模型...")
+		allModel = g.GenerateAllTable(fieldOpts...)
+		g.ApplyBasic(allModel...)
+		g.Execute()
+	}
 
 	// 未输入表名时只生成数据模型，不继续生成 repo/vo/dto/api
 	if tableName == "" {
@@ -689,11 +699,15 @@ func Generate(cfg *Config) error {
 			fmt.Printf("生成repository基础内容失败: %v\n", err)
 		} else {
 			repoBaseFileName := fmt.Sprintf("%s/%s_gen.go", repoDir, strings.ToLower(modelName))
-			err = os.WriteFile(repoBaseFileName, []byte(repoBaseContent), 0644)
-			if err != nil {
-				fmt.Printf("写入repository基础文件失败: %v\n", err)
+			if _, err := os.Stat(repoBaseFileName); os.IsNotExist(err) {
+				err = os.WriteFile(repoBaseFileName, []byte(repoBaseContent), 0644)
+				if err != nil {
+					fmt.Printf("写入repository基础文件失败: %v\n", err)
+				} else {
+					fmt.Printf("repository基础文件已生成: %s\n", repoBaseFileName)
+				}
 			} else {
-				fmt.Printf("repository基础文件已生成: %s\n", repoBaseFileName)
+				fmt.Printf("repository_gen扩展文件已存在，不覆盖更新: %s\n", repoBaseFileName)
 			}
 		}
 
