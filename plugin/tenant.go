@@ -5,130 +5,127 @@
 // 插件在 gorm 的 Query / Update / Delete / Create 操作前注册钩子：
 //   - Query / Update / Delete：自动追加 WHERE `tenant_id` = ? 条件
 //   - Create：通过反射自动填充 struct 的租户字段值
+//   - JOIN 联表：自动解析 JOIN 语句中的关联表，同步注入租户条件（别名自动识别）
 //
-// 租户 ID 的流转路径：
+// 安全保护：
+//   - 用户手动写了租户字段条件时，插件自动跳过注入，避免重复条件
+//   - 发现 OR 条件中包含租户字段时，直接拒绝执行，防止租户隔离被绕过
+//   - 禁止无业务条件的全表 Update / Delete，防止误操作
 //
-//	JWT/Redis 解析 → gin 中间件 WithTenantID(ctx) → db.WithContext(ctx) → Callback 自动注入
+// # 用法一：单字段（最简单，向后兼容）
 //
-// # 快速接入（三步）
-//
-// 第一步：程序启动时注册插件（一次）
-//
-//	func main() {
-//	    db, _ := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-//
-//	    // string 类型租户 ID
-//	    if err := plugin.RegisterTenant(db, plugin.TenantConfig[string]{
-//	        TenantField:   "tenant_id",
-//	        ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
-//	    }); err != nil {
-//	        log.Fatal(err)
-//	    }
-//	}
-//
-// 第二步：gin 中间件解析 JWT/Redis 并写入 ctx
-//
-//	func TenantMiddleware() gin.HandlerFunc {
-//	    return func(c *gin.Context) {
-//	        // 从 JWT 解析租户 ID
-//	        claims, err := jwt.ParseToken(c.GetHeader("Authorization"))
-//	        if err != nil {
-//	            c.Next()
-//	            return
-//	        }
-//	        // 写入 ctx，后续 db.WithContext(ctx) 自动携带
-//	        ctx := plugin.WithTenantID(c.Request.Context(), claims.TenantID)
-//	        c.Request = c.Request.WithContext(ctx)
-//	        c.Next()
-//	    }
-//	}
-//
-//	// 从 Redis 解析租户 ID 的示例
-//	func TenantMiddlewareRedis(rdb *redis.Client) gin.HandlerFunc {
-//	    return func(c *gin.Context) {
-//	        token := c.GetHeader("Authorization")
-//	        val, err := rdb.Get(c, "session:"+token).Result()
-//	        if err != nil {
-//	            c.Next()
-//	            return
-//	        }
-//	        var session struct{ TenantID string }
-//	        if err := json.Unmarshal([]byte(val), &session); err != nil {
-//	            c.Next()
-//	            return
-//	        }
-//	        ctx := plugin.WithTenantID(c.Request.Context(), session.TenantID)
-//	        c.Request = c.Request.WithContext(ctx)
-//	        c.Next()
-//	    }
-//	}
-//
-// 第三步：业务代码正常使用，无需任何改动
-//
-//	// 查询：自动追加 WHERE tenant_id = 'abc'
-//	db.WithContext(ctx).Find(&list)
-//
-//	// 创建：自动填充 tenant_id 字段
-//	db.WithContext(ctx).Create(&order)
-//
-//	// 更新：自动追加 WHERE tenant_id = 'abc'
-//	db.WithContext(ctx).Model(&order).Updates(map[string]any{"status": 1})
-//
-//	// 删除：自动追加 WHERE tenant_id = 'abc'
-//	db.WithContext(ctx).Delete(&order, id)
-//
-// # 注入方式（InjectMode）
-//
-// 插件支持两种租户条件注入方式，默认 ModeScopes：
-//
-//	ModeScopes（默认）和 ModeWhere 在 Callback 中效果相同，均通过 db.Statement.Where 注入。
-//	注意：db.Scopes() 在 Callback 中无效，gorm 执行到 Callback 时已跳过 Scopes 处理阶段。
-//	两种模式保留仅为兼容旧配置，推荐直接使用默认值 ModeScopes。
-//
-// # 超管跳过租户过滤
-//
-//	// 超管需要查看所有租户数据时，用 SkipTenant 跳过过滤
-//	ctx = plugin.SkipTenant(ctx)
-//	db.WithContext(ctx).Find(&allTenantData) // 无 tenant_id 条件
-//
-// # 排除表（公共表不参与租户过滤）
-//
-//	// 注册时静态配置
-//	plugin.RegisterTenant(db, plugin.TenantConfig[string]{
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
 //	    TenantField:   "tenant_id",
 //	    ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
 //	})
 //
-//	// 运行时动态添加排除表
-//	plugin.AddExcludeTable[string](db, "log_audit", "sys_trace")
+//	// gin 中间件写入租户 ID
+//	func TenantMiddleware() gin.HandlerFunc {
+//	    return func(c *gin.Context) {
+//	        tenantID := int64(1001) // 从 JWT 解析
+//	        ctx := plugin.WithTenantID(c.Request.Context(), tenantID)
+//	        c.Request = c.Request.WithContext(ctx)
+//	        c.Next()
+//	    }
+//	}
 //
-//	// 运行时动态移除排除表（重新参与租户过滤）
-//	plugin.RemoveExcludeTable[string](db, "sys_dict")
+//	// 查询自动追加：WHERE `tenant_id` = 1001
+//	db.WithContext(ctx).Find(&list)
+//	// 创建自动填充：INSERT ... tenant_id = 1001
+//	db.WithContext(ctx).Create(&order)
 //
-//	// 查看当前所有排除表（调试用）
-//	tables, _ := plugin.ExcludedTables[string](db)
-//
-// # 自定义租户 ID 获取函数
-//
-//	// 默认从 WithTenantID 写入的 ctx 读取，也可自定义（如从 Header 或缓存读取）
-//	plugin.RegisterTenant(db, plugin.TenantConfig[string]{
-//	    TenantField: "tenant_id",
-//	    GetTenantID: func(ctx context.Context) (string, bool) {
-//	        // 自定义逻辑：从 ctx 的 gin.Context 里读取
-//	        tid, ok := ctx.Value("tenantID").(string)
-//	        return tid, ok && tid != ""
-//	    },
-//	})
-//
-// # int64 类型租户 ID
+// # 用法二：多字段（同一张表注入多个租户字段）
 //
 //	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
-//	    TenantField:   "tenant_id",
+//	    TenantFields: []plugin.TenantFieldConfig[int64]{
+//	        {Field: "tenant_id"},
+//	        {Field: "org_id", GetTenantID: func(ctx context.Context) (int64, bool) {
+//	            id, ok := ctx.Value("orgID").(int64)
+//	            return id, ok && id != 0
+//	        }},
+//	    },
 //	    ExcludeTables: []string{"sys_config"},
 //	})
 //
-//	// 写入 ctx
-//	ctx = plugin.WithTenantID(ctx, int64(1001))
+//	// 中间件写入两个值
+//	ctx := plugin.WithTenantID(c.Request.Context(), int64(1001))
+//	ctx  = context.WithValue(ctx, "orgID", int64(200))
+//	// 查询：WHERE `tenant_id` = 1001 AND `org_id` = 200
+//
+// # 用法三：不同表用不同字段名
+//
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
+//	    TenantField: "tenant_id",
+//	    TableFields: map[string][]plugin.TenantFieldConfig[int64]{
+//	        "sys_contract": {{Field: "company_id"}},
+//	        "sys_order": {
+//	            {Field: "tenant_id"},
+//	            {Field: "org_id", GetTenantID: orgIDGetter},
+//	        },
+//	        "sys_log": {},
+//	    },
+//	    ExcludeTables: []string{"sys_config", "sys_dict"},
+//	})
+//
+// # 联表查询（JOIN 自动注入，别名自动识别）
+//
+//	// 零配置，直接写 JOIN，关联表和别名自动处理
+//	db.WithContext(ctx).
+//	    Table("sys_order a").
+//	    Joins("LEFT JOIN sys_order_item b ON b.order_id = a.id").
+//	    Joins("LEFT JOIN sys_user u ON u.id = a.user_id").
+//	    Find(&list)
+//	// 自动生成：
+//	// WHERE `a`.`tenant_id` = 1001
+//	//   AND `b`.`tenant_id` = 1001  ← 别名 b 自动识别
+//	//   AND `u`.`tenant_id` = 1001  ← 别名 u 自动识别
+//
+//	// 排除不需要租户过滤的关联表
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
+//	    TenantField:       "tenant_id",
+//	    ExcludeJoinTables: []string{"sys_dict", "sys_config"},
+//	})
+//
+//	// 关联表字段名不同时，通过 JoinTableOverrides 覆盖
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
+//	    TenantField: "tenant_id",
+//	    JoinTableOverrides: []plugin.JoinTenantConfig[int64]{
+//	        {Table: "sys_contract_detail", Field: "company_id"},
+//	    },
+//	})
+//
+// # 安全保护
+//
+//	// ① 重复条件：用户已写租户条件时，插件自动跳过，不会产生重复
+//	db.WithContext(ctx).Where("tenant_id = ?", 1001).Find(&list)
+//	// 插件检测到已有 tenant_id 条件，跳过注入
+//	// 生成：WHERE tenant_id = 1001（只有一个）
+//
+//	// ② OR 绕过：发现租户字段出现在 OR 中，直接拒绝
+//	db.WithContext(ctx).Where("tenant_id = ? OR status = 1", 9999).Find(&list)
+//	// Error: tenant: 检测到租户字段 tenant_id 出现在 OR 条件中，禁止执行
+//
+//	// ③ 全表保护：无业务条件的 Update/Delete 被拒绝
+//	db.WithContext(ctx).Model(&Account{}).Updates(map[string]any{"status": 0})
+//	// Error: tenant: 禁止无业务条件的全表 Update
+//
+//	// 临时放开全表保护
+//	ctx = plugin.AllowGlobalOperation(ctx)
+//	db.WithContext(ctx).Model(&Account{}).Updates(...)
+//
+// # 覆盖租户 ID（需开启 AllowOverrideTenantID）
+//
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
+//	    TenantField:           "tenant_id",
+//	    AllowOverrideTenantID: true,
+//	})
+//	ctx = plugin.WithOverrideTenantID(ctx, int64(2002))
+//	db.WithContext(ctx).Find(&list) // WHERE tenant_id = 2002
+//
+// # 超管跳过
+//
+//	ctx = plugin.SkipTenant(ctx)
+//	db.WithContext(ctx).Find(&all) // 无租户条件
 package plugin
 
 import (
@@ -139,6 +136,8 @@ import (
 	"sync"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 // ================== 注入方式 ==================
@@ -147,170 +146,643 @@ import (
 type InjectMode int
 
 const (
-	// ModeScopes 通过 db.Statement.AddClause 注入（默认，推荐）。
-	//
-	// 直接向 Statement 的 Clauses 写入 WHERE 条件，
-	// 与 ModeWhere 的区别是条件会被 gorm 的 clause 系统统一处理，
-	// 兼容联表、子查询等复杂场景，不会污染链式调用。
-	// 生成的 SQL 示例：SELECT * FROM `order` WHERE `tenant_id` = 'abc'
-	//
-	// ⚠️ 注意：db.Scopes() 在 Callback 中调用无效（gorm 已过了处理 Scopes 的阶段），
-	// 因此 ModeScopes 内部实际使用 Statement.Where 实现，效果与 ModeWhere 相同但更安全。
+	// ModeScopes 默认推荐（底层与 ModeWhere 相同，保留兼容旧配置）。
 	ModeScopes InjectMode = iota
-
 	// ModeWhere 直接操作 db.Statement.Where 注入。
-	//
-	// 与 ModeScopes 效果相同，保留此模式兼容旧配置。
 	ModeWhere
 )
 
-// ================== 配置 ==================
+// ================== 重复租户条件策略 ==================
 
-// TenantConfig 多租户插件配置。
-// T 为租户 ID 的类型，支持任意可比较类型（string、int64、uuid.UUID 等）。
+// DuplicateTenantPolicy 当业务代码已手动写了租户字段条件时，插件的处理策略。
+type DuplicateTenantPolicy int
+
+const (
+	// PolicySkip 跳过注入（默认）。
+	// 发现业务代码已有租户字段的 AND 条件时，插件不再追加，以业务代码为准。
+	// 同时检测 OR 危险条件，发现则拒绝执行。
+	//
+	//   db.WithContext(ctx).Where("tenant_id = ?", 1001).Find(&list)
+	//   // 插件发现已有 tenant_id 条件 → 跳过注入
+	//   // 生成：WHERE tenant_id = 1001（不重复）
+	PolicySkip DuplicateTenantPolicy = iota
+
+	// PolicyReplace 替换注入。
+	// 先移除业务代码写的租户条件，再由插件注入 ctx 中的值，强制隔离。
+	// 同时检测 OR 危险条件，发现则拒绝执行。
+	// 适合不信任业务代码、需要严格强制租户隔离的场景。
+	//
+	//   db.WithContext(ctx).Where("tenant_id = ?", 9999).Find(&list) // 写了错误的值
+	//   // 插件强制替换为 ctx 中的租户 ID
+	//   // 生成：WHERE tenant_id = 1001（以 ctx 为准）
+	PolicyReplace
+
+	// PolicyAppend 追加注入（不去重）。
+	// 不扫描已有条件，直接追加，性能最好，但可能产生重复条件。
+	// 适合确定业务代码不会手动写租户条件、追求极致性能的场景。
+	//
+	//   db.WithContext(ctx).Where("tenant_id = ?", 1001).Find(&list)
+	//   // 插件不检查，直接追加
+	//   // 生成：WHERE tenant_id = 1001 AND tenant_id = 1001（重复但不影响结果）
+	PolicyAppend
+)
+
+// ================== 多字段配置 ==================
+
+// TenantFieldConfig 单个租户字段的注入配置。
 //
 // 示例：
 //
-//	// string 类型租户
-//	plugin.TenantConfig[string]{
-//	    TenantField:   "tenant_id",
-//	    ExcludeTables: []string{"sys_config", "sys_dict"},
-//	}
+//	plugin.TenantFieldConfig[int64]{Field: "tenant_id"}
 //
-//	// int64 类型租户
-//	plugin.TenantConfig[int64]{
-//	    TenantField: "tenant_id",
+//	plugin.TenantFieldConfig[int64]{
+//	    Field: "org_id",
+//	    GetTenantID: func(ctx context.Context) (int64, bool) {
+//	        id, ok := ctx.Value("orgID").(int64)
+//	        return id, ok && id != 0
+//	    },
 //	}
+type TenantFieldConfig[T comparable] struct {
+	// Field 数据库列名（必填）。示例："tenant_id"、"org_id"
+	Field string
+
+	// GetTenantID 从 context 获取字段值的函数（可选）。
+	// 为 nil 时使用 TenantConfig.GetTenantID，最终回退到 DefaultGetTenantID。
+	GetTenantID func(ctx context.Context) (T, bool)
+}
+
+// ================== 联表配置 ==================
+
+// JoinTenantConfig 联表中特定关联表的租户字段覆盖配置。
+//
+// 仅在关联表的租户字段名或取值函数与主表不同时才需要配置。
+// 默认：所有 JOIN 关联表自动使用主表的字段名和取值函数。
+//
+// 示例：
+//
+//	// sys_contract_detail 的租户字段是 company_id
+//	plugin.JoinTenantConfig[int64]{
+//	    Table: "sys_contract_detail",
+//	    Field: "company_id",
+//	}
+type JoinTenantConfig[T comparable] struct {
+	// Table 关联表名（必填，不含库名前缀，不区分大小写）。
+	Table string
+	// Field 关联表的租户字段名（可选，为空时使用主表默认字段名）。
+	Field string
+	// GetTenantID 取值函数（可选，为 nil 时使用全局默认）。
+	GetTenantID func(ctx context.Context) (T, bool)
+}
+
+// ================== 主配置 ==================
+
+// TenantConfig 多租户插件配置。
+// T 为租户 ID 的类型，支持任意可比较类型（string、int64、uuid.UUID 等）。
 type TenantConfig[T comparable] struct {
-	// TenantField 数据库中的租户字段名（必填）。
-	// 示例："tenant_id"、"org_id"
+	// ── 主表字段配置（优先级：TableFields > TenantFields > TenantField）──────
+
+	// TenantField 单字段快捷配置，所有表统一使用此字段名（用法一）。
+	// 示例："tenant_id"
 	TenantField string
 
-	// InjectMode 租户条件注入方式，默认 ModeScopes。
-	// 联表或子查询场景请保持默认值 ModeScopes。
+	// TenantFields 多字段配置，同一张表注入多个租户字段（用法二）。
+	TenantFields []TenantFieldConfig[T]
+
+	// TableFields 按表名精确配置，不同表用不同字段（用法三，优先级最高）。
+	// key 为小写表名；value 为空 slice 时跳过该表。
+	TableFields map[string][]TenantFieldConfig[T]
+
+	// ── 联表配置 ─────────────────────────────────────────────────────────────
+
+	// AutoInjectJoinTables 是否自动为所有 JOIN 关联表注入租户条件，默认 true（nil 视为 true）。
+	//
+	// true：所有 Joins("LEFT JOIN xxx") 关联表自动注入，别名从语句中自动解析。
+	//   生成格式：`alias`.`field` = ?（有别名）或 `table`.`field` = ?（无别名）
+	//
+	//   db.WithContext(ctx).
+	//       Table("sys_order a").
+	//       Joins("LEFT JOIN sys_order_item b ON b.order_id = a.id").
+	//       Find(&list)
+	//   // WHERE `a`.`tenant_id` = 1001 AND `b`.`tenant_id` = 1001
+	//
+	// false：关闭自动注入，需手动在业务代码中加条件。
+	AutoInjectJoinTables *bool
+
+	// ExcludeJoinTables 联表时不注入租户条件的关联表名（公共字典表、配置表等）。
+	//
+	//   ExcludeJoinTables: []string{"sys_dict", "sys_config"},
+	//
+	//   db.WithContext(ctx).Table("sys_order a").
+	//       Joins("LEFT JOIN sys_dict d ON d.code = a.status_code"). // 不注入
+	//       Find(&list)
+	//   // WHERE `a`.`tenant_id` = 1001（sys_dict 不注入）
+	ExcludeJoinTables []string
+
+	// JoinTableOverrides 特定关联表的字段覆盖配置（通常不需要配置）。
+	// 仅当某张关联表的字段名与主表不同时才需要。
+	//
+	//   JoinTableOverrides: []plugin.JoinTenantConfig[int64]{
+	//       {Table: "sys_contract_detail", Field: "company_id"},
+	//   }
+	JoinTableOverrides []JoinTenantConfig[T]
+
+	// ── 安全配置 ─────────────────────────────────────────────────────────────
+
+	// AllowGlobalUpdate 允许无业务条件的全表 Update，默认 false（禁止）。
+	// 临时放开：ctx = plugin.AllowGlobalOperation(ctx)
+	AllowGlobalUpdate bool
+
+	// AllowGlobalDelete 允许无业务条件的全表 Delete，默认 false（禁止）。
+	AllowGlobalDelete bool
+
+	// AllowOverrideTenantID 允许业务代码通过 WithOverrideTenantID 覆盖中间件注入的租户 ID。
+	// 默认 false（不允许），防止租户隔离被绕过。
+	// true 时适合超管管理后台、数据迁移等需要切换租户的特殊场景。
+	AllowOverrideTenantID bool
+
+	// DuplicatePolicy 当业务代码已手动写了租户字段条件时的处理策略，默认 PolicySkip。
+	//
+	// PolicySkip（默认）：发现已有租户 AND 条件时跳过注入，以业务代码为准。
+	//
+	//   db.WithContext(ctx).Where("tenant_id = ?", 1001).Find(&list)
+	//   // 生成：WHERE tenant_id = 1001（不重复）
+	//
+	// PolicyReplace：始终以 ctx 中的租户 ID 覆盖业务代码写的值，强制隔离。
+	//
+	//   db.WithContext(ctx).Where("tenant_id = ?", 9999).Find(&list)
+	//   // 生成：WHERE tenant_id = 1001（强制替换为 ctx 中的值）
+	//
+	// PolicyAppend：不检查直接追加，性能最好，但可能产生重复条件。
+	//
+	//   db.WithContext(ctx).Where("tenant_id = ?", 1001).Find(&list)
+	//   // 生成：WHERE tenant_id = 1001 AND tenant_id = 1001（重复但不影响结果）
+	//
+	// ⚠️ 安全提示：无论哪种策略，租户字段出现在 OR 条件中时均会被拒绝执行，
+	// 防止 WHERE (tenant_id = 9999 OR status = 1) 绕过租户隔离。
+	DuplicatePolicy DuplicateTenantPolicy
+
+	// ── 其他 ─────────────────────────────────────────────────────────────────
+
+	// InjectMode 注入方式，默认 ModeScopes（与 ModeWhere 效果相同，保留兼容）。
 	InjectMode InjectMode
 
-	// ExcludeTables 不参与租户过滤的表名列表（精确匹配，不含库名前缀，不区分大小写）。
-	// 通常用于公共配置表、字典表、菜单表等所有租户共享的数据。
+	// ExcludeTables 主表排除列表（公共表不参与租户过滤）。
 	// 示例：[]string{"sys_config", "sys_dict_data", "sys_menu"}
 	ExcludeTables []string
 
-	// GetTenantID 自定义租户 ID 获取函数（可选）。
-	// 签名：func(ctx context.Context) (tenantID T, ok bool)
-	//   - ok=true：成功获取到租户 ID，插件正常注入条件
-	//   - ok=false：未获取到（如未登录），插件跳过注入
-	// 为 nil 时使用 DefaultGetTenantID，自动读取 WithTenantID 写入的值。
-	//
-	// 自定义示例（从自定义 ctx key 读取）：
-	//
-	//	GetTenantID: func(ctx context.Context) (string, bool) {
-	//	    tid, ok := ctx.Value("myTenantKey").(string)
-	//	    return tid, ok && tid != ""
-	//	},
+	// GetTenantID 全局默认取值函数（可选）。
+	// 为 nil 时使用 DefaultGetTenantID（读取 WithTenantID 写入的值）。
 	GetTenantID func(ctx context.Context) (T, bool)
 }
 
 // ================== 插件实现 ==================
 
-// tenantPlugin gorm.Plugin 接口实现，持有配置和排除表集合。
 type tenantPlugin[T comparable] struct {
-	cfg        TenantConfig[T]
-	excludeSet map[string]struct{} // 排除表集合，key 为小写表名
-	mu         sync.RWMutex        // 保护 excludeSet 的读写锁
+	cfg             TenantConfig[T]
+	defaultField    []TenantFieldConfig[T]
+	tableFields     map[string][]TenantFieldConfig[T]
+	autoInjectJoin  bool
+	excludeJoinSet  map[string]struct{}
+	joinOverrideMap map[string]JoinTenantConfig[T]
+	excludeSet      map[string]struct{}
+	mu              sync.RWMutex
 }
 
-// Name 返回插件唯一名称。
-// 包含泛型类型信息，确保 string 和 int64 租户可以同时注册互不冲突。
 func (p *tenantPlugin[T]) Name() string {
 	return fmt.Sprintf("gorm-plus:tenant:%T", *new(T))
 }
 
-// Initialize 向 gorm 注册 Query / Update / Delete / Create 四类操作的钩子。
-// gorm 框架在 db.Use(plugin) 时自动调用此方法。
 func (p *tenantPlugin[T]) Initialize(db *gorm.DB) error {
-	// Query / Update / Delete：在 SQL 执行前追加 WHERE 租户条件
-	for _, op := range []struct {
-		name string
-		reg  func(string, func(*gorm.DB)) error
-	}{
-		{"query", func(n string, fn func(*gorm.DB)) error {
-			return db.Callback().Query().Before("gorm:query").Register(n, fn)
-		}},
-		{"update", func(n string, fn func(*gorm.DB)) error {
-			return db.Callback().Update().Before("gorm:update").Register(n, fn)
-		}},
-		{"delete", func(n string, fn func(*gorm.DB)) error {
-			return db.Callback().Delete().Before("gorm:delete").Register(n, fn)
-		}},
-	} {
-		if err := op.reg(p.Name()+":"+op.name, p.injectWhere); err != nil {
-			return fmt.Errorf("RegisterTenant: 注册 %s 钩子失败: %w", op.name, err)
-		}
+	if err := db.Callback().Query().Before("gorm:query").
+		Register(p.Name()+":query", p.injectWhere); err != nil {
+		return fmt.Errorf("RegisterTenant: 注册 query 钩子失败: %w", err)
 	}
-
-	// Create：在创建前通过反射填充 struct 的租户字段，支持单条和批量
-	if err := db.Callback().Create().Before("gorm:create").Register(
-		p.Name()+":create", p.injectCreate,
-	); err != nil {
+	if err := db.Callback().Update().Before("gorm:update").
+		Register(p.Name()+":update_check", p.checkGlobalUpdate); err != nil {
+		return fmt.Errorf("RegisterTenant: 注册 update_check 钩子失败: %w", err)
+	}
+	if err := db.Callback().Update().After(p.Name()+":update_check").
+		Register(p.Name()+":update", p.injectWhere); err != nil {
+		return fmt.Errorf("RegisterTenant: 注册 update 钩子失败: %w", err)
+	}
+	if err := db.Callback().Delete().Before("gorm:delete").
+		Register(p.Name()+":delete_check", p.checkGlobalDelete); err != nil {
+		return fmt.Errorf("RegisterTenant: 注册 delete_check 钩子失败: %w", err)
+	}
+	if err := db.Callback().Delete().After(p.Name()+":delete_check").
+		Register(p.Name()+":delete", p.injectWhere); err != nil {
+		return fmt.Errorf("RegisterTenant: 注册 delete 钩子失败: %w", err)
+	}
+	if err := db.Callback().Create().Before("gorm:create").
+		Register(p.Name()+":create", p.injectCreate); err != nil {
 		return fmt.Errorf("RegisterTenant: 注册 create 钩子失败: %w", err)
 	}
 	return nil
 }
 
+// ================== 安全检查 ==================
+
+// checkTenantFieldSafety 在注入前检查用户已有 WHERE 条件的安全性。
+//
+// 两类问题：
+//  1. 重复条件：用户已写了租户字段条件，插件无需再注入（直接跳过）
+//  2. OR 绕过：租户字段出现在 OR 条件中，可能绕过隔离，直接拒绝
+//
+// 返回值：
+//   - skip=true：用户已有该字段的 AND 条件，插件跳过注入（安全）
+//   - skip=false, err=nil：未发现该字段，插件正常注入
+//   - skip=false, err!=nil：发现危险的 OR 条件，拒绝执行
+func (p *tenantPlugin[T]) checkTenantFieldSafety(db *gorm.DB, field string) (skip bool, err error) {
+	if db.Statement == nil {
+		return false, nil
+	}
+	whereClause, ok := db.Statement.Clauses["WHERE"]
+	if !ok || whereClause.Expression == nil {
+		return false, nil
+	}
+
+	// 遍历所有 WHERE 条件，检查租户字段出现情况
+	switch expr := whereClause.Expression.(type) {
+	case clause.Where:
+		for _, cond := range expr.Exprs {
+			s, e := checkExprForTenantField(cond, field)
+			if e != nil {
+				return false, e
+			}
+			if s {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// checkExprForTenantField 递归检查单个 clause 表达式中的租户字段安全性。
+//
+// 返回：
+//   - (true, nil)：在 AND 条件中找到租户字段 → 插件跳过注入
+//   - (false, error)：在 OR 条件中发现租户字段 → 危险，拒绝执行
+//   - (false, nil)：未发现租户字段 → 正常注入
+func checkExprForTenantField(expr clause.Expression, field string) (skip bool, err error) {
+	switch e := expr.(type) {
+	case clause.Eq:
+		// 普通 AND 等值条件：col = ?
+		if colStr, ok := e.Column.(string); ok && colMatchesField(colStr, field) {
+			return true, nil // 已有该字段的 AND 条件，跳过注入
+		}
+		if col, ok := e.Column.(clause.Column); ok && colMatchesField(col.Name, field) {
+			return true, nil
+		}
+
+	case clause.AndConditions:
+		// AND 分组，递归检查每个子条件
+		for _, sub := range e.Exprs {
+			s, e := checkExprForTenantField(sub, field)
+			if e != nil {
+				return false, e
+			}
+			if s {
+				return true, nil
+			}
+		}
+
+	case clause.OrConditions:
+		// OR 分组：只要 OR 中涉及租户字段，立即拒绝
+		// 因为 WHERE (tenant_id = 9999 OR status = 1) 会绕过租户隔离
+		for _, sub := range e.Exprs {
+			if containsTenantField(sub, field) {
+				return false, fmt.Errorf(
+					"tenant: 检测到租户字段 %q 出现在 OR 条件中，"+
+						"可能绕过租户隔离，已拒绝执行。"+
+						"如需跨租户查询请使用 plugin.SkipTenant(ctx)",
+					field,
+				)
+			}
+		}
+
+	case clause.Expr:
+		// 原生 SQL 字符串：扫描是否包含租户字段
+		sql := strings.ToLower(e.SQL)
+		fieldLower := strings.ToLower(field)
+		if strings.Contains(sql, fieldLower) {
+			// 包含 OR 关键字时视为危险
+			if strings.Contains(sql, " or ") {
+				return false, fmt.Errorf(
+					"tenant: 原生 SQL 条件中检测到租户字段 %q 与 OR 同时出现，"+
+						"可能绕过租户隔离，已拒绝执行。"+
+						"如需跨租户查询请使用 plugin.SkipTenant(ctx)",
+					field,
+				)
+			}
+			// 纯 AND 的原生 SQL，视为用户已主动指定，跳过注入
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// containsTenantField 判断表达式中是否包含指定字段（用于 OR 危险检测）。
+func containsTenantField(expr clause.Expression, field string) bool {
+	switch e := expr.(type) {
+	case clause.Eq:
+		if colStr, ok := e.Column.(string); ok {
+			return colMatchesField(colStr, field)
+		}
+		if col, ok := e.Column.(clause.Column); ok {
+			return colMatchesField(col.Name, field)
+		}
+	case clause.Expr:
+		return strings.Contains(strings.ToLower(e.SQL), strings.ToLower(field))
+	case clause.AndConditions:
+		for _, sub := range e.Exprs {
+			if containsTenantField(sub, field) {
+				return true
+			}
+		}
+	case clause.OrConditions:
+		for _, sub := range e.Exprs {
+			if containsTenantField(sub, field) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// colMatchesField 判断列名字符串是否匹配字段名（忽略表前缀和反引号）。
+//
+//	colMatchesField("a.tenant_id", "tenant_id") → true
+//	colMatchesField("`tenant_id`", "tenant_id") → true
+//	colMatchesField("tenant_id", "tenant_id")   → true
+func colMatchesField(col, field string) bool {
+	col = strings.ToLower(strings.Trim(col, "`"))
+	field = strings.ToLower(field)
+	// 去掉表前缀（如 "a.tenant_id" → "tenant_id"）
+	if idx := strings.LastIndex(col, "."); idx >= 0 {
+		col = col[idx+1:]
+	}
+	return col == field
+}
+
+// ================== 核心注入 ==================
+
 // injectWhere 在 Query / Update / Delete 执行前注入租户 WHERE 条件。
-// 根据 InjectMode 选择 Scopes 或直接 Where 注入方式。
 func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 	if db.Statement == nil || db.Statement.Context == nil {
 		return
 	}
-	// 检查是否需要跳过（SkipTenant 或排除表）
-	if p.shouldSkip(db.Statement.Context, db) {
-		return
-	}
-	tenantID, ok := p.cfg.GetTenantID(db.Statement.Context)
-	if !ok || isZero(tenantID) {
-		// 未获取到租户 ID（如匿名请求），跳过注入
+	ctx := resolveCtx(db.Statement.Context)
+	if p.shouldSkip(ctx, db) {
 		return
 	}
 
-	sql := fmt.Sprintf("`%s` = ?", p.cfg.TenantField)
+	tableName := p.tableName(db)
+	fields, hitTable := p.fieldsFor(tableName)
+	if hitTable && len(fields) == 0 {
+		return
+	}
 
-	// 两种模式在 Callback 中实现相同：直接操作 Statement.Where。
-	// ⚠️ db.Scopes() 在 Callback 里调用无效，gorm 执行到 Callback 时已跳过 Scopes 处理阶段，
-	// 因此无论 ModeScopes 还是 ModeWhere 都使用 Statement.Where 注入。
-	db.Statement.Where(sql, tenantID)
+	prefix := p.fieldPrefix(db)
+
+	for _, f := range fields {
+		// 根据 DuplicatePolicy 决定如何处理已有租户条件
+		switch p.cfg.DuplicatePolicy {
+		case PolicyAppend:
+			// 直接追加，不扫描已有条件，性能最优
+			// 适合确定业务代码不会手动写租户条件的场景
+
+		case PolicyReplace:
+			// 先移除业务代码写的租户字段条件，再由插件注入正确值
+			// 适合需要强制隔离、不信任业务代码的严格模式
+			// ⚠️ 仍会检测 OR 危险条件，发现则拒绝执行
+			_, err := p.checkTenantFieldSafety(db, f.Field)
+			if err != nil {
+				_ = db.AddError(err)
+				return
+			}
+			removeWhereField(db, f.Field)
+
+		default: // PolicySkip（默认）
+			// 扫描已有条件：
+			//   - 发现 AND 条件中已有该字段 → 跳过注入（以业务代码为准）
+			//   - 发现 OR 条件中有该字段 → 危险，拒绝执行
+			//   - 未发现 → 正常注入
+			skip, err := p.checkTenantFieldSafety(db, f.Field)
+			if err != nil {
+				_ = db.AddError(err)
+				return
+			}
+			if skip {
+				continue
+			}
+		}
+
+		tenantID, ok := p.resolveTenantID(ctx, f.GetTenantID)
+		if !ok {
+			continue
+		}
+
+		var sql string
+		if prefix != "" {
+			sql = fmt.Sprintf("`%s`.`%s` = ?", prefix, f.Field)
+		} else {
+			sql = fmt.Sprintf("`%s` = ?", f.Field)
+		}
+		db.Statement.Where(sql, tenantID)
+	}
+
+	p.injectJoinWhere(db, ctx)
 }
 
-// injectCreate 在 Create 执行前通过 gorm schema 反射为 struct 填充租户字段。
-// 支持：
-//   - 单条创建：db.Create(&order)
-//   - 批量创建：db.Create(&orders)  // orders 为 slice
-//   - 指针 slice：db.Create(&[]*Order{...})
+// removeWhereField 从 Statement.Clauses["WHERE"] 中移除指定字段的所有 AND 条件。
+// 供 PolicyReplace 使用：先清除业务代码写的租户条件，再由插件重新注入正确值。
+func removeWhereField(db *gorm.DB, field string) {
+	if db.Statement == nil {
+		return
+	}
+	whereClause, ok := db.Statement.Clauses["WHERE"]
+	if !ok || whereClause.Expression == nil {
+		return
+	}
+	w, ok := whereClause.Expression.(clause.Where)
+	if !ok {
+		return
+	}
+	filtered := w.Exprs[:0]
+	for _, expr := range w.Exprs {
+		if !exprContainsField(expr, field) {
+			filtered = append(filtered, expr)
+		}
+	}
+	w.Exprs = filtered
+	whereClause.Expression = w
+	db.Statement.Clauses["WHERE"] = whereClause
+}
+
+// exprContainsField 判断 clause 表达式是否包含指定字段（供 removeWhereField 使用）。
+func exprContainsField(expr clause.Expression, field string) bool {
+	switch e := expr.(type) {
+	case clause.Eq:
+		if colStr, ok := e.Column.(string); ok {
+			return colMatchesField(colStr, field)
+		}
+		if col, ok := e.Column.(clause.Column); ok {
+			return colMatchesField(col.Name, field)
+		}
+	case clause.Expr:
+		return strings.Contains(strings.ToLower(e.SQL), strings.ToLower(field))
+	case clause.AndConditions:
+		for _, sub := range e.Exprs {
+			if exprContainsField(sub, field) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// injectJoinWhere 自动为所有 JOIN 关联表注入租户条件。
+//
+// 流程：
+//  1. AutoInjectJoinTables=false 时直接返回
+//  2. 从 Statement.Joins 解析关联表名和别名（自动识别，无需配置）
+//  3. 跳过 ExcludeJoinTables 中的表
+//  4. 查找 JoinTableOverrides 中的覆盖配置
+//  5. 安全检查（重复条件跳过，OR 危险拒绝）
+//  6. 生成 `alias`.`field` = ? 条件
+//
+// 别名解析示例：
+//
+//	"LEFT JOIN sys_order_item b ON b.order_id = a.id"  → alias=b
+//	"JOIN sys_user AS u ON u.id = a.user_id"           → alias=u
+//	"LEFT JOIN sys_dept ON sys_dept.id = a.dept_id"    → 无别名，用表名
+func (p *tenantPlugin[T]) injectJoinWhere(db *gorm.DB, ctx context.Context) {
+	if !p.autoInjectJoin || db.Statement == nil || len(db.Statement.Joins) == 0 {
+		return
+	}
+
+	defaultField := ""
+	if len(p.defaultField) > 0 {
+		defaultField = p.defaultField[0].Field
+	}
+	if defaultField == "" {
+		return
+	}
+
+	for _, join := range db.Statement.Joins {
+		tableName, alias := parseJoinTable(join.Name)
+		if tableName == "" {
+			continue
+		}
+		lowerTable := strings.ToLower(tableName)
+
+		if _, excluded := p.excludeJoinSet[lowerTable]; excluded {
+			continue
+		}
+
+		field := defaultField
+		var overrideGetter func(context.Context) (T, bool)
+		if override, ok := p.joinOverrideMap[lowerTable]; ok {
+			if override.Field != "" {
+				field = override.Field
+			}
+			overrideGetter = override.GetTenantID
+		}
+
+		// 安全检查
+		skip, err := p.checkTenantFieldSafety(db, field)
+		if err != nil {
+			_ = db.AddError(err)
+			return
+		}
+		if skip {
+			continue
+		}
+
+		tenantID, ok := p.resolveTenantID(ctx, overrideGetter)
+		if !ok {
+			continue
+		}
+
+		prefix := alias
+		if prefix == "" {
+			prefix = tableName
+		}
+		db.Statement.Where(fmt.Sprintf("`%s`.`%s` = ?", prefix, field), tenantID)
+	}
+}
+
+// parseJoinTable 从 JOIN 子句字符串中解析出表名和别名。
+//
+// 支持格式：
+//
+//	"LEFT JOIN sys_order_item b ON b.order_id = a.id"       → ("sys_order_item", "b")
+//	"JOIN sys_user AS u ON u.id = a.user_id"                → ("sys_user", "u")
+//	"LEFT JOIN sys_dept ON sys_dept.id = a.dept_id"         → ("sys_dept", "")
+//	"INNER JOIN `sys_role` r ON r.id = a.role_id"           → ("sys_role", "r")
+func parseJoinTable(joinStr string) (table, alias string) {
+	upper := strings.ToUpper(joinStr)
+	joinIdx := strings.Index(upper, "JOIN")
+	if joinIdx < 0 {
+		return "", ""
+	}
+	rest := strings.TrimSpace(joinStr[joinIdx+4:])
+	if onIdx := strings.Index(strings.ToUpper(rest), " ON "); onIdx > 0 {
+		rest = strings.TrimSpace(rest[:onIdx])
+	}
+	parts := strings.Fields(rest)
+	switch len(parts) {
+	case 0:
+		return "", ""
+	case 1:
+		return strings.Trim(parts[0], "`"), ""
+	case 2:
+		return strings.Trim(parts[0], "`"), strings.Trim(parts[1], "`")
+	default:
+		if strings.EqualFold(parts[1], "AS") && len(parts) >= 3 {
+			return strings.Trim(parts[0], "`"), strings.Trim(parts[2], "`")
+		}
+		return strings.Trim(parts[0], "`"), strings.Trim(parts[1], "`")
+	}
+}
+
+// injectCreate 在 Create 前为 struct 填充租户字段值。
 func (p *tenantPlugin[T]) injectCreate(db *gorm.DB) {
 	if db.Statement == nil || db.Statement.Context == nil {
 		return
 	}
-	if p.shouldSkip(db.Statement.Context, db) {
+	ctx := resolveCtx(db.Statement.Context)
+	if p.shouldSkip(ctx, db) {
 		return
 	}
-	tenantID, ok := p.cfg.GetTenantID(db.Statement.Context)
-	if !ok || isZero(tenantID) {
-		return
-	}
-	// Schema 或 ReflectValue 未初始化时跳过（如 db.Exec 等原生场景）
 	if db.Statement.Schema == nil || !db.Statement.ReflectValue.IsValid() {
 		return
 	}
-	// 查找租户字段，字段不存在时跳过（该表无租户字段）
-	f := db.Statement.Schema.LookUpField(p.cfg.TenantField)
-	if f == nil {
+
+	tableName := p.tableName(db)
+	fields, hitTable := p.fieldsFor(tableName)
+	if hitTable && len(fields) == 0 {
 		return
 	}
 
+	for _, f := range fields {
+		sf := db.Statement.Schema.LookUpField(f.Field)
+		if sf == nil {
+			continue
+		}
+		tenantID, ok := p.resolveTenantID(ctx, f.GetTenantID)
+		if !ok {
+			continue
+		}
+		p.fillField(db, sf, tenantID)
+	}
+}
+
+// fillField 对 struct 或 slice 的每个元素填充字段值。
+func (p *tenantPlugin[T]) fillField(db *gorm.DB, f *schema.Field, val T) {
 	rv := db.Statement.ReflectValue
 	switch rv.Kind() {
 	case reflect.Slice, reflect.Array:
-		// 批量创建：遍历每个元素逐一填充
 		for i := 0; i < rv.Len(); i++ {
 			elem := rv.Index(i)
 			if elem.Kind() == reflect.Ptr {
@@ -320,54 +792,143 @@ func (p *tenantPlugin[T]) injectCreate(db *gorm.DB) {
 				elem = elem.Elem()
 			}
 			if elem.IsValid() {
-				_ = f.Set(db.Statement.Context, elem, tenantID)
+				_ = f.Set(db.Statement.Context, elem, val)
 			}
 		}
 	default:
-		// 单条创建
 		elem := rv
 		if elem.Kind() == reflect.Ptr {
 			elem = elem.Elem()
 		}
 		if elem.IsValid() {
-			_ = f.Set(db.Statement.Context, elem, tenantID)
+			_ = f.Set(db.Statement.Context, elem, val)
 		}
 	}
 }
 
-// shouldSkip 判断当前操作是否应跳过租户过滤。
-// 以下情况跳过：
-//  1. ctx 中设置了 SkipTenant
-//  2. 操作的表在排除表列表中
+// ================== 全表保护 ==================
+
+// hasBusinessWhere 判断是否存在业务层主动加入的 WHERE 条件（租户条件不算）。
+func (p *tenantPlugin[T]) hasBusinessWhere(db *gorm.DB) bool {
+	if db.Statement == nil {
+		return false
+	}
+	whereClause, ok := db.Statement.Clauses["WHERE"]
+	if !ok {
+		return false
+	}
+	return whereClause.Expression != nil
+}
+
+// checkGlobalUpdate 禁止无业务条件的全表 Update。
+func (p *tenantPlugin[T]) checkGlobalUpdate(db *gorm.DB) {
+	if p.cfg.AllowGlobalUpdate {
+		return
+	}
+	if db.Statement == nil || db.Statement.Context == nil {
+		return
+	}
+	ctx := resolveCtx(db.Statement.Context)
+	if p.shouldSkip(ctx, db) || isAllowGlobalOperation(ctx) {
+		return
+	}
+	if !p.hasBusinessWhere(db) {
+		_ = db.AddError(fmt.Errorf(
+			"tenant: 禁止无业务条件的全表 Update（表: %s），"+
+				"如需执行请使用 plugin.AllowGlobalOperation(ctx) 临时放开，"+
+				"或在 TenantConfig 中设置 AllowGlobalUpdate: true",
+			p.tableName(db),
+		))
+	}
+}
+
+// checkGlobalDelete 禁止无业务条件的全表 Delete。
+func (p *tenantPlugin[T]) checkGlobalDelete(db *gorm.DB) {
+	if p.cfg.AllowGlobalDelete {
+		return
+	}
+	if db.Statement == nil || db.Statement.Context == nil {
+		return
+	}
+	ctx := resolveCtx(db.Statement.Context)
+	if p.shouldSkip(ctx, db) || isAllowGlobalOperation(ctx) {
+		return
+	}
+	if !p.hasBusinessWhere(db) {
+		_ = db.AddError(fmt.Errorf(
+			"tenant: 禁止无业务条件的全表 Delete（表: %s），"+
+				"如需执行请使用 plugin.AllowGlobalOperation(ctx) 临时放开，"+
+				"或在 TenantConfig 中设置 AllowGlobalDelete: true",
+			p.tableName(db),
+		))
+	}
+}
+
+// ================== 辅助方法 ==================
+
+func (p *tenantPlugin[T]) fieldsFor(tableName string) ([]TenantFieldConfig[T], bool) {
+	if len(p.tableFields) > 0 {
+		if fields, ok := p.tableFields[tableName]; ok {
+			return fields, true
+		}
+	}
+	return p.defaultField, false
+}
+
 func (p *tenantPlugin[T]) shouldSkip(ctx context.Context, db *gorm.DB) bool {
-	// 先解析 ctx，兼容 *gin.Context 等框架特定类型
-	ctx = resolveCtx(ctx)
-	// 检查是否显式跳过（超管场景）
 	if skip, ok := ctx.Value(skipTenantKey{}).(bool); ok && skip {
 		return true
 	}
-	// 检查是否为排除表（公共表）
 	return p.isExcluded(p.tableName(db))
 }
 
-// tableName 从 gorm Statement 中提取纯表名（去掉库名前缀和反引号，转小写）。
-// 示例："mydb.`order`" → "order"
 func (p *tenantPlugin[T]) tableName(db *gorm.DB) string {
 	if db.Statement == nil {
 		return ""
 	}
 	name := db.Statement.Table
-	// 去掉库名前缀（如 "mydb.order" → "order"）
 	if idx := strings.LastIndex(name, "."); idx >= 0 {
 		name = name[idx+1:]
+	}
+	name = strings.Trim(name, "`")
+	if db.Statement.Schema != nil && db.Statement.Schema.Table != "" {
+		return strings.ToLower(db.Statement.Schema.Table)
+	}
+	if idx := strings.IndexByte(name, ' '); idx >= 0 {
+		name = name[:idx]
 	}
 	return strings.ToLower(strings.Trim(name, "`"))
 }
 
-// isExcluded 判断表名是否在排除列表中（读写锁保护，线程安全）。
+func (p *tenantPlugin[T]) tableAlias(db *gorm.DB) string {
+	if db.Statement == nil {
+		return ""
+	}
+	name := strings.TrimSpace(strings.Trim(db.Statement.Table, "`"))
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		name = name[idx+1:]
+	}
+	parts := strings.Fields(name)
+	switch len(parts) {
+	case 2:
+		return parts[1]
+	case 3:
+		if strings.EqualFold(parts[1], "AS") {
+			return parts[2]
+		}
+	}
+	return ""
+}
+
+func (p *tenantPlugin[T]) fieldPrefix(db *gorm.DB) string {
+	if alias := p.tableAlias(db); alias != "" {
+		return alias
+	}
+	return ""
+}
+
 func (p *tenantPlugin[T]) isExcluded(table string) bool {
 	if table == "" {
-		// 表名为空时跳过，避免对无 Model 的原生查询误注入
 		return true
 	}
 	p.mu.RLock()
@@ -376,90 +937,143 @@ func (p *tenantPlugin[T]) isExcluded(table string) bool {
 	return ok
 }
 
-// isZero 判断泛型值是否为零值（空字符串、0、nil 等）。
+// resolveTenantID 获取最终租户 ID，处理覆盖逻辑。
+// AllowOverrideTenantID=true 时优先使用 WithOverrideTenantID 写入的值。
+func (p *tenantPlugin[T]) resolveTenantID(ctx context.Context, fieldGetter func(context.Context) (T, bool)) (T, bool) {
+	if p.cfg.AllowOverrideTenantID {
+		if overrideID, ok := overrideTenantIDFromCtx[T](ctx); ok && !isZero(overrideID) {
+			return overrideID, true
+		}
+	}
+	getter := fieldGetter
+	if getter == nil {
+		getter = p.cfg.GetTenantID
+	}
+	return getter(ctx)
+}
+
 func isZero[T comparable](v T) bool {
 	return reflect.ValueOf(v).IsZero()
 }
 
-// ================== 插件注册 ==================
+// ================== 构建插件 ==================
+
+func buildPlugin[T comparable](cfg TenantConfig[T]) (*tenantPlugin[T], error) {
+	if cfg.GetTenantID == nil {
+		cfg.GetTenantID = DefaultGetTenantID[T]
+	}
+
+	var defaultFields []TenantFieldConfig[T]
+	if len(cfg.TenantFields) > 0 {
+		defaultFields = make([]TenantFieldConfig[T], len(cfg.TenantFields))
+		copy(defaultFields, cfg.TenantFields)
+	} else if cfg.TenantField != "" {
+		defaultFields = []TenantFieldConfig[T]{{Field: cfg.TenantField}}
+	} else {
+		return nil, fmt.Errorf("RegisterTenant: TenantField 和 TenantFields 不能同时为空")
+	}
+	for i := range defaultFields {
+		if defaultFields[i].GetTenantID == nil {
+			defaultFields[i].GetTenantID = cfg.GetTenantID
+		}
+	}
+
+	tableFields := make(map[string][]TenantFieldConfig[T], len(cfg.TableFields))
+	for table, fields := range cfg.TableFields {
+		copied := make([]TenantFieldConfig[T], len(fields))
+		copy(copied, fields)
+		for i := range copied {
+			if copied[i].GetTenantID == nil {
+				copied[i].GetTenantID = cfg.GetTenantID
+			}
+		}
+		tableFields[strings.ToLower(table)] = copied
+	}
+
+	autoInjectJoin := true
+	if cfg.AutoInjectJoinTables != nil {
+		autoInjectJoin = *cfg.AutoInjectJoinTables
+	}
+
+	excludeJoinSet := make(map[string]struct{}, len(cfg.ExcludeJoinTables))
+	for _, t := range cfg.ExcludeJoinTables {
+		excludeJoinSet[strings.ToLower(t)] = struct{}{}
+	}
+
+	joinOverrideMap := make(map[string]JoinTenantConfig[T], len(cfg.JoinTableOverrides))
+	for _, jt := range cfg.JoinTableOverrides {
+		key := strings.ToLower(jt.Table)
+		if jt.GetTenantID == nil {
+			jt.GetTenantID = cfg.GetTenantID
+		}
+		joinOverrideMap[key] = jt
+	}
+
+	excludeSet := make(map[string]struct{}, len(cfg.ExcludeTables))
+	for _, t := range cfg.ExcludeTables {
+		excludeSet[strings.ToLower(t)] = struct{}{}
+	}
+
+	return &tenantPlugin[T]{
+		cfg:             cfg,
+		defaultField:    defaultFields,
+		tableFields:     tableFields,
+		autoInjectJoin:  autoInjectJoin,
+		excludeJoinSet:  excludeJoinSet,
+		joinOverrideMap: joinOverrideMap,
+		excludeSet:      excludeSet,
+	}, nil
+}
+
+// ================== 注册函数 ==================
 
 // RegisterTenant 向指定 DB 注册多租户插件，整个应用只需调用一次。
 //
-// T 为租户 ID 类型，支持 string、int64 等任意可比较类型。
-// 注册后所有经过 db.WithContext(ctx) 的 Query / Update / Delete / Create 操作
-// 均自动注入租户条件，业务代码无需任何改动。
+// 用法一（单字段）：
 //
-// 示例（string 租户，默认 ModeScopes）：
-//
-//	if err := plugin.RegisterTenant(db, plugin.TenantConfig[string]{
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
 //	    TenantField:   "tenant_id",
-//	    ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
-//	}); err != nil {
-//	    log.Fatalf("注册多租户插件失败: %v", err)
-//	}
+//	    ExcludeTables: []string{"sys_config", "sys_dict"},
+//	})
 //
-// 示例（int64 租户）：
+// 用法二（多字段）：
 //
-//	if err := plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
+//	    TenantFields: []plugin.TenantFieldConfig[int64]{
+//	        {Field: "tenant_id"},
+//	        {Field: "org_id", GetTenantID: orgIDGetter},
+//	    },
+//	})
+//
+// 用法三（不同表不同字段）：
+//
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
 //	    TenantField: "tenant_id",
-//	}); err != nil {
-//	    log.Fatalf("注册多租户插件失败: %v", err)
-//	}
-//
-// 示例（指定 ModeWhere 注入）：
-//
-//	plugin.RegisterTenant(db, plugin.TenantConfig[string]{
-//	    TenantField: "tenant_id",
-//	    InjectMode:  plugin.ModeWhere,
+//	    TableFields: map[string][]plugin.TenantFieldConfig[int64]{
+//	        "sys_contract": {{Field: "company_id"}},
+//	        "sys_log":      {},
+//	    },
 //	})
 func RegisterTenant[T comparable](db *gorm.DB, cfg TenantConfig[T]) error {
-	if cfg.TenantField == "" {
-		return fmt.Errorf("RegisterTenant: TenantField 不能为空")
+	p, err := buildPlugin(cfg)
+	if err != nil {
+		return err
 	}
-	if cfg.GetTenantID == nil {
-		cfg.GetTenantID = DefaultGetTenantID[T]
-	}
-	excludeSet := make(map[string]struct{}, len(cfg.ExcludeTables))
-	for _, t := range cfg.ExcludeTables {
-		excludeSet[strings.ToLower(t)] = struct{}{}
-	}
-	return db.Use(&tenantPlugin[T]{cfg: cfg, excludeSet: excludeSet})
+	return db.Use(p)
 }
 
-// NewTenantPlugin 工厂函数，返回插件实例，适合需要手动管理插件生命周期的场景。
-//
-// 与 RegisterTenant 的区别：NewTenantPlugin 只创建实例，不自动注册到 DB；
-// 需要手动调用 db.Use(p) 注册。
-//
-// 示例：
-//
-//	p, err := plugin.NewTenantPlugin(plugin.TenantConfig[string]{
-//	    TenantField: "tenant_id",
-//	})
-//	if err != nil { ... }
-//	db.Use(p)
+// NewTenantPlugin 工厂函数，返回插件实例供手动 db.Use() 注册。
 func NewTenantPlugin[T comparable](cfg TenantConfig[T]) (gorm.Plugin, error) {
-	if cfg.TenantField == "" {
-		return nil, fmt.Errorf("NewTenantPlugin: TenantField 不能为空")
-	}
-	if cfg.GetTenantID == nil {
-		cfg.GetTenantID = DefaultGetTenantID[T]
-	}
-	excludeSet := make(map[string]struct{}, len(cfg.ExcludeTables))
-	for _, t := range cfg.ExcludeTables {
-		excludeSet[strings.ToLower(t)] = struct{}{}
-	}
-	return &tenantPlugin[T]{cfg: cfg, excludeSet: excludeSet}, nil
+	return buildPlugin(cfg)
 }
 
 // ================== 动态排除表 ==================
 
-// getPlugin 从 gorm DB 的插件注册表中取出对应类型的租户插件实例。
 func getPlugin[T comparable](db *gorm.DB) (*tenantPlugin[T], error) {
 	name := fmt.Sprintf("gorm-plus:tenant:%T", *new(T))
 	raw, ok := db.Config.Plugins[name]
 	if !ok {
-		return nil, fmt.Errorf("tenant: 插件 %q 未注册，请先调用 RegisterTenant", name)
+		return nil, fmt.Errorf("tenant: 插件 %q 未注册", name)
 	}
 	p, ok := raw.(*tenantPlugin[T])
 	if !ok {
@@ -468,15 +1082,9 @@ func getPlugin[T comparable](db *gorm.DB) (*tenantPlugin[T], error) {
 	return p, nil
 }
 
-// AddExcludeTable 运行时动态添加不参与租户过滤的表，线程安全。
-// 适合运行时根据业务动态调整哪些表需要租户隔离。
+// AddExcludeTable 运行时动态添加主表排除表（线程安全）。
 //
-// 示例：
-//
-//	// 将 log_audit 和 sys_trace 加入排除列表
-//	if err := plugin.AddExcludeTable[string](db, "log_audit", "sys_trace"); err != nil {
-//	    log.Println(err)
-//	}
+//	plugin.AddExcludeTable[int64](db, "log_audit", "sys_trace")
 func AddExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
 	p, err := getPlugin[T](db)
 	if err != nil {
@@ -490,14 +1098,9 @@ func AddExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
 	return nil
 }
 
-// RemoveExcludeTable 运行时动态移除排除表，使其重新参与租户过滤，线程安全。
+// RemoveExcludeTable 运行时动态移除排除表（线程安全）。
 //
-// 示例：
-//
-//	// 让 sys_dict 重新参与租户过滤
-//	if err := plugin.RemoveExcludeTable[string](db, "sys_dict"); err != nil {
-//	    log.Println(err)
-//	}
+//	plugin.RemoveExcludeTable[int64](db, "sys_dict")
 func RemoveExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
 	p, err := getPlugin[T](db)
 	if err != nil {
@@ -511,14 +1114,7 @@ func RemoveExcludeTable[T comparable](db *gorm.DB, tables ...string) error {
 	return nil
 }
 
-// ExcludedTables 返回当前所有排除表的名称列表快照，主要用于调试和运维查询。
-//
-// 示例：
-//
-//	tables, err := plugin.ExcludedTables[string](db)
-//	if err == nil {
-//	    fmt.Println("当前排除表:", tables)
-//	}
+// ExcludedTables 返回当前主表排除表快照（调试用）。
 func ExcludedTables[T comparable](db *gorm.DB) ([]string, error) {
 	p, err := getPlugin[T](db)
 	if err != nil {
@@ -533,54 +1129,50 @@ func ExcludedTables[T comparable](db *gorm.DB) ([]string, error) {
 	return tables, nil
 }
 
-// skipTenantKey 用于在 context 中标记跳过租户过滤，使用私有类型避免外部包 key 冲突。
+// ================== context 工具 ==================
+
 type skipTenantKey struct{}
-
-// tenantIDKey 泛型 context key。
-// 不同 T 对应不同的 key 类型，string 和 int64 租户可以共存于同一 ctx 互不干扰。
+type allowGlobalKey struct{}
 type tenantIDKey[T comparable] struct{}
+type overrideTenantIDKey[T comparable] struct{}
 
-// SkipTenant 返回一个标记了跳过租户过滤的新 context。
-// 用于超管查看所有租户数据、跨租户统计等特权场景。
+// SkipTenant 跳过所有租户过滤（超管、跨租户统计专用）。
 //
-// ⚠️ 注意：此 ctx 应仅在受控的超管接口中使用，避免在普通业务逻辑中误用。
-//
-// 示例：
-//
-//	// 超管查询所有租户的订单
 //	ctx = plugin.SkipTenant(ctx)
-//	db.WithContext(ctx).Find(&allOrders) // SELECT * FROM order（无 tenant_id 条件）
+//	db.WithContext(ctx).Find(&all) // 无任何租户条件
 func SkipTenant(ctx context.Context) context.Context {
 	return context.WithValue(ctx, skipTenantKey{}, true)
 }
 
-// WithTenantID 将租户 ID 写入 context，通常在 gin 中间件中调用。
-// 后续所有经过 db.WithContext(ctx) 的数据库操作均自动携带该租户 ID。
+// AllowGlobalOperation 临时允许无业务条件的全表 Update / Delete。
 //
-// 示例：
+//	ctx = plugin.AllowGlobalOperation(ctx)
+//	db.WithContext(ctx).Model(&Account{}).Updates(map[string]any{"status": 0})
+func AllowGlobalOperation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, allowGlobalKey{}, true)
+}
+
+func isAllowGlobalOperation(ctx context.Context) bool {
+	ok, _ := ctx.Value(allowGlobalKey{}).(bool)
+	return ok
+}
+
+// WithTenantID 将租户 ID 写入 context（通常在中间件中调用）。
 //
-//	// string 类型
-//	ctx = plugin.WithTenantID(ctx, "tenant-abc")
+//	// gin 中间件
+//	ctx := plugin.WithTenantID(c.Request.Context(), int64(1001))
+//	c.Request = c.Request.WithContext(ctx)
 //
-//	// int64 类型
-//	ctx = plugin.WithTenantID(ctx, int64(1001))
+//	// go-zero 中间件
+//	ctx := plugin.WithTenantID(r.Context(), int64(1001))
+//	r = r.WithContext(ctx)
 func WithTenantID[T comparable](ctx context.Context, tenantID T) context.Context {
 	return context.WithValue(ctx, tenantIDKey[T]{}, tenantID)
 }
 
-// TenantIDFromCtx 从 context 中读取租户 ID。
-// 类型参数 T 必须与 WithTenantID 写入时一致，不一致时返回零值。
-//
-// 示例：
-//
-//	tenantID := plugin.TenantIDFromCtx[string](ctx)
-//	if tenantID == "" {
-//	    // 未登录或未设置租户
-//	}
+// TenantIDFromCtx 从 context 读取租户 ID（类型参数须与写入时一致）。
 func TenantIDFromCtx[T comparable](ctx context.Context) T {
 	var zero T
-	// 先通过解析器转换 ctx，兼容 *gin.Context 等框架特定类型
-	// 确保直接传 *gin.Context 也能读取到中间件写入 Request.Context() 的数据
 	ctx = resolveCtx(ctx)
 	if v := ctx.Value(tenantIDKey[T]{}); v != nil {
 		if tid, ok := v.(T); ok {
@@ -590,17 +1182,41 @@ func TenantIDFromCtx[T comparable](ctx context.Context) T {
 	return zero
 }
 
-// DefaultGetTenantID 默认租户 ID 获取函数，从 WithTenantID 写入的 ctx 中读取。
-// 在 TenantConfig.GetTenantID 为 nil 时自动使用。
-//
-// 返回值：
-//   - (tenantID, true)：成功读取到非零值的租户 ID
-//   - (zero, false)：ctx 中无租户 ID 或为零值（如匿名请求），插件跳过注入
+// DefaultGetTenantID 默认取值函数，读取 WithTenantID 写入的值。
+// 返回零值时 ok=false，插件跳过注入。
 func DefaultGetTenantID[T comparable](ctx context.Context) (T, bool) {
+	ctx = resolveCtx(ctx)
 	tid := TenantIDFromCtx[T](ctx)
 	if reflect.ValueOf(tid).IsZero() {
 		var zero T
 		return zero, false
 	}
 	return tid, true
+}
+
+// WithOverrideTenantID 临时覆盖租户 ID（需 AllowOverrideTenantID=true 才生效）。
+//
+// 适合超管管理后台查看指定租户数据、数据迁移等场景。
+//
+//	// 注册时开启
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
+//	    TenantField:           "tenant_id",
+//	    AllowOverrideTenantID: true,
+//	})
+//
+//	// 超管查看租户 2002 的数据（中间件注入的是 1001）
+//	ctx = plugin.WithOverrideTenantID(ctx, int64(2002))
+//	db.WithContext(ctx).Find(&list) // WHERE tenant_id = 2002
+func WithOverrideTenantID[T comparable](ctx context.Context, tenantID T) context.Context {
+	return context.WithValue(ctx, overrideTenantIDKey[T]{}, tenantID)
+}
+
+func overrideTenantIDFromCtx[T comparable](ctx context.Context) (T, bool) {
+	var zero T
+	v := ctx.Value(overrideTenantIDKey[T]{})
+	if v == nil {
+		return zero, false
+	}
+	id, ok := v.(T)
+	return id, ok
 }
