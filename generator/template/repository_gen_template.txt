@@ -16,9 +16,9 @@ type default{{.ModelName}}Repository struct {
 
 type iDefault{{.ModelName}}Repository interface {
 	// Create 创建记录
-	Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity) error
+	Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity,omitFields ...field.Expr) error
 	// CreateBatch 批量创建
-	CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity) error
+	CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity,omitFields ...field.Expr) error
 	// DeleteById 根据ID删除
 	DeleteById(ctx context.Context, {{.ModelNameLower}}Id int64) error
 	// DeleteByIdList 根据ID列表批量删除
@@ -47,12 +47,20 @@ type iDefault{{.ModelName}}Repository interface {
 
 // ==================== 实现 ====================
 
-func (r *default{{.ModelName}}Repository) Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity) error {
-	return dao.{{.ModelName}}Entity.WithContext(ctx).Create(m)
+func (r *default{{.ModelName}}Repository) Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity,omitFields ...field.Expr) error {
+	tx :=dao.{{.ModelName}}Entity.WithContext(ctx)
+	if len(omitFields) > 0 {
+	    tx = tx.Omit(omitFields...)
+	}
+	return tx.Create(m)
 }
 
-func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity) error {
-	return dao.{{.ModelName}}Entity.WithContext(ctx).CreateInBatches(m, len(m))
+func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity,omitFields ...field.Expr) error {
+    tx :=dao.{{.ModelName}}Entity.WithContext(ctx)
+    if len(omitFields) > 0 {
+        tx = tx.Omit(omitFields...)
+    }
+	return tx.CreateInBatches(m, len(m))
 }
 
 func (r *default{{.ModelName}}Repository) DeleteById(ctx context.Context, {{.ModelNameLower}}Id int64) error {
