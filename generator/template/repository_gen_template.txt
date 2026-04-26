@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"gorm.io/gen/field"
 	"gorm.io/gen"
 	"{{.DaoPath}}"
 	"{{.ModelPath}}"
@@ -25,7 +26,7 @@ type iDefault{{.ModelName}}Repository interface {
 	// DeleteByCondition 根据条件删除
 	DeleteByCondition(ctx context.Context, cond ...gen.Condition) error
 	// UpdateById 根据ID全量更新（所有字段）
-	UpdateById(ctx context.Context, {{.ModelNameLower}}Id int64, m *{{.ModelPkgName}}.{{.ModelName}}Entity) error
+	UpdateById(ctx context.Context, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error
 	// UpdateMapById 根据ID更新Map数据
 	UpdateMapById(ctx context.Context, {{.ModelNameLower}}Id int64, data map[string]any) error
 	// FindListByCondition 根据条件获取列表
@@ -74,18 +75,11 @@ func (r *default{{.ModelName}}Repository) DeleteByCondition(ctx context.Context,
 	return err
 }
 
-func (r *default{{.ModelName}}Repository) UpdateById(ctx context.Context, {{.ModelNameLower}}Id int64, m *{{.ModelPkgName}}.{{.ModelName}}Entity) error {
-	cols := make([]any, 0)
-	{{- range $col := .Columns}}
-	{{- if not (or (eq $col.Name "id") (eq $col.Name "created_at") (eq $col.Name "updated_at") (eq $col.Name "deleted_at"))}}
-	cols = append(cols, dao.{{$.ModelName}}Entity.{{$col.FieldName}}.Value(m.{{$col.FieldName}}))
-	{{- end}}
-	{{- end}}
-
-	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).
-		Where(dao.{{.ModelName}}Entity.ID.Eq({{.ModelNameLower}}Id)).
-		UpdateSimple(cols...)
-	return err
+func (r *default{{.ModelName}}Repository) UpdateById(ctx context.Context, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error {
+	if _, err := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.ID.Eq({{.ModelNameLower}}Id)).UpdateSimple(columns...);err!=nil {
+        return err
+    }
+    return nil
 }
 
 func (r *default{{.ModelName}}Repository) UpdateMapById(ctx context.Context, {{.ModelNameLower}}Id int64, data map[string]any) error {

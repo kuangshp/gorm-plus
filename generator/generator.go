@@ -58,9 +58,7 @@ func getGoctlPath() string {
 
 func Case2Camel(name string) string {
 	name = strings.Replace(name, "_", " ", -1)
-	// 使用Title后，再把特定的全大写缩写词恢复
 	name = strings.Title(name)
-	// 处理常见的缩写词，如 IP, ID, URL, API 等
 	acronyms := []string{"IP", "ID", "URL", "API", "IOS", "API", "XML", "JSON", "JWT", "SQL", "ORM"}
 	for _, acronym := range acronyms {
 		name = strings.ReplaceAll(name, strings.Title(strings.ToLower(acronym)), acronym)
@@ -69,7 +67,6 @@ func Case2Camel(name string) string {
 }
 
 func LowerCamelCase(name string) string {
-	// 如果已经是小写开头且没有大写字母，直接返回
 	if len(name) > 0 && name[0] >= 'a' && name[0] <= 'z' {
 		hasUpper := false
 		for _, c := range name[1:] {
@@ -194,7 +191,7 @@ type RepositoryTemplateData struct {
 	Package         string
 	DaoPath         string
 	ModelPath       string
-	ModelPkgName    string // model包的名称，如 "entity"
+	ModelPkgName    string
 	Columns         []ColumnInfo
 }
 
@@ -245,13 +242,11 @@ func loadTemplate(templatePath string) (*template.Template, error) {
 		"lowerFirst": lowerFirst,
 	}
 
-	// 优先尝试从文件系统加载（方便用户自定义覆盖模板）
 	fileContent, err := os.ReadFile(templatePath)
 	if err == nil {
 		return template.New(templateName).Funcs(funcMap).Parse(string(fileContent))
 	}
 
-	// 文件不存在时，回退到内嵌模板
 	embeddedContent, ok := embeddedTemplates[templateName]
 	if !ok {
 		return nil, fmt.Errorf("模板文件 %q 不存在，且没有对应的内嵌模板: %w", templatePath, err)
@@ -549,9 +544,123 @@ func getLastPathSegment(path string) string {
 	return parts[len(parts)-1]
 }
 
+// ensureDir 确保目录存在，不存在则创建
+func ensureDir(dir string) {
+	if dir != "" {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			os.MkdirAll(dir, 0755)
+		}
+	}
+}
+
+// writeFileIfNotExist 文件不存在时写入，已存在时打印跳过信息
+func writeFileIfNotExist(filePath string, content string, label string) {
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		if err = os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			fmt.Printf("写入 %s 失败: %v\n", label, err)
+		} else {
+			fmt.Printf("已生成: %s\n", filePath)
+		}
+	} else {
+		fmt.Printf("已存在，跳过: %s\n", filePath)
+	}
+}
+
+// generateForTable 为单张表生成 Repo / API / VO / DTO 文件
+func generateForTable(tbl string, cfg *Config, db *gorm.DB,
+	repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath string) {
+
+	columns, err := getTableColumns(db, tbl)
+	if err != nil {
+		fmt.Printf("[%s] 获取表结构失败，跳过: %v\n", tbl, err)
+		return
+	}
+	modelName := Case2Camel(strings.ToUpper(tbl[:1]) + tbl[1:])
+
+	// ── Repository _gen.go（已存在跳过）──────────────────────────
+	if cfg.RepoPath != "" {
+		content, err := generateRepositoryFile(columns, modelName, cfg.Package,
+			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath)
+		if err != nil {
+			fmt.Printf("[%s] 生成 repository_gen 失败: %v\n", tbl, err)
+		} else {
+			writeFileIfNotExist(
+				fmt.Sprintf("%s/%s_gen.go", cfg.RepoPath, strings.ToLower(modelName)),
+				content, "repository_gen",
+			)
+		}
+
+		// ── Repository .go（已存在跳过）──────────────────────────
+		extContent, err := generateRepositoryExtFile(columns, modelName, cfg.Package,
+			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath)
+		if err != nil {
+			fmt.Printf("[%s] 生成 repository 扩展失败: %v\n", tbl, err)
+		} else {
+			writeFileIfNotExist(
+				fmt.Sprintf("%s/%s.go", cfg.RepoPath, strings.ToLower(modelName)),
+				extContent, "repository",
+			)
+		}
+	}
+
+	// ── API .api（已存在跳过）────────────────────────────────────
+	if cfg.ApiPath != "" {
+		apiContent, err := generateApiFile(tbl, columns, modelName, db, apiTmplPath)
+		if err != nil {
+			fmt.Printf("[%s] 生成 api 失败: %v\n", tbl, err)
+		} else {
+			apiFileName := fmt.Sprintf("%s/%s.api", cfg.ApiPath, tbl)
+			if _, err := os.Stat(apiFileName); os.IsNotExist(err) {
+				if err = os.WriteFile(apiFileName, []byte(apiContent), 0644); err != nil {
+					fmt.Printf("[%s] 写入 api 文件失败: %v\n", tbl, err)
+				} else {
+					fmt.Printf("已生成: %s\n", apiFileName)
+					// 调用 goctl 生成 go-zero 代码
+					goctlPath := getGoctlPath()
+					cmd := exec.Command(goctlPath, "api", "go", "-api", apiFileName,
+						"--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
+					cmd.Dir = "."
+					if output, err := cmd.CombinedOutput(); err != nil {
+						fmt.Printf("[%s] 执行 goctl 失败: %v\n%s\n", tbl, err, output)
+					} else {
+						fmt.Printf("[%s] go-zero 代码生成成功\n", tbl)
+					}
+				}
+			} else {
+				fmt.Printf("已存在，跳过: %s\n", apiFileName)
+			}
+		}
+	}
+
+	// ── VO（已存在跳过）──────────────────────────────────────────
+	if cfg.VoPath != "" {
+		voContent, err := generateVoFile(tbl, columns, modelName, db, voTmplPath)
+		if err != nil {
+			fmt.Printf("[%s] 生成 VO 失败: %v\n", tbl, err)
+		} else {
+			writeFileIfNotExist(
+				fmt.Sprintf("%s/%sVo.go", cfg.VoPath, strings.ToLower(modelName)),
+				voContent, "VO",
+			)
+		}
+	}
+
+	// ── DTO（已存在跳过）─────────────────────────────────────────
+	if cfg.DtoPath != "" {
+		dtoContent, err := generateDtoFile(tbl, columns, modelName, db, dtoTmplPath)
+		if err != nil {
+			fmt.Printf("[%s] 生成 DTO 失败: %v\n", tbl, err)
+		} else {
+			writeFileIfNotExist(
+				fmt.Sprintf("%s/%sDto.go", cfg.DtoPath, strings.ToLower(modelName)),
+				dtoContent, "DTO",
+			)
+		}
+	}
+}
+
 // Generate 代码生成器主函数
 func Generate(cfg *Config) error {
-	// 构建DSN
 	dsn := fmt.Sprintf("%s:%s@(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
 
@@ -560,16 +669,12 @@ func Generate(cfg *Config) error {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
 
-	tableName := readInput("请输入表名（直接回车同步所有表）: ")
+	tableName := readInput("请输入表名（直接回车生成所有表）: ")
 
-	// 获取模板路径 - 优先使用环境变量或当前工作目录
+	// 模板路径解析（优先文件系统，回退内嵌）
 	templateDir := os.Getenv("GENERATOR_TEMPLATE_DIR")
 	if templateDir == "" {
-		// 尝试相对于可执行文件的路径
-		exePath, err := os.Executable()
-		if err == nil {
-			// 对于 go run，可执行文件在缓存目录，需要找到源码目录
-			// 尝试向上查找 generator/template 目录
+		if exePath, err := os.Executable(); err == nil {
 			checkDir := filepath.Dir(exePath)
 			for i := 0; i < 10; i++ {
 				testDir := filepath.Join(checkDir, "generator", "template")
@@ -577,7 +682,6 @@ func Generate(cfg *Config) error {
 					templateDir = testDir
 					break
 				}
-				// 继续向上查找
 				parent := filepath.Dir(checkDir)
 				if parent == checkDir {
 					break
@@ -585,7 +689,6 @@ func Generate(cfg *Config) error {
 				checkDir = parent
 			}
 		}
-		// 如果还是没找到，尝试相对于当前工作目录的路径
 		if templateDir == "" {
 			cwd, _ := os.Getwd()
 			templateDir = filepath.Join(cwd, "generator", "template")
@@ -597,8 +700,7 @@ func Generate(cfg *Config) error {
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
 	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
 
-	// 路径为空表示该功能未配置，保持空值，后续按空值判断是否生成
-
+	// 初始化 gorm-gen 生成器
 	g := gen.NewGenerator(gen.Config{
 		OutPath:           cfg.OutPath,
 		ModelPkgPath:      cfg.ModelPkgPath,
@@ -609,7 +711,6 @@ func Generate(cfg *Config) error {
 		FieldWithIndexTag: false,
 		FieldWithTypeTag:  true,
 	})
-
 	g.UseDB(db)
 
 	dataMap := map[string]func(detailType gorm.ColumnType) (dataType string){
@@ -636,173 +737,59 @@ func Generate(cfg *Config) error {
 		}
 		return LowerCamelCase(columnName)
 	})
-
 	autoUpdateTimeField := gen.FieldGORMTag("updated_at", func(tag field.GormTag) field.GormTag {
-		return map[string][]string{
-			"column":  {"updated_at"},
-			"comment": {"更新时间"},
-		}
+		return map[string][]string{"column": {"updated_at"}, "comment": {"更新时间"}}
 	})
 	autoCreateTimeField := gen.FieldGORMTag("created_at", func(tag field.GormTag) field.GormTag {
-		return map[string][]string{
-			"column":  {"created_at"},
-			"comment": {"创建时间"},
-		}
+		return map[string][]string{"column": {"created_at"}, "comment": {"创建时间"}}
 	})
 	softDeleteField := gen.FieldType("deleted_at", "gorm.DeletedAt")
 	fieldOpts := []gen.ModelOpt{jsonField, autoCreateTimeField, autoUpdateTimeField, softDeleteField}
 
-	var allModel []interface{}
+	// ── 确定要处理的表名列表 ──────────────────────────────────────
+	var tableNames []string
 	if tableName != "" {
-		fmt.Printf("生成表 %s 的模型...\n", tableName)
-		model := g.GenerateModel(tableName, fieldOpts...)
-		allModel = []interface{}{model}
+		// 指定了表名：只处理这一张表
+		tableNames = []string{tableName}
 	} else {
-		fmt.Println("生成所有表的模型...")
-		allModel = g.GenerateAllTable(fieldOpts...)
+		// 未指定表名：获取数据库所有表
+		var tables []string
+		if err := db.Raw("SHOW TABLES").Scan(&tables).Error; err != nil {
+			return fmt.Errorf("获取表列表失败: %w", err)
+		}
+		if len(tables) == 0 {
+			return fmt.Errorf("数据库 %s 中没有找到任何表", cfg.Database)
+		}
+		tableNames = tables
+		fmt.Printf("共找到 %d 张表，开始生成所有表...\n", len(tableNames))
 	}
 
-	//g.ApplyBasic(allModel...)
-	//g.Execute()
-
-	if tableName != "" {
-		fmt.Printf("生成表 %s 的模型...\n", tableName)
-		g.GenerateModel(tableName, fieldOpts...)
+	// ── 生成数据模型（始终覆盖）──────────────────────────────────
+	fmt.Println("\n【第一步】生成数据模型（Model）...")
+	if len(tableNames) == 1 {
+		model := g.GenerateModel(tableNames[0], fieldOpts...)
+		g.ApplyBasic(model)
 	} else {
-		fmt.Println("生成所有表的模型...")
-		allModel = g.GenerateAllTable(fieldOpts...)
+		allModel := g.GenerateAllTable(fieldOpts...)
 		g.ApplyBasic(allModel...)
-		g.Execute()
+	}
+	g.Execute()
+	fmt.Println("数据模型生成完成。")
+
+	// ── 创建输出目录 ──────────────────────────────────────────────
+	ensureDir(cfg.RepoPath)
+	ensureDir(cfg.ApiPath)
+	ensureDir(cfg.VoPath)
+	ensureDir(cfg.DtoPath)
+
+	// ── 逐张表生成 Repo / API / VO / DTO（已存在的文件跳过）──────
+	fmt.Printf("\n【第二步】生成 Repo / API / VO / DTO...\n")
+	for _, tbl := range tableNames {
+		fmt.Printf("\n─── 表: %s ───\n", tbl)
+		generateForTable(tbl, cfg, db,
+			repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath)
 	}
 
-	// 未输入表名时只生成数据模型，不继续生成 repo/vo/dto/api
-	//if tableName == "" {
-	//	fmt.Println("生成完成!")
-	//	return nil
-	//}
-
-	columns, err := getTableColumns(db, tableName)
-	if err != nil {
-		return fmt.Errorf("获取表结构失败: %w", err)
-	}
-	modelName := Case2Camel(strings.ToUpper(tableName[:1]) + tableName[1:])
-
-	if cfg.RepoPath != "" {
-		repoDir := cfg.RepoPath
-		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
-			os.MkdirAll(repoDir, 0755)
-		}
-
-		// 1. 生成基础 repository1 (xxx_base.go) - 始终重新生成
-		repoBaseContent, err := generateRepositoryFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath)
-		if err != nil {
-			fmt.Printf("生成repository基础内容失败: %v\n", err)
-		} else {
-			repoBaseFileName := fmt.Sprintf("%s/%s_gen.go", repoDir, strings.ToLower(modelName))
-			if _, err := os.Stat(repoBaseFileName); os.IsNotExist(err) {
-				err = os.WriteFile(repoBaseFileName, []byte(repoBaseContent), 0644)
-				if err != nil {
-					fmt.Printf("写入repository基础文件失败: %v\n", err)
-				} else {
-					fmt.Printf("repository基础文件已生成: %s\n", repoBaseFileName)
-				}
-			} else {
-				fmt.Printf("repository_gen扩展文件已存在，不覆盖更新: %s\n", repoBaseFileName)
-			}
-		}
-
-		// 2. 生成扩展 repository1 (xxx.go) - 如果已存在则跳过
-		repoExtContent, err := generateRepositoryExtFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath)
-		if err != nil {
-			fmt.Printf("生成repository扩展内容失败: %v\n", err)
-		} else {
-			repoExtFileName := fmt.Sprintf("%s/%s.go", repoDir, strings.ToLower(modelName))
-			if _, err := os.Stat(repoExtFileName); os.IsNotExist(err) {
-				err = os.WriteFile(repoExtFileName, []byte(repoExtContent), 0644)
-				if err != nil {
-					fmt.Printf("写入repository扩展文件失败: %v\n", err)
-				} else {
-					fmt.Printf("repository扩展文件已生成: %s\n", repoExtFileName)
-				}
-			} else {
-				fmt.Printf("repository扩展文件已存在，不覆盖更新: %s\n", repoExtFileName)
-			}
-		}
-	}
-
-	if cfg.ApiPath != "" {
-		apiDir := cfg.ApiPath
-		if _, err := os.Stat(apiDir); os.IsNotExist(err) {
-			os.MkdirAll(apiDir, 0755)
-		}
-
-		apiContent, err := generateApiFile(tableName, columns, modelName, db, apiTmplPath)
-		if err != nil {
-			return fmt.Errorf("生成api内容失败: %w", err)
-		}
-		apiFileName := fmt.Sprintf("%s/%s.api", apiDir, tableName)
-		// 检查文件是否已存在
-		if _, err := os.Stat(apiFileName); os.IsNotExist(err) {
-			err = os.WriteFile(apiFileName, []byte(apiContent), 0644)
-			if err != nil {
-				return fmt.Errorf("写入api文件失败: %w", err)
-			}
-			fmt.Printf("api文件已生成: %s\n", apiFileName)
-
-			goctlPath := getGoctlPath()
-			cmd := exec.Command(goctlPath, "api", "go", "-api", apiFileName, "--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
-			cmd.Dir = "."
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				fmt.Printf("执行goctl失败: %v\n%s\n", err, output)
-			} else {
-				fmt.Printf("go-zero代码生成成功\n%s\n", output)
-			}
-		} else {
-			fmt.Printf("api文件已存在，不覆盖更新: %s\n", apiFileName)
-		}
-	}
-
-	if cfg.VoPath != "" {
-		voDir := cfg.VoPath
-		if _, err := os.Stat(voDir); os.IsNotExist(err) {
-			os.MkdirAll(voDir, 0755)
-		}
-
-		voContent, err := generateVoFile(tableName, columns, modelName, db, voTmplPath)
-		if err != nil {
-			fmt.Printf("生成vo内容失败: %v\n", err)
-		} else {
-			voFileName := fmt.Sprintf("%s/%sVo.go", voDir, strings.ToLower(modelName))
-			err = os.WriteFile(voFileName, []byte(voContent), 0644)
-			if err != nil {
-				fmt.Printf("写入vo文件失败: %v\n", err)
-			} else {
-				fmt.Printf("vo文件已生成: %s\n", voFileName)
-			}
-		}
-	}
-
-	if cfg.DtoPath != "" {
-		dtoDir := cfg.DtoPath
-		if _, err := os.Stat(dtoDir); os.IsNotExist(err) {
-			os.MkdirAll(dtoDir, 0755)
-		}
-
-		dtoContent, err := generateDtoFile(tableName, columns, modelName, db, dtoTmplPath)
-		if err != nil {
-			fmt.Printf("生成dto内容失败: %v\n", err)
-		} else {
-			dtoFileName := fmt.Sprintf("%s/%sDto.go", dtoDir, strings.ToLower(modelName))
-			err = os.WriteFile(dtoFileName, []byte(dtoContent), 0644)
-			if err != nil {
-				fmt.Printf("写入dto文件失败: %v\n", err)
-			} else {
-				fmt.Printf("dto文件已生成: %s\n", dtoFileName)
-			}
-		}
-	}
-
-	fmt.Println("生成完成!")
+	fmt.Println("\n全部生成完成！")
 	return nil
 }
