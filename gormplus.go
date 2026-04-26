@@ -238,7 +238,11 @@ type IQueryBuilder = query.IQueryBuilder
 //	        q.WhereIf(role != 0, "role = ?", role).
 //	          WhereIf(orgID != 0, "org_id = ?", orgID)
 //	    }).Build().Find(&list)
-var Query = query.NewQuery
+//
+// var Query = query.NewQuery
+func Query[T any](db *gorm.DB, ctx context.Context) query.IQueryBuilder {
+	return query.NewQuery[T](db, ctx)
+}
 
 // FindByPage 泛型分页查询，返回 (数据列表, 总数, error)。
 // 适合结果直接映射到 model struct 的列表查询，内部 Count 时自动去掉 ORDER BY。
