@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"gorm.io/gen/field"
+	"github.com/kuangshp/gorm-plus"
 	"gorm.io/gen"
 	"{{.DaoPath}}"
 	"{{.ModelPath}}"
@@ -31,8 +32,12 @@ type iDefault{{.ModelName}}Repository interface {
 	UpdateMapById(ctx context.Context, {{.ModelNameLower}}Id int64, data map[string]any) error
 	// FindListByCondition 根据条件获取列表
 	FindListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// GetList 根据条件获取列表
+    GetList(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// GetPageByCondition 根据条件分页查询
 	GetPageByCondition(ctx context.Context, pageNumber int64, pageSize int64, cond ...gen.Condition) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
+	// GetPage 根据条件分页获取数据
+	GetPage(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
 	// GetById 根据ID获取详情
 	GetById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// GetByIdList 根据ID列表获取
@@ -104,7 +109,13 @@ func (r *default{{.ModelName}}Repository) FindListByCondition(ctx context.Contex
 	}
 	return tx.Order(dao.{{.ModelName}}Entity.ID.Desc()).Find()
 }
-
+func (r *default{{.ModelName}}Repository) GetList(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error){
+    tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
+    if fn != nil {
+        fn(tx)
+    }
+    return tx.Apply().Order(dao.{{.ModelName}}Entity.ID.Desc()).Find()
+}
 func (r *default{{.ModelName}}Repository) GetPageByCondition(ctx context.Context, pageNumber int64, pageSize int64, cond ...gen.Condition) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(cond) > 0 {
@@ -113,6 +124,16 @@ func (r *default{{.ModelName}}Repository) GetPageByCondition(ctx context.Context
 	offset := int((pageNumber - 1) * pageSize)
 	limit := int(pageSize)
 	return tx.Order(dao.{{.ModelName}}Entity.ID.Desc()).FindByPage(offset, limit)
+}
+
+func (r *default{{.ModelName}}Repository) GetPage(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
+    tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
+    if fn != nil {
+        fn(tx)
+    }
+    offset := int((pageNumber - 1) * pageSize)
+    limit := int(pageSize)
+    return tx.Apply().Order(dao.{{.ModelName}}Entity.ID.Desc()).FindByPage(offset, limit)
 }
 
 func (r *default{{.ModelName}}Repository) GetById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {

@@ -58,7 +58,9 @@ func getGoctlPath() string {
 
 func Case2Camel(name string) string {
 	name = strings.Replace(name, "_", " ", -1)
+	// 使用Title后，再把特定的全大写缩写词恢复
 	name = strings.Title(name)
+	// 处理常见的缩写词，如 IP, ID, URL, API 等
 	acronyms := []string{"IP", "ID", "URL", "API", "IOS", "API", "XML", "JSON", "JWT", "SQL", "ORM"}
 	for _, acronym := range acronyms {
 		name = strings.ReplaceAll(name, strings.Title(strings.ToLower(acronym)), acronym)
@@ -67,6 +69,7 @@ func Case2Camel(name string) string {
 }
 
 func LowerCamelCase(name string) string {
+	// 如果已经是小写开头且没有大写字母，直接返回
 	if len(name) > 0 && name[0] >= 'a' && name[0] <= 'z' {
 		hasUpper := false
 		for _, c := range name[1:] {
@@ -191,7 +194,7 @@ type RepositoryTemplateData struct {
 	Package         string
 	DaoPath         string
 	ModelPath       string
-	ModelPkgName    string
+	ModelPkgName    string // model包的名称，如 "entity"
 	Columns         []ColumnInfo
 }
 
@@ -242,11 +245,13 @@ func loadTemplate(templatePath string) (*template.Template, error) {
 		"lowerFirst": lowerFirst,
 	}
 
+	// 优先尝试从文件系统加载（方便用户自定义覆盖模板）
 	fileContent, err := os.ReadFile(templatePath)
 	if err == nil {
 		return template.New(templateName).Funcs(funcMap).Parse(string(fileContent))
 	}
 
+	// 文件不存在时，回退到内嵌模板
 	embeddedContent, ok := embeddedTemplates[templateName]
 	if !ok {
 		return nil, fmt.Errorf("模板文件 %q 不存在，且没有对应的内嵌模板: %w", templatePath, err)
@@ -544,6 +549,7 @@ func getLastPathSegment(path string) string {
 	return parts[len(parts)-1]
 }
 
+// Generate 代码生成器主函数
 // ensureDir 确保目录存在，不存在则创建
 func ensureDir(dir string) {
 	if dir != "" {
@@ -577,7 +583,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 	}
 	modelName := Case2Camel(strings.ToUpper(tbl[:1]) + tbl[1:])
 
-	// ── Repository _gen.go（已存在跳过）──────────────────────────
+	// ── Repository _gen.go（已存在跳过）
 	if cfg.RepoPath != "" {
 		content, err := generateRepositoryFile(columns, modelName, cfg.Package,
 			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath)
@@ -590,7 +596,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 			)
 		}
 
-		// ── Repository .go（已存在跳过）──────────────────────────
+		// ── Repository .go（已存在跳过）
 		extContent, err := generateRepositoryExtFile(columns, modelName, cfg.Package,
 			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath)
 		if err != nil {
@@ -603,7 +609,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		}
 	}
 
-	// ── API .api（已存在跳过）────────────────────────────────────
+	// ── API .api（已存在跳过）
 	if cfg.ApiPath != "" {
 		apiContent, err := generateApiFile(tbl, columns, modelName, db, apiTmplPath)
 		if err != nil {
@@ -615,7 +621,6 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 					fmt.Printf("[%s] 写入 api 文件失败: %v\n", tbl, err)
 				} else {
 					fmt.Printf("已生成: %s\n", apiFileName)
-					// 调用 goctl 生成 go-zero 代码
 					goctlPath := getGoctlPath()
 					cmd := exec.Command(goctlPath, "api", "go", "-api", apiFileName,
 						"--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
@@ -632,7 +637,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		}
 	}
 
-	// ── VO（已存在跳过）──────────────────────────────────────────
+	// ── VO（已存在跳过）
 	if cfg.VoPath != "" {
 		voContent, err := generateVoFile(tbl, columns, modelName, db, voTmplPath)
 		if err != nil {
@@ -645,7 +650,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		}
 	}
 
-	// ── DTO（已存在跳过）─────────────────────────────────────────
+	// ── DTO（已存在跳过）
 	if cfg.DtoPath != "" {
 		dtoContent, err := generateDtoFile(tbl, columns, modelName, db, dtoTmplPath)
 		if err != nil {
@@ -659,8 +664,8 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 	}
 }
 
-// Generate 代码生成器主函数
 func Generate(cfg *Config) error {
+	// 构建DSN
 	dsn := fmt.Sprintf("%s:%s@(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
 
@@ -669,12 +674,16 @@ func Generate(cfg *Config) error {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
 
-	tableName := readInput("请输入表名（直接回车生成所有表）: ")
+	tableName := readInput("请输入表名（直接回车同步所有表）: ")
 
-	// 模板路径解析（优先文件系统，回退内嵌）
+	// 获取模板路径 - 优先使用环境变量或当前工作目录
 	templateDir := os.Getenv("GENERATOR_TEMPLATE_DIR")
 	if templateDir == "" {
-		if exePath, err := os.Executable(); err == nil {
+		// 尝试相对于可执行文件的路径
+		exePath, err := os.Executable()
+		if err == nil {
+			// 对于 go run，可执行文件在缓存目录，需要找到源码目录
+			// 尝试向上查找 generator/template 目录
 			checkDir := filepath.Dir(exePath)
 			for i := 0; i < 10; i++ {
 				testDir := filepath.Join(checkDir, "generator", "template")
@@ -682,6 +691,7 @@ func Generate(cfg *Config) error {
 					templateDir = testDir
 					break
 				}
+				// 继续向上查找
 				parent := filepath.Dir(checkDir)
 				if parent == checkDir {
 					break
@@ -689,6 +699,7 @@ func Generate(cfg *Config) error {
 				checkDir = parent
 			}
 		}
+		// 如果还是没找到，尝试相对于当前工作目录的路径
 		if templateDir == "" {
 			cwd, _ := os.Getwd()
 			templateDir = filepath.Join(cwd, "generator", "template")
@@ -700,7 +711,8 @@ func Generate(cfg *Config) error {
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
 	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
 
-	// 初始化 gorm-gen 生成器
+	// 路径为空表示该功能未配置，保持空值，后续按空值判断是否生成
+
 	g := gen.NewGenerator(gen.Config{
 		OutPath:           cfg.OutPath,
 		ModelPkgPath:      cfg.ModelPkgPath,
@@ -711,6 +723,7 @@ func Generate(cfg *Config) error {
 		FieldWithIndexTag: false,
 		FieldWithTypeTag:  true,
 	})
+
 	g.UseDB(db)
 
 	dataMap := map[string]func(detailType gorm.ColumnType) (dataType string){
@@ -737,22 +750,27 @@ func Generate(cfg *Config) error {
 		}
 		return LowerCamelCase(columnName)
 	})
+
 	autoUpdateTimeField := gen.FieldGORMTag("updated_at", func(tag field.GormTag) field.GormTag {
-		return map[string][]string{"column": {"updated_at"}, "comment": {"更新时间"}}
+		return map[string][]string{
+			"column":  {"updated_at"},
+			"comment": {"更新时间"},
+		}
 	})
 	autoCreateTimeField := gen.FieldGORMTag("created_at", func(tag field.GormTag) field.GormTag {
-		return map[string][]string{"column": {"created_at"}, "comment": {"创建时间"}}
+		return map[string][]string{
+			"column":  {"created_at"},
+			"comment": {"创建时间"},
+		}
 	})
 	softDeleteField := gen.FieldType("deleted_at", "gorm.DeletedAt")
 	fieldOpts := []gen.ModelOpt{jsonField, autoCreateTimeField, autoUpdateTimeField, softDeleteField}
 
-	// ── 确定要处理的表名列表 ──────────────────────────────────────
+	// ── 确定要处理的表名列表（Repo/API/VO/DTO）────────────────────
 	var tableNames []string
 	if tableName != "" {
-		// 指定了表名：只处理这一张表
 		tableNames = []string{tableName}
 	} else {
-		// 未指定表名：获取数据库所有表
 		var tables []string
 		if err := db.Raw("SHOW TABLES").Scan(&tables).Error; err != nil {
 			return fmt.Errorf("获取表列表失败: %w", err)
@@ -764,15 +782,19 @@ func Generate(cfg *Config) error {
 		fmt.Printf("共找到 %d 张表，开始生成所有表...\n", len(tableNames))
 	}
 
-	// ── 生成数据模型（始终覆盖）──────────────────────────────────
+	// ── 生成数据模型（始终覆盖，且始终包含数据库所有表）──────────
+	// 无论输入单张表还是全部表，gen.go 都必须包含数据库所有表，
+	// 否则每次只生成单张表会覆盖 gen.go 导致其他表的 DO 消失。
 	fmt.Println("\n【第一步】生成数据模型（Model）...")
-	if len(tableNames) == 1 {
-		model := g.GenerateModel(tableNames[0], fieldOpts...)
-		g.ApplyBasic(model)
-	} else {
-		allModel := g.GenerateAllTable(fieldOpts...)
-		g.ApplyBasic(allModel...)
+	var allTables []string
+	if err := db.Raw("SHOW TABLES").Scan(&allTables).Error; err != nil {
+		return fmt.Errorf("获取全量表列表失败: %w", err)
 	}
+	allModels := make([]interface{}, 0, len(allTables))
+	for _, tbl := range allTables {
+		allModels = append(allModels, g.GenerateModel(tbl, fieldOpts...))
+	}
+	g.ApplyBasic(allModels...)
 	g.Execute()
 	fmt.Println("数据模型生成完成。")
 
