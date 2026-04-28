@@ -1,0 +1,92 @@
+// 复制此文件到目标目录后，修改 package 名和 import 路径即可使用
+
+package mapper
+
+import (
+{{- if .HasTimeField}}
+	"time"
+{{- end}}
+{{- if .HasDecimalField}}
+	"github.com/shopspring/decimal"
+{{- end}}
+	"{{.Package}}/{{.ModelPkgPath}}"
+{{- if .IsGoZero}}
+	// TODO: 填写 go-zero types 包的实际 import 路径，例如：
+	// "your-module/internal/types"
+{{- else if .SameDtoPkg}}
+	"{{.Package}}/{{.DtoPkgPath}}"
+{{- else}}
+	"{{.Package}}/{{.DtoPkgPath}}"
+	"{{.Package}}/{{.VoPkgPath}}"
+{{- end}}
+)
+
+// I{{.ModelName}}Mapper {{.TableComment}} mapper 接口
+type I{{.ModelName}}Mapper interface {
+	// DtoToEntity 将请求结构体映射到数据库实体
+	// 类型不匹配的字段通过额外参数传入
+	DtoToEntity(d {{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
+	// EntityToVo 将数据库实体映射到响应结构体
+	EntityToVo(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types{{else}}{{.VoPkgName}}{{end}}.{{.VoStructName}}
+}
+
+// {{.ModelNameLower}}Mapper mapper 实现
+type {{.ModelNameLower}}Mapper struct{}
+
+// New{{.ModelName}}Mapper 创建 {{.ModelName}}Mapper 实例
+func New{{.ModelName}}Mapper() I{{.ModelName}}Mapper {
+	return &{{.ModelNameLower}}Mapper{}
+}
+
+// DtoToEntity 将 {{.DtoStructName}} 映射到 {{.ModelName}}Entity
+// 跳过规则（通过额外参数传入）：
+//   - 时间类型：dto/req 是 string，entity 是 time.Time，调用方解析后传入
+//   - decimal 类型：dto/req 是 string，entity 是 decimal.Decimal，内部用 decimal.NewFromString 转换
+//   - 审计字段：created_by/updated_by 来自业务上下文，调用方传入
+func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d {{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+	e := &{{.ModelPkgName}}.{{.ModelName}}Entity{
+{{- range .Columns}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by") .IsTimeType .IsDecimalType .IsAuditField)}}
+		{{.FieldName}}: d.{{.FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
+{{- end}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by") )}}
+{{- if .IsTimeType}}
+		{{.FieldName}}: {{lowerFirst .FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
+{{- end}}
+{{- if .IsAuditField}}
+		{{.FieldName}}: {{lowerFirst .FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
+{{- end}}
+{{- if .IsDecimalType}}
+		{{.FieldName}}: {{lowerFirst .FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
+{{- end}}
+{{- end}}
+{{- end}}
+	}
+	return e
+}
+
+// EntityToVo 将 {{.ModelName}}Entity 映射到 {{.VoStructName}}
+// 转换规则：
+//   - 时间类型：entity 是 time.Time，vo/model 是 int64，转为 Unix 时间戳
+//   - decimal 类型：entity 是 decimal.Decimal，vo/model 是 string，转为字符串
+func (m *{{.ModelNameLower}}Mapper) EntityToVo(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types{{else}}{{.VoPkgName}}{{end}}.{{.VoStructName}} {
+	if e == nil {
+		return nil
+	}
+	return &{{if .IsGoZero}}types{{else}}{{.VoPkgName}}{{end}}.{{.VoStructName}}{
+{{- range .Columns}}
+{{- if not (or (eq .Name "deleted_at") .IsTimeType .IsDecimalType)}}
+		{{.FieldName}}: e.{{.FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
+{{- end}}
+{{- if not (or (eq .Name "deleted_at") )}}
+		{{- if .IsTimeType}}
+        {{.FieldName}}: e.{{.FieldName}}.Unix(), {{if .Comment}}// {{.Comment}}{{end}}
+        {{- end}}
+        {{- if .IsDecimalType}}
+        {{.FieldName}}: e.{{.FieldName}}.StringFixed(2), {{if .Comment}}// {{.Comment}}{{end}}
+        {{- end}}
+        {{- end}}
+{{- end}}
+
+	}
+}

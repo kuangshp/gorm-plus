@@ -3,15 +3,15 @@ syntax = "v1"
 info (
 	title:   "{{.TableComment}}管理"
 	desc:    "{{.TableComment}}管理接口"
-	author:  "esim"
-	email:   "esim@example.com"
+	author:  "水痕"
+	email:   "kuangshp@126.com"
 	version: "1.0"
 )
 import "base.api"
 
 type Create{{.ModelName}}Req {
 {{- range .Columns}}
-{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at"))}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}
 {{- $fieldName := .FieldName}}
 {{- $jsonTag := .JsonTag}}
 {{- $jsonTagOpt := .JsonTagOpt}}
@@ -23,19 +23,15 @@ type Create{{.ModelName}}Req {
 }
 
 type Modify{{.ModelName}}Req {
-	Id int64 `path:"id" validate:"required,number,gte=1"` // 主键id
+	IdReq
     Create{{.ModelName}}Req
 }
 
-type {{.ModelName}}IdReq {
-    Id int64 `path:"id" validate:"required,number,gte=1"` // 主键id
-}
 type (
 	Page{{.ModelName}}Req {
-		PageSize   int64 `json:"pageSize,optional,default=10"` // 当前条数
-        PageNumber int64 `json:"pageNumber,optional,default=1"` // 当前页数
+		PageBaseReq
 {{- range .Columns}}
-{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at"))}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}
 {{- $fieldName := .FieldName}}
 {{- $jsonTag := .JsonTag}}
 {{- $comment := .Comment}}
@@ -51,10 +47,8 @@ type (
 {{- end}}
 	}
 	{{.ModelName}}PageResp {
-		Total      int64 `json:"total"` // 总条数
-        PageSize   int64 `json:"pageSize"` // 当前条数
-        PageNumber int64 `json:"pageNumber"` // 当前页数
-		Data []{{.ModelName}}Model `json:"data"`
+		PageBaseResp
+		Data []*{{.ModelName}}Model `json:"data"`
 	}
 )
 
@@ -70,7 +64,7 @@ service admin-api {
 
 	@doc "根据id删除{{.TableComment}}"
 	@handler Delete{{.ModelName}}ByIdApi
-	delete /:id ({{.ModelName}}IdReq) returns (string)
+	delete /:id (IdReq) returns (string)
 
 	@doc "根据id修改{{.TableComment}}"
 	@handler Modify{{.ModelName}}ByIdApi
@@ -86,5 +80,5 @@ service admin-api {
 
 	@doc "根据id获取{{.TableComment}}详情"
     @handler Get{{.ModelName}}DetailApi
-    get /detail/:id({{.ModelName}}IdReq) returns ({{.ModelName}}Model)
+    get /detail/:id(IdReq) returns ({{.ModelName}}Model)
 }

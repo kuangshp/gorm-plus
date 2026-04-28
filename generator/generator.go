@@ -36,6 +36,9 @@ var embeddedRepoTemplate string
 //go:embed template/vo_template.txt
 var embeddedVoTemplate string
 
+//go:embed template/mapper_template.txt
+var embeddedMapperTemplate string
+
 // embeddedTemplates 内嵌模板映射表，key 为模板文件名
 var embeddedTemplates = map[string]string{
 	"api_template.txt":            embeddedApiTemplate,
@@ -43,6 +46,7 @@ var embeddedTemplates = map[string]string{
 	"repository_gen_template.txt": embeddedRepoGenTemplate,
 	"repository_template.txt":     embeddedRepoTemplate,
 	"vo_template.txt":             embeddedVoTemplate,
+	"mapper_template.txt":         embeddedMapperTemplate,
 }
 
 func getGoctlPath() string {
@@ -158,17 +162,20 @@ func getTableColumns(db *gorm.DB, tableName string) ([]ColumnInfo, error) {
 }
 
 type ColumnInfo struct {
-	Name       string
-	Type       string
-	FieldName  string
-	FieldType  string
-	JsonTag    string
-	JsonTagOpt string
-	CanNull    bool
-	IsKey      bool
-	Extra      string
-	Comment    string
-	Validate   string
+	Name          string
+	Type          string
+	FieldName     string
+	FieldType     string
+	JsonTag       string
+	JsonTagOpt    string
+	CanNull       bool
+	IsKey         bool
+	Extra         string
+	Comment       string
+	Validate      string
+	IsTimeType    bool // 数据库原始类型是时间类型（datetime/timestamp/date）
+	IsAuditField  bool // 审计字段（created_by/updated_by）
+	IsDecimalType bool // 数据库原始类型是 decimal/float/double
 }
 
 type ApiTemplateData struct {
@@ -195,6 +202,28 @@ type RepositoryTemplateData struct {
 	DaoPath         string
 	ModelPath       string
 	ModelPkgName    string // model包的名称，如 "entity"
+	Columns         []ColumnInfo
+}
+
+// MapperTemplateData mapper 三个模板共用同一份数据
+type MapperTemplateData struct {
+	TableName       string
+	ModelName       string
+	ModelNameLower  string
+	TableComment    string
+	Package         string
+	ModelPkgPath    string // 完整包路径，如 internal/dal/model/entity
+	ModelPkgName    string // 包名最后一段，如 entity
+	DtoPkgPath      string // dto 完整包路径（go-zero 模式下为空）
+	DtoPkgName      string // dto 包名最后一段，如 dto 或 types
+	DtoStructName   string // 请求结构体名：CreateXxxDTO 或 CreateXxxReq
+	VoPkgPath       string // vo 完整包路径（go-zero 模式下为空）
+	VoPkgName       string // vo 包名最后一段，如 vo 或 types
+	VoStructName    string // 响应结构体名：XxxVo（普通）或 XxxModel（go-zero，对应 api 模板里的命名）
+	SameDtoPkg      bool   // DtoPkgPath == VoPkgPath，import 只写一次
+	IsGoZero        bool   // 是否 go-zero 项目，true 时结构体名用 Req/Resp，import 留 TODO
+	HasTimeField    bool   // 是否有时间类型字段，控制 import "time"
+	HasDecimalField bool   // 是否有 decimal 类型字段，控制 import decimal
 	Columns         []ColumnInfo
 }
 
@@ -275,14 +304,14 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 			Name:       col.Name,
 			Type:       col.Type,
 			FieldName:  Case2Camel(col.Name),
-			FieldType:  getGoType(col.Type),
-			JsonTag:    LowerCamelCase(col.Name),
+			FieldType:  getGoTypeForApiDto(col.Type),
+			JsonTag:    LowerCamelCase(Case2Camel(col.Name)),
 			JsonTagOpt: jsonTagOpt,
 			CanNull:    col.CanNull,
 			IsKey:      col.IsKey,
 			Extra:      col.Extra,
 			Comment:    col.Comment,
-			Validate:   generateValidateRule(ColumnInfo{CanNull: col.CanNull, IsKey: col.IsKey, FieldType: getGoType(col.Type), Name: col.Name, Comment: col.Comment}),
+			Validate:   generateValidateRule(ColumnInfo{CanNull: col.CanNull, IsKey: col.IsKey, FieldType: getGoTypeForApiDto(col.Type), Name: col.Name, Comment: col.Comment}),
 		}
 	}
 
@@ -292,7 +321,7 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 	}
 
 	data := ApiTemplateData{
-		TableName:    tableName,
+		TableName:    LowerCamelCase(Case2Camel(tableName)), // 转换为小驼峰
 		ModelName:    modelName,
 		EntityName:   Case2Camel(strings.ToUpper(tableName[:1]+tableName[1:])) + "Entity",
 		TableComment: tableComment,
@@ -440,7 +469,7 @@ func generateVoFile(tableName string, columns []ColumnInfo, modelName string, db
 			Name:      col.Name,
 			Type:      col.Type,
 			FieldName: Case2Camel(col.Name),
-			FieldType: getGoType(col.Type),
+			FieldType: getGoTypeForVo(col.Type),
 			CanNull:   col.CanNull,
 			IsKey:     col.IsKey,
 			Comment:   col.Comment,
@@ -480,7 +509,7 @@ func generateDtoFile(tableName string, columns []ColumnInfo, modelName string, d
 			Name:      col.Name,
 			Type:      col.Type,
 			FieldName: Case2Camel(col.Name),
-			FieldType: getGoType(col.Type),
+			FieldType: getGoTypeForApiDto(col.Type),
 			CanNull:   col.CanNull,
 			IsKey:     col.IsKey,
 			Comment:   col.Comment,
@@ -509,6 +538,82 @@ func generateDtoFile(tableName string, columns []ColumnInfo, modelName string, d
 	return buf.String(), nil
 }
 
+// buildMapperData 构建 mapper 模板数据
+// isGoZero=true：go-zero 项目，结构体名用 CreateXxxReq/XxxResp，import 留 TODO
+// isGoZero=false：普通项目，结构体名用 CreateXxxDTO/XxxVo
+func buildMapperData(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB,
+	pkg, modelPkgPath, dtoPkgPath, voPkgPath string, isGoZero bool) MapperTemplateData {
+
+	auditFields := map[string]bool{"created_by": true, "updated_by": true}
+
+	columnData := make([]ColumnInfo, len(columns))
+	hasTime, hasDecimal := false, false
+	for i, col := range columns {
+		sqlLower := strings.ToLower(col.Type)
+		isTime := strings.Contains(sqlLower, "datetime") ||
+			strings.Contains(sqlLower, "timestamp") ||
+			strings.Contains(sqlLower, "date")
+		isDecimal := strings.Contains(sqlLower, "decimal") ||
+			strings.Contains(sqlLower, "float") ||
+			strings.Contains(sqlLower, "double")
+		if isTime {
+			hasTime = true
+		}
+		if isDecimal {
+			hasDecimal = true
+		}
+		columnData[i] = ColumnInfo{
+			Name:          col.Name,
+			Type:          col.Type,
+			FieldName:     Case2Camel(col.Name),
+			FieldType:     getGoType(col.Type),
+			CanNull:       col.CanNull,
+			IsKey:         col.IsKey,
+			Comment:       col.Comment,
+			IsTimeType:    isTime,
+			IsAuditField:  auditFields[col.Name],
+			IsDecimalType: isDecimal,
+		}
+	}
+
+	tableComment, _ := getTableComment(db, tableName)
+	if tableComment == "" {
+		tableComment = modelName
+	}
+
+	dtoPkgName := getLastPathSegment(dtoPkgPath)
+	voPkgName := getLastPathSegment(voPkgPath)
+	sameDtoPkg := dtoPkgPath != "" && dtoPkgPath == voPkgPath
+
+	dtoStructName := "Create" + modelName + "DTO"
+	voStructName := modelName + "Vo"
+	if isGoZero {
+		dtoStructName = "Create" + modelName + "Req"
+		voStructName = modelName + "Model" // go-zero api 模板里返回结构体命名规范
+	}
+
+	return MapperTemplateData{
+		TableName:       tableName,
+		ModelName:       modelName,
+		ModelNameLower:  LowerCamelCase(modelName),
+		TableComment:    tableComment,
+		Package:         pkg,
+		ModelPkgPath:    modelPkgPath,
+		ModelPkgName:    getLastPathSegment(modelPkgPath),
+		DtoPkgPath:      dtoPkgPath,
+		DtoPkgName:      dtoPkgName,
+		DtoStructName:   dtoStructName,
+		VoPkgPath:       voPkgPath,
+		VoPkgName:       voPkgName,
+		VoStructName:    voStructName,
+		SameDtoPkg:      sameDtoPkg,
+		IsGoZero:        isGoZero,
+		HasTimeField:    hasTime,
+		HasDecimalField: hasDecimal,
+		Columns:         columnData,
+	}
+}
+
 func getGoType(sqlType string) string {
 	sqlType = strings.ToLower(sqlType)
 	if strings.Contains(sqlType, "varchar") || strings.Contains(sqlType, "text") || strings.Contains(sqlType, "char") {
@@ -535,6 +640,36 @@ func getGoType(sqlType string) string {
 	return "string"
 }
 
+// getGoTypeForApiDto 用于 API / DTO 的类型映射规则：
+//   - decimal/float/double → string（前端传字符串避免精度丢失）
+//   - datetime/timestamp/date → string（前端传日期字符串，如 "2024-01-01"）
+//   - 其余规则与 getGoType 相同
+func getGoTypeForApiDto(sqlType string) string {
+	s := strings.ToLower(sqlType)
+	if strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double") {
+		return "string"
+	}
+	if strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date") {
+		return "string"
+	}
+	return getGoType(sqlType)
+}
+
+// getGoTypeForVo 用于 VO 的类型映射规则：
+//   - decimal/float/double → string（返回给前端时保持字符串格式）
+//   - datetime/timestamp/date → int64（返回时间戳，前端自行格式化）
+//   - 其余规则与 getGoType 相同
+func getGoTypeForVo(sqlType string) string {
+	s := strings.ToLower(sqlType)
+	if strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double") {
+		return "string"
+	}
+	if strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date") {
+		return "int64"
+	}
+	return getGoType(sqlType)
+}
+
 // pathToPkg 将路径转换为包路径，如 "./query/dao" -> "query/dao"
 func pathToPkg(path string) string {
 	path = strings.TrimPrefix(path, "./")
@@ -549,7 +684,6 @@ func getLastPathSegment(path string) string {
 	return parts[len(parts)-1]
 }
 
-// Generate 代码生成器主函数
 // ensureDir 确保目录存在，不存在则创建
 func ensureDir(dir string) {
 	if dir != "" {
@@ -572,9 +706,19 @@ func writeFileIfNotExist(filePath string, content string, label string) {
 	}
 }
 
-// generateForTable 为单张表生成 Repo / API / VO / DTO 文件
+// writeFileAlways 始终覆盖写入，用于 _gen.go / _option.go
+func writeFileAlways(filePath string, content string, label string) {
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		fmt.Printf("写入 %s 失败: %v\n", label, err)
+	} else {
+		fmt.Printf("已生成: %s\n", filePath)
+	}
+}
+
+// generateForTable 为单张表生成 Repo / API / VO / DTO / Mapper 文件
 func generateForTable(tbl string, cfg *Config, db *gorm.DB,
-	repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath string) {
+	repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
+	mapperTmplPath string) {
 
 	columns, err := getTableColumns(db, tbl)
 	if err != nil {
@@ -615,7 +759,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		if err != nil {
 			fmt.Printf("[%s] 生成 api 失败: %v\n", tbl, err)
 		} else {
-			apiFileName := fmt.Sprintf("%s/%s.api", cfg.ApiPath, tbl)
+			apiFileName := fmt.Sprintf("%s/%s.api", cfg.ApiPath, LowerCamelCase(Case2Camel(tbl)))
 			if _, err := os.Stat(apiFileName); os.IsNotExist(err) {
 				if err = os.WriteFile(apiFileName, []byte(apiContent), 0644); err != nil {
 					fmt.Printf("[%s] 写入 api 文件失败: %v\n", tbl, err)
@@ -637,31 +781,76 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		}
 	}
 
-	// ── VO（已存在跳过）
-	if cfg.VoPath != "" {
+	// ── VO（有 api_path 时跳过，用 go-zero 生成的 types）
+	if cfg.VoPath != "" && cfg.ApiPath == "" {
 		voContent, err := generateVoFile(tbl, columns, modelName, db, voTmplPath)
 		if err != nil {
 			fmt.Printf("[%s] 生成 VO 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
-				fmt.Sprintf("%s/%sVo.go", cfg.VoPath, strings.ToLower(modelName)),
+				fmt.Sprintf("%s/%sVo.go", cfg.VoPath, LowerCamelCase(Case2Camel(modelName))),
 				voContent, "VO",
 			)
 		}
 	}
 
-	// ── DTO（已存在跳过）
-	if cfg.DtoPath != "" {
+	// ── DTO（有 api_path 时跳过，用 go-zero 生成的 types）
+	if cfg.DtoPath != "" && cfg.ApiPath == "" {
 		dtoContent, err := generateDtoFile(tbl, columns, modelName, db, dtoTmplPath)
 		if err != nil {
 			fmt.Printf("[%s] 生成 DTO 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
-				fmt.Sprintf("%s/%sDto.go", cfg.DtoPath, strings.ToLower(modelName)),
+				fmt.Sprintf("%s/%sDto.go", cfg.DtoPath, LowerCamelCase(Case2Camel(modelName))),
 				dtoContent, "DTO",
 			)
 		}
 	}
+
+	// ── Mapper：每张表生成一个文件，平铺在 MapperPath 下
+	// 文件名：supplier_mapper.go，package mapper，用户复制走后自行修改 import
+	if cfg.MapperPath != "" {
+		var dtoPkg, voPkg string
+		if cfg.ApiPath != "" {
+			// go-zero 模式：包路径留空，模板里用 TODO 占位，用户自己填
+			dtoPkg = ""
+			voPkg = ""
+		} else {
+			dtoPkg = pathToPkg(cfg.DtoPath)
+			voPkg = pathToPkg(cfg.VoPath)
+		}
+
+		data := buildMapperData(tbl, columns, modelName, db,
+			cfg.Package,
+			pathToPkg(cfg.ModelPkgPath),
+			dtoPkg,
+			voPkg,
+			cfg.ApiPath != "",
+		)
+
+		// supplier_mapper.go：已存在跳过
+		if mapperContent, err := renderMapperTemplate(mapperTmplPath, data); err != nil {
+			fmt.Printf("[%s] 生成 mapper 失败: %v\n", tbl, err)
+		} else {
+			writeFileIfNotExist(
+				fmt.Sprintf("%s/%sMapper.go", cfg.MapperPath, LowerCamelCase(Case2Camel(tbl))),
+				mapperContent, "mapper",
+			)
+		}
+	}
+}
+
+// renderMapperTemplate 加载并渲染 mapper 模板
+func renderMapperTemplate(tmplPath string, data MapperTemplateData) (string, error) {
+	tmpl, err := loadTemplate(tmplPath)
+	if err != nil {
+		return "", fmt.Errorf("加载模板失败: %w", err)
+	}
+	var buf bytes.Buffer
+	if err = tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("渲染模板失败: %w", err)
+	}
+	return buf.String(), nil
 }
 
 func Generate(cfg *Config) error {
@@ -710,6 +899,7 @@ func Generate(cfg *Config) error {
 	repoGenTmplPath := filepath.Join(templateDir, "repository_gen_template.txt")
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
 	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
+	mapperTmplPath := filepath.Join(templateDir, "mapper_template.txt")
 
 	// 路径为空表示该功能未配置，保持空值，后续按空值判断是否生成
 
@@ -748,7 +938,7 @@ func Generate(cfg *Config) error {
 		if strings.Contains(`deleted_at`, columnName) {
 			return "-"
 		}
-		return LowerCamelCase(columnName)
+		return LowerCamelCase(Case2Camel(columnName)) // LowerCamelCase(columnName)
 	})
 
 	autoUpdateTimeField := gen.FieldGORMTag("updated_at", func(tag field.GormTag) field.GormTag {
@@ -766,7 +956,7 @@ func Generate(cfg *Config) error {
 	softDeleteField := gen.FieldType("deleted_at", "gorm.DeletedAt")
 	fieldOpts := []gen.ModelOpt{jsonField, autoCreateTimeField, autoUpdateTimeField, softDeleteField}
 
-	// ── 确定要处理的表名列表（Repo/API/VO/DTO）────────────────────
+	// ── 确定要处理的表名列表（Repo/API/VO/DTO/Mapper）────────────────────
 	var tableNames []string
 	if tableName != "" {
 		tableNames = []string{tableName}
@@ -803,13 +993,15 @@ func Generate(cfg *Config) error {
 	ensureDir(cfg.ApiPath)
 	ensureDir(cfg.VoPath)
 	ensureDir(cfg.DtoPath)
+	ensureDir(cfg.MapperPath)
 
-	// ── 逐张表生成 Repo / API / VO / DTO（已存在的文件跳过）──────
-	fmt.Printf("\n【第二步】生成 Repo / API / VO / DTO...\n")
+	// ── 逐张表生成 Repo / API / VO / DTO / Mapper（已存在的文件跳过）──────
+	fmt.Printf("\n【第二步】生成 Repo / API / VO / DTO / Mapper...\n")
 	for _, tbl := range tableNames {
 		fmt.Printf("\n─── 表: %s ───\n", tbl)
 		generateForTable(tbl, cfg, db,
-			repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath)
+			repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
+			mapperTmplPath)
 	}
 
 	fmt.Println("\n全部生成完成！")

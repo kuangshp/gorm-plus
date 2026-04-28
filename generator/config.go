@@ -24,6 +24,7 @@ type Config struct {
 	ApiPath      string `yaml:"api_path"`       // api desc路径，如 "./apps/admin/desc"
 	VoPath       string `yaml:"vo_path"`        // vo输出路径，如 "./query/vo"
 	DtoPath      string `yaml:"dto_path"`       // dto输出路径，如 "./apps/admin/dto"
+	MapperPath   string `yaml:"mapper_path"`    // mapper输出路径，如 "./query/mapper"
 
 	// 项目包名
 	Package string `yaml:"package"` // 项目包名，如 "esim-api"

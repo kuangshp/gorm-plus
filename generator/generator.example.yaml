@@ -6,6 +6,11 @@ password: "123456"
 database: gin-admin-api
 out_path: ./internal/dal/dao
 model_pkg_path: ./internal/dal/model/entity
-repo_path: ./internal/dal/repository1
+repo_path: ./internal/dal/repository
 api_path: ./apps/admin/desc
+# go-zero 项目：配置 api_path 后不生成 vo/dto
+# mapper 生成后自行挪到对应目录并修改 import 路径
+vo_path: ./internal/dal/vo
+dto_path: ./internal/dal/dto
+mapper_path: ./internal/dal/mapper
 package: gin-admin-api
