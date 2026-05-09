@@ -25,6 +25,8 @@ gorm-plus/
 │   ├── gen_wrapper.go    # IGenWrapper：gorm-gen 类型安全链式构造器
 │   ├── slow_query.go     # 慢查询监控 gorm 插件
 │   └── utils.go
+├── dal/
+│   └── dal.go            # SQL 文件化查询（embed + 泛型，复杂 SQL 首选）
 ├── plugin/
 │   ├── ctx.go            # ctx 解析器（屏蔽 gin / go-zero / fiber 框架差异）
 │   ├── tenant.go         # 多租户插件
@@ -43,67 +45,67 @@ gorm-plus/
 
 ```go
 import (
-    "gorm.io/driver/mysql"   // 按需替换为 postgres / sqlite / sqlserver
-    gormplus "github.com/kuangshp/gorm-plus"
+"gorm.io/driver/mysql"   // 按需替换为 postgres / sqlite / sqlserver
+gormplus "github.com/kuangshp/gorm-plus"
 )
 
 func main() {
-    // ① ctx 解析器（gin 项目必须注册；go-zero / fiber 跳过）
-    gormplus.RegisterCtxResolver(func(ctx context.Context) context.Context {
-        if ginCtx, ok := ctx.(*gin.Context); ok {
-            return ginCtx.Request.Context()
-        }
-        return ctx
-    })
+// ① ctx 解析器（gin 项目必须注册；go-zero / fiber 跳过）
+gormplus.RegisterCtxResolver(func(ctx context.Context) context.Context {
+if ginCtx, ok := ctx.(*gin.Context); ok {
+return ginCtx.Request.Context()
+}
+return ctx
+})
 
-    // ② 多数据源（Dialector 外部传入，不内置任何驱动）
-    gormplus.DS.Register("default", gormplus.DataSourceGroupConfig{
-        Master: gormplus.DataSourceNodeConfig{
-            Dialector: mysql.Open("root:pwd@tcp(master:3306)/mydb?charset=utf8mb4&parseTime=True"),
-            Pool:      gormplus.DataSourcePoolConfig{MaxOpen: 50, MaxIdle: 10},
-        },
-        Slaves: []gormplus.DataSourceNodeConfig{
-            {Dialector: mysql.Open("root:pwd@tcp(slave:3306)/mydb?charset=utf8mb4&parseTime=True")},
-        },
-    })
+// ② 多数据源（Dialector 外部传入，不内置任何驱动）
+gormplus.DS.Register("default", gormplus.DataSourceGroupConfig{
+Master: gormplus.DataSourceNodeConfig{
+Dialector: mysql.Open("root:pwd@tcp(master:3306)/mydb?charset=utf8mb4&parseTime=True"),
+Pool:      gormplus.DataSourcePoolConfig{MaxOpen: 50, MaxIdle: 10},
+},
+Slaves: []gormplus.DataSourceNodeConfig{
+{Dialector: mysql.Open("root:pwd@tcp(slave:3306)/mydb?charset=utf8mb4&parseTime=True")},
+},
+})
 
-    // ③ 打开 DB
-    db, _ := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+// ③ 打开 DB
+db, _ := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 
-    // ④ 多租户插件
-    gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-        TenantField:   "tenant_id",
-        ExcludeTables: []string{"sys_config", "sys_dict"},
-    })
+// ④ 多租户插件
+gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
+TenantField:   "tenant_id",
+ExcludeTables: []string{"sys_config", "sys_dict"},
+})
 
-    // ⑤ 数据权限插件
-    gormplus.RegisterDataPermission(db, gormplus.DataPermissionConfig{
-        ExcludeTables: []string{"sys_config", "sys_dict"},
-    })
+// ⑤ 数据权限插件
+gormplus.RegisterDataPermission(db, gormplus.DataPermissionConfig{
+ExcludeTables: []string{"sys_config", "sys_dict"},
+})
 
-    // ⑥ 自动填充插件
-    db.Use(gormplus.NewAutoFillPlugin(gormplus.AutoFillConfig{
-        Fields: []gormplus.FieldConfig{
-            {Name: "CreatedBy", Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1), OnCreate: true},
-            {Name: "UpdatedBy", Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1), OnCreate: true, OnUpdate: true},
-        },
-    }))
+// ⑥ 自动填充插件
+db.Use(gormplus.NewAutoFillPlugin(gormplus.AutoFillConfig{
+Fields: []gormplus.FieldConfig{
+{Name: "CreatedBy", Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1), OnCreate: true},
+{Name: "UpdatedBy", Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1), OnCreate: true, OnUpdate: true},
+},
+}))
 
-    // ⑦ 慢查询监控
-    gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
-        Threshold: 200 * time.Millisecond,
-        Logger: func(ctx context.Context, info gormplus.SlowQueryInfo) {
-            log.Printf("[慢查询] cost=%v table=%s sql=%s", info.Duration, info.Table, info.SQL)
-        },
-    })
+// ⑦ 慢查询监控
+gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
+Threshold: 200 * time.Millisecond,
+Logger: func(ctx context.Context, info gormplus.SlowQueryInfo) {
+log.Printf("[慢查询] cost=%v table=%s sql=%s", info.Duration, info.Table, info.SQL)
+},
+})
 
-    // ⑧ 优雅退出
-    defer gormplus.StopSFCache()
-    defer gormplus.DS.Close()
+// ⑧ 优雅退出
+defer gormplus.StopSFCache()
+defer gormplus.DS.Close()
 
-    r := gin.New()
-    r.Use(OperatorMiddleware(), TenantMiddleware(), DataPermissionMiddleware())
-    r.Run(":8080")
+r := gin.New()
+r.Use(OperatorMiddleware(), TenantMiddleware(), DataPermissionMiddleware())
+r.Run(":8080")
 }
 ```
 
@@ -121,10 +123,10 @@ func main() {
 
 ```go
 gormplus.RegisterCtxResolver(func(ctx context.Context) context.Context {
-    if ginCtx, ok := ctx.(*gin.Context); ok {
-        return ginCtx.Request.Context()
-    }
-    return ctx
+if ginCtx, ok := ctx.(*gin.Context); ok {
+return ginCtx.Request.Context()
+}
+return ctx
 })
 
 // 注册后可直接传 *gin.Context，无需手动 c.Request.Context()
@@ -144,33 +146,33 @@ dao.Entity.WithContext(c).Find()
 // MySQL
 import "gorm.io/driver/mysql"
 gormplus.DS.Register("default", gormplus.DataSourceGroupConfig{
-    Master: gormplus.DataSourceNodeConfig{
-        Dialector: mysql.Open("root:pwd@tcp(master:3306)/mydb?charset=utf8mb4&parseTime=True"),
-        Pool:      gormplus.DataSourcePoolConfig{MaxOpen: 50, MaxIdle: 10},
-    },
-    Slaves: []gormplus.DataSourceNodeConfig{
-        {Dialector: mysql.Open("root:pwd@tcp(slave1:3306)/mydb?charset=utf8mb4&parseTime=True")},
-        {Dialector: mysql.Open("root:pwd@tcp(slave2:3306)/mydb?charset=utf8mb4&parseTime=True")},
-    },
+Master: gormplus.DataSourceNodeConfig{
+Dialector: mysql.Open("root:pwd@tcp(master:3306)/mydb?charset=utf8mb4&parseTime=True"),
+Pool:      gormplus.DataSourcePoolConfig{MaxOpen: 50, MaxIdle: 10},
+},
+Slaves: []gormplus.DataSourceNodeConfig{
+{Dialector: mysql.Open("root:pwd@tcp(slave1:3306)/mydb?charset=utf8mb4&parseTime=True")},
+{Dialector: mysql.Open("root:pwd@tcp(slave2:3306)/mydb?charset=utf8mb4&parseTime=True")},
+},
 })
 
 // PostgreSQL
 import "gorm.io/driver/postgres"
 gormplus.DS.Register("pg", gormplus.DataSourceGroupConfig{
-    Master: gormplus.DataSourceNodeConfig{
-        Dialector: postgres.Open("host=localhost user=root password=pwd dbname=mydb port=5432 sslmode=disable"),
-    },
+Master: gormplus.DataSourceNodeConfig{
+Dialector: postgres.Open("host=localhost user=root password=pwd dbname=mydb port=5432 sslmode=disable"),
+},
 })
 
 // SQLite（适合单元测试）
 import "gorm.io/driver/sqlite"
 gormplus.DS.Register("test", gormplus.DataSourceGroupConfig{
-    Master: gormplus.DataSourceNodeConfig{Dialector: sqlite.Open(":memory:")},
+Master: gormplus.DataSourceNodeConfig{Dialector: sqlite.Open(":memory:")},
 })
 
 // 多数据源混用
 gormplus.DS.Register("analytics", gormplus.DataSourceGroupConfig{
-    Master: gormplus.DataSourceNodeConfig{Dialector: postgres.Open(analyticsDSN)},
+Master: gormplus.DataSourceNodeConfig{Dialector: postgres.Open(analyticsDSN)},
 })
 ```
 
@@ -178,16 +180,16 @@ gormplus.DS.Register("analytics", gormplus.DataSourceGroupConfig{
 
 ```go
 func DSMiddleware(name string) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        ctx := gormplus.DSWithName(c.Request.Context(), name)
-        if c.Request.Method == http.MethodGet {
-            ctx = gormplus.DSWithRead(ctx)  // GET → 从库
-        } else {
-            ctx = gormplus.DSWithWrite(ctx) // 其他 → 主库
-        }
-        c.Request = c.Request.WithContext(ctx)
-        c.Next()
-    }
+return func(c *gin.Context) {
+ctx := gormplus.DSWithName(c.Request.Context(), name)
+if c.Request.Method == http.MethodGet {
+ctx = gormplus.DSWithRead(ctx)  // GET → 从库
+} else {
+ctx = gormplus.DSWithWrite(ctx) // 其他 → 主库
+}
+c.Request = c.Request.WithContext(ctx)
+c.Next()
+}
 }
 ```
 
@@ -196,10 +198,10 @@ func DSMiddleware(name string) gin.HandlerFunc {
 ```go
 // 推荐：Auto 自动读取 context 决定数据源和读写
 func (r *OrderRepo) List(ctx context.Context) ([]*Order, error) {
-    db, err := gormplus.DS.Auto(ctx)
-    if err != nil { return nil, err }
-    var list []*Order
-    return list, db.WithContext(ctx).Find(&list).Error
+db, err := gormplus.DS.Auto(ctx)
+if err != nil { return nil, err }
+var list []*Order
+return list, db.WithContext(ctx).Find(&list).Error
 }
 
 // 显式指定
@@ -219,54 +221,54 @@ results := gormplus.DS.Ping()
 ```go
 // 分页列表查询
 built := gormplus.Query[*model.Account](db, ctx).
-    LLike("username", username).                        // 空时自动跳过
-    WhereIf(status != 0, "status = ?", status).         // false 时跳过
-    BetweenIfNotZero("created_at", startTime, endTime). // 任一零值时跳过
-    WhereIf(len(ids) > 0, "dept_id IN ?", ids).
-    Build()
+LLike("username", username).                        // 空时自动跳过
+WhereIf(status != 0, "status = ?", status).         // false 时跳过
+BetweenIfNotZero("created_at", startTime, endTime). // 任一零值时跳过
+WhereIf(len(ids) > 0, "dept_id IN ?", ids).
+Build()
 var total int64
 built.Count(&total)
 built.Order("created_at DESC").Limit(pageSize).Offset((page-1)*pageSize).Find(&list)
 
 // 泛型分页（一步到位）
 list, total, err := gormplus.FindByPage[*model.Account](
-    gormplus.Query[*model.Account](db, ctx).
-        LLike("username", username).
-        WhereIf(status != 0, "status = ?", status).
-        Build().Order("created_at DESC"),
-    pageNum, pageSize,
+gormplus.Query[*model.Account](db, ctx).
+LLike("username", username).
+WhereIf(status != 0, "status = ?", status).
+Build().Order("created_at DESC"),
+pageNum, pageSize,
 )
 
 // 联表 + 映射到 VO（用 ScanByPage）
 type AccountVO struct {
-    ID       int64  `json:"id"`
-    Username string `json:"username"`
-    DeptName string `json:"deptName"`
+ID       int64  `json:"id"`
+Username string `json:"username"`
+DeptName string `json:"deptName"`
 }
 list, total, err := gormplus.ScanByPage[AccountVO](
-    gormplus.Query[*model.Account](db, ctx).
-        LLike("a.username", username).
-        Build().
-        Select("a.id", "a.username", "d.name AS dept_name").
-        Joins("LEFT JOIN sys_dept d ON d.id = a.dept_id").
-        Order("a.created_at DESC"),
-    pageNum, pageSize,
+gormplus.Query[*model.Account](db, ctx).
+LLike("a.username", username).
+Build().
+Select("a.id", "a.username", "d.name AS dept_name").
+Joins("LEFT JOIN sys_dept d ON d.id = a.dept_id").
+Order("a.created_at DESC"),
+pageNum, pageSize,
 )
 
 // AND 分组：WHERE (username LIKE '%kw%' OR email LIKE '%kw%')
 gormplus.Query[*model.Account](db, ctx).
-    WhereGroup(func(q gormplus.IQueryBuilder) {
-        q.Like("username", keyword).
-          WhereIf(true, "email LIKE ?", "%"+keyword+"%")
-    }).Build().Find(&list)
+WhereGroup(func(q gormplus.IQueryBuilder) {
+q.Like("username", keyword).
+WhereIf(true, "email LIKE ?", "%"+keyword+"%")
+}).Build().Find(&list)
 
 // OR 分组：WHERE status = 1 OR (role = 99 AND org_id = 10)
 gormplus.Query[*model.Account](db, ctx).
-    WhereIf(true, "status = ?", 1).
-    OrGroup(func(q gormplus.IQueryBuilder) {
-        q.WhereIf(role != 0, "role = ?", role).
-          WhereIf(orgID != 0, "org_id = ?", orgID)
-    }).Build().Find(&list)
+WhereIf(true, "status = ?", 1).
+OrGroup(func(q gormplus.IQueryBuilder) {
+q.WhereIf(role != 0, "role = ?", role).
+WhereIf(orgID != 0, "org_id = ?", orgID)
+}).Build().Find(&list)
 ```
 
 | 方法 | 说明 |
@@ -286,42 +288,42 @@ gormplus.Query[*model.Account](db, ctx).
 ```go
 // 基础查询
 list, err := gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
-    LLike(dao.AccountEntity.Username, username).
-    WhereIf(status != 0, dao.AccountEntity.Status.Eq(status)).
-    Apply().
-    Order(dao.AccountEntity.CreatedAt.Desc()).
-    Limit(pageSize).Offset((page-1)*pageSize).
-    Find()
+LLike(dao.AccountEntity.Username, username).
+WhereIf(status != 0, dao.AccountEntity.Status.Eq(status)).
+Apply().
+Order(dao.AccountEntity.CreatedAt.Desc()).
+Limit(pageSize).Offset((page-1)*pageSize).
+Find()
 
 // 联表查询（使用别名）
 list, err := gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
-    As("a").
-    RawWhere("a.username LIKE ?", "%"+username+"%").
-    WhereIf(status != 0, dao.AccountEntity.Status.Eq(status)).
-    Apply().
-    Select(dao.AccountEntity.ID, dao.AccountEntity.Username).
-    Find()
+As("a").
+RawWhere("a.username LIKE ?", "%"+username+"%").
+WhereIf(status != 0, dao.AccountEntity.Status.Eq(status)).
+Apply().
+Select(dao.AccountEntity.ID, dao.AccountEntity.Username).
+Find()
 
 // AND 简单分组：WHERE (status = 1 AND role = 2)
 gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
-    WhereGroup(dao.AccountEntity.Status.Eq(1), dao.AccountEntity.Role.Eq(2)).
-    Apply().Find()
+WhereGroup(dao.AccountEntity.Status.Eq(1), dao.AccountEntity.Role.Eq(2)).
+Apply().Find()
 
 // AND 函数分组（组内可用 WhereIf / Like 等完整能力）
 // => WHERE (username LIKE '%admin' AND status = 1)
 gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
-    WhereGroupFn(func(w gormplus.IGenWrapper[dao.IAccountEntityDo]) {
-        w.LLike(dao.AccountEntity.Username, username).
-          WhereIf(status != 0, dao.AccountEntity.Status.Eq(status))
-    }).Apply().Find()
+WhereGroupFn(func(w gormplus.IGenWrapper[dao.IAccountEntityDo]) {
+w.LLike(dao.AccountEntity.Username, username).
+WhereIf(status != 0, dao.AccountEntity.Status.Eq(status))
+}).Apply().Find()
 
 // OR 函数分组：WHERE status = 1 OR (username LIKE '%admin' AND role = 99)
 gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
-    WhereIf(true, dao.AccountEntity.Status.Eq(1)).
-    OrGroupFn(func(w gormplus.IGenWrapper[dao.IAccountEntityDo]) {
-        w.LLike(dao.AccountEntity.Username, username).
-          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
-    }).Apply().Find()
+WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+OrGroupFn(func(w gormplus.IGenWrapper[dao.IAccountEntityDo]) {
+w.LLike(dao.AccountEntity.Username, username).
+WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
+}).Apply().Find()
 ```
 
 ---
@@ -334,18 +336,18 @@ gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
 
 ```go
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantField:   "tenant_id",
-    ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
+TenantField:   "tenant_id",
+ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
 })
 
 // 中间件写入
 func TenantMiddleware() gin.HandlerFunc {
-    return func(c *gin.Context) {
-        tenantID := int64(1001) // 从 JWT 解析
-        ctx := gormplus.WithTenantID(c.Request.Context(), tenantID)
-        c.Request = c.Request.WithContext(ctx)
-        c.Next()
-    }
+return func(c *gin.Context) {
+tenantID := int64(1001) // 从 JWT 解析
+ctx := gormplus.WithTenantID(c.Request.Context(), tenantID)
+c.Request = c.Request.WithContext(ctx)
+c.Next()
+}
 }
 
 // 业务代码零改动
@@ -357,13 +359,13 @@ db.WithContext(ctx).Create(&account) // 自动填充 tenant_id 字段
 
 ```go
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantFields: []gormplus.TenantFieldConfig[int64]{
-        {Field: "tenant_id"}, // 使用默认 WithTenantID 写入的值
-        {Field: "org_id", GetTenantID: func(ctx context.Context) (int64, bool) {
-            id, ok := ctx.Value("orgID").(int64)
-            return id, ok && id != 0
-        }},
-    },
+TenantFields: []gormplus.TenantFieldConfig[int64]{
+{Field: "tenant_id"}, // 使用默认 WithTenantID 写入的值
+{Field: "org_id", GetTenantID: func(ctx context.Context) (int64, bool) {
+id, ok := ctx.Value("orgID").(int64)
+return id, ok && id != 0
+}},
+},
 })
 
 // 中间件同时写入两个值
@@ -377,16 +379,16 @@ ctx  = context.WithValue(ctx, "orgID", int64(200))
 
 ```go
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantField: "tenant_id", // 兜底字段
-    TableFields: map[string][]gormplus.TenantFieldConfig[int64]{
-        "sys_contract": {{Field: "company_id"}},          // 改用 company_id
-        "sys_order": {                                    // 同时注入两个字段
-            {Field: "tenant_id"},
-            {Field: "org_id", GetTenantID: orgGetter},
-        },
-        "sys_log": {}, // 空 slice = 跳过该表
-    },
-    ExcludeTables: []string{"sys_config", "sys_dict"},
+TenantField: "tenant_id", // 兜底字段
+TableFields: map[string][]gormplus.TenantFieldConfig[int64]{
+"sys_contract": {{Field: "company_id"}},          // 改用 company_id
+"sys_order": {                                    // 同时注入两个字段
+{Field: "tenant_id"},
+{Field: "org_id", GetTenantID: orgGetter},
+},
+"sys_log": {}, // 空 slice = 跳过该表
+},
+ExcludeTables: []string{"sys_config", "sys_dict"},
 })
 
 // 查询 sys_contract：WHERE `company_id` = 1001
@@ -400,10 +402,10 @@ gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
 ```go
 // 零配置，直接写 JOIN，关联表和别名自动处理
 db.WithContext(ctx).
-    Table("sys_order a").
-    Joins("LEFT JOIN sys_order_item b ON b.order_id = a.id").
-    Joins("LEFT JOIN sys_user u ON u.id = a.user_id").
-    Find(&list)
+Table("sys_order a").
+Joins("LEFT JOIN sys_order_item b ON b.order_id = a.id").
+Joins("LEFT JOIN sys_user u ON u.id = a.user_id").
+Find(&list)
 // 自动生成：
 // WHERE `a`.`tenant_id` = 1001
 //   AND `b`.`tenant_id` = 1001   ← 别名 b 自动识别
@@ -411,23 +413,23 @@ db.WithContext(ctx).
 
 // 排除不需要租户过滤的公共关联表
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantField:       "tenant_id",
-    ExcludeJoinTables: []string{"sys_dict", "sys_config"},
+TenantField:       "tenant_id",
+ExcludeJoinTables: []string{"sys_dict", "sys_config"},
 })
 
 // 关联表字段名不同时覆盖（仅需配置差异部分）
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantField: "tenant_id",
-    JoinTableOverrides: []gormplus.JoinTenantConfig[int64]{
-        {Table: "sys_contract_detail", Field: "company_id"},
-    },
+TenantField: "tenant_id",
+JoinTableOverrides: []gormplus.JoinTenantConfig[int64]{
+{Table: "sys_contract_detail", Field: "company_id"},
+},
 })
 
 // 关闭 JOIN 自动注入
 falseVal := false
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantField:          "tenant_id",
-    AutoInjectJoinTables: &falseVal,
+TenantField:          "tenant_id",
+AutoInjectJoinTables: &falseVal,
 })
 ```
 
@@ -447,17 +449,17 @@ db.WithContext(ctx).Model(&Account{}).Updates(map[string]any{"status": 0})
 
 // 配置层永久放开
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantField:       "tenant_id",
-    AllowGlobalUpdate: true,
-    AllowGlobalDelete: true,
+TenantField:       "tenant_id",
+AllowGlobalUpdate: true,
+AllowGlobalDelete: true,
 })
 
 // ② 重复条件策略（默认 PolicySkip）
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantField:     "tenant_id",
-    DuplicatePolicy: gormplus.PolicySkip,    // 默认：已有 AND 条件时跳过注入
-    // DuplicatePolicy: gormplus.PolicyReplace, // 强制替换为 ctx 中的值
-    // DuplicatePolicy: gormplus.PolicyAppend,  // 直接追加不检查
+TenantField:     "tenant_id",
+DuplicatePolicy: gormplus.PolicySkip,    // 默认：已有 AND 条件时跳过注入
+// DuplicatePolicy: gormplus.PolicyReplace, // 强制替换为 ctx 中的值
+// DuplicatePolicy: gormplus.PolicyAppend,  // 直接追加不检查
 })
 
 // ③ OR 危险条件自动拒绝
@@ -470,8 +472,8 @@ db.WithContext(ctx).Where("tenant_id = ? OR status = 1", 9999).Find(&list)
 ```go
 // 覆盖租户 ID（需开启 AllowOverrideTenantID）
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-    TenantField:           "tenant_id",
-    AllowOverrideTenantID: true,
+TenantField:           "tenant_id",
+AllowOverrideTenantID: true,
 })
 ctx = gormplus.WithOverrideTenantID(ctx, int64(2002))
 db.WithContext(ctx).Find(&list) // WHERE tenant_id = 2002
@@ -495,30 +497,30 @@ tables, _ := gormplus.ExcludedTables[int64](db)
 ```go
 // 注册
 gormplus.RegisterDataPermission(db, gormplus.DataPermissionConfig{
-    ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
+ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
 })
 
 // 中间件定义注入函数
 func DataPermissionMiddleware() gin.HandlerFunc {
-    return func(c *gin.Context) {
-        claims, err := jwt.ParseToken(c.GetHeader("Authorization"))
-        if err != nil { c.Next(); return }
-        injectFn := func(db *gorm.DB, tableName string) {
-            switch claims.DataScope {
-            case "2": // 本角色相关部门
-                db.Where(tableName+".create_by IN (SELECT sys_user.user_id FROM sys_role_dept LEFT JOIN sys_user ON sys_user.dept_id = sys_role_dept.dept_id WHERE sys_role_dept.role_id = ?)", claims.RoleId)
-            case "3": // 本部门
-                db.Where(tableName+".create_by IN (SELECT user_id FROM sys_user WHERE dept_id = ?)", claims.DeptId)
-            case "4": // 本部门及子部门
-                db.Where(tableName+".create_by IN (SELECT user_id FROM sys_user WHERE dept_id IN (SELECT dept_id FROM sys_dept WHERE dept_path LIKE ?))", "%/"+strconv.FormatInt(claims.DeptId, 10)+"/%")
-            case "5": // 仅本人
-                db.Where(tableName+".create_by = ?", claims.UserId)
-            }
-        }
-        ctx := gormplus.WithDataPermission(c.Request.Context(), injectFn)
-        c.Request = c.Request.WithContext(ctx)
-        c.Next()
-    }
+return func(c *gin.Context) {
+claims, err := jwt.ParseToken(c.GetHeader("Authorization"))
+if err != nil { c.Next(); return }
+injectFn := func(db *gorm.DB, tableName string) {
+switch claims.DataScope {
+case "2": // 本角色相关部门
+db.Where(tableName+".create_by IN (SELECT sys_user.user_id FROM sys_role_dept LEFT JOIN sys_user ON sys_user.dept_id = sys_role_dept.dept_id WHERE sys_role_dept.role_id = ?)", claims.RoleId)
+case "3": // 本部门
+db.Where(tableName+".create_by IN (SELECT user_id FROM sys_user WHERE dept_id = ?)", claims.DeptId)
+case "4": // 本部门及子部门
+db.Where(tableName+".create_by IN (SELECT user_id FROM sys_user WHERE dept_id IN (SELECT dept_id FROM sys_dept WHERE dept_path LIKE ?))", "%/"+strconv.FormatInt(claims.DeptId, 10)+"/%")
+case "5": // 仅本人
+db.Where(tableName+".create_by = ?", claims.UserId)
+}
+}
+ctx := gormplus.WithDataPermission(c.Request.Context(), injectFn)
+c.Request = c.Request.WithContext(ctx)
+c.Next()
+}
 }
 
 // 业务代码零改动
@@ -536,23 +538,23 @@ db.WithContext(ctx).Find(&allData)
 ```go
 // 中间件写入操作人信息
 func OperatorMiddleware() gin.HandlerFunc {
-    return func(c *gin.Context) {
-        claims, _ := jwt.ParseToken(c.GetHeader("Authorization"))
-        ctx := context.WithValue(c.Request.Context(), gormplus.CtxContextKey1, claims.UserID)   // 操作人 ID
-        ctx  = context.WithValue(ctx,                 gormplus.CtxContextKey2, claims.Username) // 操作人姓名
-        c.Request = c.Request.WithContext(ctx)
-        c.Next()
-    }
+return func(c *gin.Context) {
+claims, _ := jwt.ParseToken(c.GetHeader("Authorization"))
+ctx := context.WithValue(c.Request.Context(), gormplus.CtxContextKey1, claims.UserID)   // 操作人 ID
+ctx  = context.WithValue(ctx,                 gormplus.CtxContextKey2, claims.Username) // 操作人姓名
+c.Request = c.Request.WithContext(ctx)
+c.Next()
+}
 }
 
 // 注册插件
 db.Use(gormplus.NewAutoFillPlugin(gormplus.AutoFillConfig{
-    Fields: []gormplus.FieldConfig{
-        {Name: "CreatedBy",   Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1),  OnCreate: true},
-        {Name: "UpdatedBy",   Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1),  OnCreate: true, OnUpdate: true},
-        {Name: "CreatedName", Getter: gormplus.CtxGetter[string](gormplus.CtxContextKey2), OnCreate: true},
-        {Name: "UpdatedName", Getter: gormplus.CtxGetter[string](gormplus.CtxContextKey2), OnCreate: true, OnUpdate: true},
-    },
+Fields: []gormplus.FieldConfig{
+{Name: "CreatedBy",   Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1),  OnCreate: true},
+{Name: "UpdatedBy",   Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1),  OnCreate: true, OnUpdate: true},
+{Name: "CreatedName", Getter: gormplus.CtxGetter[string](gormplus.CtxContextKey2), OnCreate: true},
+{Name: "UpdatedName", Getter: gormplus.CtxGetter[string](gormplus.CtxContextKey2), OnCreate: true, OnUpdate: true},
+},
 }))
 
 // 业务代码零改动
@@ -572,18 +574,18 @@ defer gormplus.StopSFCache() // 退出时停止后台清理 goroutine
 
 // 带缓存（30 秒）
 list, err := gormplus.SF(func() ([]*model.Account, error) {
-    var result []*model.Account
-    err := gormplus.Query[*model.Account](db, ctx).
-        WhereIf(status != 0, "status = ?", status).
-        Build().Find(&result)
-    return result, err
+var result []*model.Account
+err := gormplus.Query[*model.Account](db, ctx).
+WhereIf(status != 0, "status = ?", status).
+Build().Find(&result)
+return result, err
 }, "Account.List", map[string]any{"status": status, "page": pageNum}, 30*time.Second)
 
 // 纯 singleflight（不缓存，只合并并发）
 account, err := gormplus.SFNoCache(func() (*model.Account, error) {
-    var a model.Account
-    err := db.WithContext(ctx).Where("id = ?", id).First(&a).Error
-    return &a, err
+var a model.Account
+err := db.WithContext(ctx).Where("id = ?", id).First(&a).Error
+return &a, err
 }, "Account.Detail", map[string]any{"id": id})
 
 // 写操作后主动失效缓存
@@ -595,23 +597,23 @@ gormplus.SFInvalidate("Account.List", map[string]any{"status": status})
 ```go
 // 实现 SFCache 接口
 type RedisSFCache struct {
-    rdb    *redis.Client
-    prefix string
+rdb    *redis.Client
+prefix string
 }
 
 func (c *RedisSFCache) Get(key string) (any, bool) {
-    val, err := c.rdb.Get(context.Background(), c.prefix+key).Bytes()
-    if err != nil { return nil, false }
-    var result any
-    if err := json.Unmarshal(val, &result); err != nil { return nil, false }
-    return result, true
+val, err := c.rdb.Get(context.Background(), c.prefix+key).Bytes()
+if err != nil { return nil, false }
+var result any
+if err := json.Unmarshal(val, &result); err != nil { return nil, false }
+return result, true
 }
 func (c *RedisSFCache) Set(key string, val any, ttl time.Duration) {
-    b, _ := json.Marshal(val)
-    c.rdb.Set(context.Background(), c.prefix+key, b, ttl)
+b, _ := json.Marshal(val)
+c.rdb.Set(context.Background(), c.prefix+key, b, ttl)
 }
 func (c *RedisSFCache) Del(key string) {
-    c.rdb.Del(context.Background(), c.prefix+key)
+c.rdb.Del(context.Background(), c.prefix+key)
 }
 
 // 启动时注册（必须在第一次调用 SF 之前）
@@ -642,16 +644,16 @@ list, err := gormplus.SF(fn, "Account.List", args, 30*time.Second)
 
 ```go
 gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
-    Threshold: 200 * time.Millisecond, // 超过此阈值记录，0 时自动设为 200ms
-    Logger: func(ctx context.Context, info gormplus.SlowQueryInfo) {
-        zap.L().Warn("慢查询",
-            zap.Duration("cost",  info.Duration),
-            zap.String("table",   info.Table),
-            zap.String("sql",     info.SQL),       // 已替换 ?，可直接 EXPLAIN
-            zap.Int64("rows",     info.RowsAffected),
-            zap.Error(info.Error),
-        )
-    },
+Threshold: 200 * time.Millisecond, // 超过此阈值记录，0 时自动设为 200ms
+Logger: func(ctx context.Context, info gormplus.SlowQueryInfo) {
+zap.L().Warn("慢查询",
+zap.Duration("cost",  info.Duration),
+zap.String("table",   info.Table),
+zap.String("sql",     info.SQL),       // 已替换 ?，可直接 EXPLAIN
+zap.Int64("rows",     info.RowsAffected),
+zap.Error(info.Error),
+)
+},
 })
 ```
 
@@ -680,7 +682,7 @@ cfg, err := gormplus.LoadGeneratorConfig("./generator.yaml")
 if err != nil { log.Fatal(err) }
 
 if err := gormplus.Generate(cfg); err != nil {
-    log.Fatal(err)
+log.Fatal(err)
 }
 // 运行后提示输入表名：
 // - 输入表名：只生成该表的 Model / Repository / API / VO / DTO
@@ -688,6 +690,195 @@ if err := gormplus.Generate(cfg); err != nil {
 ```
 
 > **注意**：数据模型（Model）每次都会重新生成覆盖；Repository / API / VO / DTO 文件已存在时自动跳过，不会覆盖已有的自定义代码。
+
+---
+
+## 十一、DAL — SQL 文件化查询
+
+不同于链式条件构造器，DAL 模块将 SQL 完整写在独立 `.sql` 文件中，
+通过 `//go:embed` 打包进二进制，天然支持复杂 SQL、DBA 审核、版本管理。
+
+### 推荐目录结构
+
+```
+your-project/
+└── query/dal/
+    ├── init.go       ← embed 声明 + 初始化（调用方编写）
+    └── rawsql/
+        ├── account/
+        │   ├── list.sql
+        │   ├── page.sql
+        │   ├── count_page.sql
+        │   └── find_by_id.sql
+        └── order/
+            ├── page.sql
+            └── count_page.sql
+```
+
+### 初始化
+
+```go
+// init.go（embed 必须在调用方包内声明）
+package yourpkg
+
+import (
+    "embed"
+    "io/fs"
+    "log"
+    "time"
+    gormplus "github.com/kuangshp/gorm-plus"
+)
+
+//go:embed rawsql
+var SQLFS embed.FS
+
+func InitDAL(db *gorm.DB) {
+    sub, _ := fs.Sub(SQLFS, "rawsql")
+    d, err := gormplus.NewDal(
+        db,
+        gormplus.NewEmbedLoader(sub),
+        gormplus.WithDALDebug(true),                  // 开发环境开启
+        gormplus.WithDALCacheCleanup(30*time.Minute), // 可选
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer d.Close() // 程序退出时停止后台 goroutine
+}
+```
+
+### 单数据源使用
+
+```go
+// 查询多条（位置参数 ?）
+rows, err := gormplus.DALQuery[AccountVO](ctx, "account/list.sql", 1, 10, 0)
+
+// 查询单条（位置参数 ?）
+account, err := gormplus.DALQueryOne[AccountVO](ctx, "account/find_by_id.sql", 123)
+if err != nil { return err }
+if account == nil { return errors.New("账号不存在") }
+
+// 命名参数查询（@name）
+rows, err := gormplus.DALQueryNamed[AccountVO](ctx, "account/search.sql", map[string]any{
+    "username": "张", "status": 1, "limit": 10, "offset": 0,
+})
+
+// 分页查询（count SQL 自动推导：page.sql → count_page.sql）
+result, err := gormplus.DALQueryPage[AccountVO](
+    ctx, "account/page.sql",
+    []any{1},      // 业务过滤参数，同时传给 count SQL
+    []any{10, 0},  // 分页参数（LIMIT, OFFSET），仅传给数据 SQL
+)
+// result.List — 当页数据  result.Total — 总条数
+
+// 命名参数分页
+result, err := gormplus.DALQueryPageNamed[OrderVO](ctx, "order/page.sql", map[string]any{
+    "account_id": 123, "status": 1, "limit": 10, "offset": 0,
+})
+
+// 执行（INSERT / UPDATE / DELETE）
+err := gormplus.DALExec(ctx, "account/disable.sql", 123)
+
+// 执行并返回影响行数
+res, err := gormplus.DALExecAffected(ctx, "account/update_status.sql", 0, 123)
+if res.RowsAffected == 0 { return errors.New("记录不存在") }
+
+// 查询数量
+total, err := gormplus.DALCount(ctx, "account/count_page.sql", 1)
+```
+
+### SQL 文件示例
+
+```sql
+-- rawsql/account/page.sql（位置参数 ?）
+SELECT id, username, status, created_at
+FROM   account
+WHERE  status = ? AND deleted_at IS NULL
+ORDER BY created_at DESC LIMIT ? OFFSET ?
+
+-- rawsql/account/count_page.sql（与 page.sql 过滤条件完全一致，去掉分页）
+SELECT COUNT(*) FROM account WHERE status = ? AND deleted_at IS NULL
+
+-- rawsql/account/search.sql（命名参数 @name，空值/-1 表示不过滤）
+SELECT id, username, status FROM account
+WHERE deleted_at IS NULL
+  AND (@username = ''  OR username LIKE CONCAT('%', @username, '%'))
+  AND (@status  = -1  OR status   = @status)
+ORDER BY created_at DESC LIMIT @limit OFFSET @offset
+```
+
+### 事务
+
+```go
+err := gormplus.DALWithTx(ctx, func(tx *gorm.DB) error {
+    // 加锁查库存（FOR UPDATE）
+    stock, err := gormplus.DALTxQueryOne[StockVO](ctx, tx, "stock/find_for_update.sql", productID)
+    if err != nil { return err }
+    if stock == nil || stock.Quantity < qty { return errors.New("库存不足") }
+
+    // 扣库存
+    if err := gormplus.DALTxExec(ctx, tx, "stock/deduct.sql", qty, productID, qty); err != nil {
+        return err
+    }
+    // 创建订单
+    return gormplus.DALTxExec(ctx, tx, "order/insert.sql", accountID, productID, qty, amount, orderNo)
+})
+```
+
+### 多数据源
+
+```go
+// 初始化第二个数据源
+reportSub, _ := fs.Sub(reportSQLFS, "rawsql")
+reportDAL, _ := gormplus.NewDal(reportDB, gormplus.NewEmbedLoader(reportSub))
+
+// 请求入口注入一次，后续写法完全不变
+ctx = gormplus.WithDALDB(ctx, reportDAL)
+rows, err := gormplus.DALQuery[ReportVO](ctx, "report/monthly.sql", 2024)
+```
+
+### Hook（慢 SQL 监控）
+
+```go
+type SlowDALHook struct{ Threshold time.Duration }
+
+func (h *SlowDALHook) Before(ctx context.Context, sqlFile string, args []any) {}
+func (h *SlowDALHook) After(ctx context.Context, sqlFile string, args []any, cost time.Duration, err error) {
+    if cost > h.Threshold {
+        log.Printf("[慢SQL] file=%s cost=%s", sqlFile, cost)
+    }
+}
+
+d, err := gormplus.NewDal(db, gormplus.NewEmbedLoader(sub),
+    gormplus.WithDALDebug(true),
+    gormplus.WithDALHook(&SlowDALHook{Threshold: 200 * time.Millisecond}),
+)
+```
+
+| 函数 | 说明 |
+|------|------|
+| `NewDal` | 初始化全局默认 DAL 实例，返回句柄（用于 Close） |
+| `NewDalWithProvider` | 使用自定义 DBProvider（读写分离、多租户） |
+| `WithDALDB` | 将指定实例注入 context，多数据源切换 |
+| `DALPreload` | 预热 SQL 缓存，启动时校验路径 |
+| `DALQuery[T]` | 查询多条（位置参数 ?） |
+| `DALQueryOne[T]` | 查询单条（位置参数 ?） |
+| `DALQueryNamed[T]` | 命名参数查询多条（@name） |
+| `DALQueryOneNamed[T]` | 命名参数查询单条（@name） |
+| `DALQueryPage[T]` | 位置参数分页，count SQL 自动推导 |
+| `DALQueryPageNamed[T]` | 命名参数分页 |
+| `DALExec` | 执行 SQL，不关心影响行数 |
+| `DALExecAffected` | 执行 SQL 并返回影响行数 |
+| `DALCount` | 查询数量 |
+| `DALWithTx` | 开启事务（自动提交/回滚） |
+| `DALTxQuery[T]` | 事务中查询多条 |
+| `DALTxQueryOne[T]` | 事务中查询单条 |
+| `DALTxQueryNamed[T]` | 事务中命名参数查询 |
+| `DALTxCount` | 事务中查询数量 |
+| `DALTxExec` | 事务中执行 SQL |
+| `DALMustExec` | 执行失败 panic（初始化阶段） |
+| `DALMustQueryOne[T]` | 查询失败或不存在时 panic |
+
 
 ---
 
