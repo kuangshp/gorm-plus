@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"text/template"
 
@@ -18,6 +19,56 @@ import (
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
 )
+
+// findProjectRoot 从给定目录向上查找包含 go.mod 的目录（即项目根目录）
+func findProjectRoot(startDir string) (string, error) {
+	dir := startDir
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("未找到 go.mod，请确认项目结构正确")
+		}
+		dir = parent
+	}
+}
+
+// resolveConfigPaths 将 Config 中所有相对路径（以 ./ 或 ../ 开头，或不含分隔符的短路径）
+// 解析为相对于项目根目录的绝对路径，保证无论从哪里运行都指向同一位置。
+// callerFile 是调用 Generate 的源文件的绝对路径（通过 runtime.Caller 获取）。
+func resolveConfigPaths(cfg *Config, callerFile string) error {
+	// 从调用方源文件出发，向上查找 go.mod
+	projectRoot, err := findProjectRoot(filepath.Dir(callerFile))
+	if err != nil {
+		// 兜底：从当前工作目录向上找
+		cwd, _ := os.Getwd()
+		projectRoot, err = findProjectRoot(cwd)
+		if err != nil {
+			return err
+		}
+	}
+
+	resolve := func(p string) string {
+		if p == "" {
+			return ""
+		}
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(projectRoot, p)
+	}
+
+	cfg.OutPath = resolve(cfg.OutPath)
+	cfg.ModelPkgPath = resolve(cfg.ModelPkgPath)
+	cfg.RepoPath = resolve(cfg.RepoPath)
+	cfg.ApiPath = resolve(cfg.ApiPath)
+	cfg.VoPath = resolve(cfg.VoPath)
+	cfg.DtoPath = resolve(cfg.DtoPath)
+	cfg.MapperPath = resolve(cfg.MapperPath)
+	return nil
+}
 
 // 将模板文件嵌入二进制，无论在哪个目录执行都可以正常访问
 //
@@ -893,6 +944,17 @@ func renderMapperTemplate(tmplPath string, data MapperTemplateData) (string, err
 }
 
 func Generate(cfg *Config) error {
+	// 通过 runtime.Caller 获取调用方（即用户 main.go）的源文件路径，
+	// 再向上查找 go.mod 确定项目根目录，将所有相对路径转换为绝对路径。
+	// 这样无论使用 go run、GoLand、还是编译后的二进制运行，路径始终一致。
+	_, callerFile, _, callerOk := runtime.Caller(1)
+	if !callerOk {
+		callerFile, _ = os.Getwd()
+	}
+	if err := resolveConfigPaths(cfg, callerFile); err != nil {
+		return fmt.Errorf("解析项目根目录失败: %w", err)
+	}
+
 	// 构建DSN
 	dsn := fmt.Sprintf("%s:%s@(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
