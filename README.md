@@ -733,7 +733,7 @@ import (
 var SQLFS embed.FS
 
 func InitDAL(db *gorm.DB) {
-    sub, _ := fs.Sub(SQLFS, "rawsql")
+    sub, _ := fs.Sub(SQLFS, "rawsql") // 可选,写上这个在下面的时候"account/find_by_id.sql"不需要加rawsql
     d, err := gormplus.NewDal(
         db,
         gormplus.NewEmbedLoader(sub),

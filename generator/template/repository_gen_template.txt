@@ -37,10 +37,10 @@ type iDefault{{.ModelName}}Repository interface {
 	// UpdateMapById 根据ID更新Map数据
 	UpdateMapById(ctx context.Context, {{.ModelNameLower}}Id int64, data map[string]any) error
 	UpdateMapByIdTx(ctx context.Context, tx *dao.Query,{{.ModelNameLower}}Id int64, data map[string]any) error
-	// FindListByCondition 根据条件获取列表
-	FindListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// FindList 根据条件获取列表
-    FindList(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// GetListByCondition 根据条件获取列表
+	GetListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// GetList 根据条件获取列表
+    GetList(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// GetPageByCondition 根据条件分页查询
 	GetPageByCondition(ctx context.Context, pageNumber int64, pageSize int64, cond ...gen.Condition) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
 	// GetPage 根据条件分页获取数据
@@ -156,14 +156,14 @@ func (r *default{{.ModelName}}Repository) UpdateMapByIdTx(ctx context.Context,da
 		Updates(data)
 	return err
 }
-func (r *default{{.ModelName}}Repository) FindListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+func (r *default{{.ModelName}}Repository) GetListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(cond) > 0 {
 		tx = tx.Where(cond...)
 	}
 	return tx.Order(dao.{{.ModelName}}Entity.ID.Desc()).Find()
 }
-func (r *default{{.ModelName}}Repository) FindList(ctx context.Context,  fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error){
+func (r *default{{.ModelName}}Repository) GetList(ctx context.Context,  fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error){
     tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
     if fn != nil {
         fn(tx)

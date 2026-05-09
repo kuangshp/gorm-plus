@@ -10,7 +10,9 @@
 //   - 原生 SQL 条件（RawWhere / RawOrWhere / RawWhereIf）
 //   - 表别名（As）：联表查询时为当前模型设置别名
 //
-// gorm-gen 原生已支持的能力（Eq/Gt/Lt/Order/Limit/Count/Find 等）请在 Apply() 后直接调用。
+// gorm-gen 原生已支持的能力（Eq/Gt/Lt/Order/Count/Find 等）请在 Apply() 后直接调用。
+// Limit / Offset / Select 已在 IGenWrapper 中提供，可在 fn 回调内直接调用，
+// 也可在 Apply() 后调用原生 DO 的同名方法，效果一致。
 //
 // # 快速上手
 //
@@ -281,6 +283,28 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   => WHERE (org_id = 1)  （orgID=0 时无此条件）
 	RawWhereIf(condition bool, sql string, args ...any) IGenWrapper[T]
 
+	// Limit 限制查询行数，适合在 fn 回调内直接控制返回数量。
+	//
+	//   // Repository 外部无法拿到 DO，通过 fn 在内部限制行数
+	//   repo.FindList(ctx, func(g IGenWrapper[dao.IProductBrandEntityDo]) {
+	//       g.WhereIf(true, dao.ProductBrandEntity.Status.Eq(1)).
+	//         Limit(5)
+	//   })
+	Limit(limit int) IGenWrapper[T]
+
+	// Offset 设置查询偏移量，通常与 Limit 配合使用。
+	//
+	//   g.Limit(10).Offset(20) // 第三页，每页10条
+	Offset(offset int) IGenWrapper[T]
+
+	// Select 指定查询字段，适合只需要部分字段或联表时映射别名字段。
+	//
+	//   g.Select(dao.ProductBrandEntity.ID, dao.ProductBrandEntity.Name)
+	//
+	//   // 联表时选取别名字段
+	//   g.Select("b.id", "b.name", "c.name AS category_name")
+	Select(columns ...any) IGenWrapper[T]
+
 	// Apply 结束扩展条件构建，返回已注入所有条件的原生 DO。
 	// 之后可继续调用 gorm-gen 原生方法：Order / Limit / Offset / Count / Find 等。
 	//
@@ -299,6 +323,9 @@ type GenWrapper[T GenDo[T]] struct {
 	do        T
 	ctx       context.Context // 保存原始 ctx，Apply 时复用
 	alias     string          // 表别名，As() 设置后在 Apply 时注入到底层 DB
+	limit     *int            // 限制行数，nil 表示不限制
+	offset    *int            // 偏移量，nil 表示不设置
+	selectCols []any          // 指定查询字段，nil 表示查询全部
 	group     *condGroup
 	replaceDB func(*gorm.DB) T
 }
@@ -408,6 +435,21 @@ func (w *GenWrapper[T]) RawWhereIf(condition bool, sql string, args ...any) IGen
 	return w
 }
 
+func (w *GenWrapper[T]) Limit(limit int) IGenWrapper[T] {
+	w.limit = &limit
+	return w
+}
+
+func (w *GenWrapper[T]) Offset(offset int) IGenWrapper[T] {
+	w.offset = &offset
+	return w
+}
+
+func (w *GenWrapper[T]) Select(columns ...any) IGenWrapper[T] {
+	w.selectCols = columns
+	return w
+}
+
 func (w *GenWrapper[T]) Apply() T {
 	db := w.do.UnderlyingDB()
 	// 注入表别名：gorm 支持 "table_name alias" 格式
@@ -416,6 +458,15 @@ func (w *GenWrapper[T]) Apply() T {
 	}
 	if !w.group.isEmpty() {
 		db = applyCondGroup(db, w.group)
+	}
+	if len(w.selectCols) > 0 {
+		db = db.Select(w.selectCols[0], w.selectCols[1:]...)
+	}
+	if w.limit != nil {
+		db = db.Limit(*w.limit)
+	}
+	if w.offset != nil {
+		db = db.Offset(*w.offset)
 	}
 	newDO := w.do.WithContext(w.ctx)
 	newDO.ReplaceDB(db)
