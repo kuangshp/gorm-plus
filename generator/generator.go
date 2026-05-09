@@ -202,6 +202,7 @@ type RepositoryTemplateData struct {
 	DaoPath         string
 	ModelPath       string
 	ModelPkgName    string // model包的名称，如 "entity"
+	RawsqlPkgPath   string // rawsql 包的完整 import 路径，如 "gin-admin-api/internal/dal/rawsql"
 	Columns         []ColumnInfo
 }
 
@@ -454,6 +455,44 @@ func generateRepositoryExtFile(columns []ColumnInfo, modelName string, pkg strin
 		return "", fmt.Errorf("渲染扩展模板失败: %w", err)
 	}
 
+	return buf.String(), nil
+}
+
+func generateRawsqlGenFile(columns []ColumnInfo, modelName string, pkg string, daoPath string, modelPath string, rawsqlPkgPath string, tmplPath string) (string, error) {
+	tmpl, err := loadTemplate(tmplPath)
+	if err != nil {
+		return "", fmt.Errorf("加载 rawsql_gen 模板失败: %w", err)
+	}
+
+	columnData := make([]ColumnInfo, len(columns))
+	for i, col := range columns {
+		columnData[i] = ColumnInfo{
+			Name:      col.Name,
+			Type:      col.Type,
+			FieldName: Case2Camel(col.Name),
+			FieldType: getGoType(col.Type),
+			CanNull:   col.CanNull,
+			IsKey:     col.IsKey,
+			Comment:   col.Comment,
+		}
+	}
+
+	data := RepositoryTemplateData{
+		ModelName:      modelName,
+		ModelNameLower: LowerCamelCase(modelName),
+		EntityName:     modelName + "Entity",
+		Package:        pkg,
+		DaoPath:        pkg + "/" + daoPath,
+		ModelPath:      pkg + "/" + modelPath,
+		ModelPkgName:   getLastPathSegment(modelPath),
+		RawsqlPkgPath:  rawsqlPkgPath,
+		Columns:        columnData,
+	}
+
+	var buf bytes.Buffer
+	if err = tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("渲染 rawsql_gen 模板失败: %w", err)
+	}
 	return buf.String(), nil
 }
 
@@ -717,7 +756,7 @@ func writeFileAlways(filePath string, content string, label string) {
 
 // generateForTable 为单张表生成 Repo / API / VO / DTO / Mapper 文件
 func generateForTable(tbl string, cfg *Config, db *gorm.DB,
-	repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
+	repoGenTmplPath, repoTmplPath, rawsqlGenTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
 	mapperTmplPath string) {
 
 	columns, err := getTableColumns(db, tbl)
@@ -900,6 +939,7 @@ func Generate(cfg *Config) error {
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
 	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
 	mapperTmplPath := filepath.Join(templateDir, "mapper_template.txt")
+	rawsqlGenTmplPath := filepath.Join(templateDir, "rawsql_gen_template.txt")
 
 	// 路径为空表示该功能未配置，保持空值，后续按空值判断是否生成
 
@@ -1000,7 +1040,7 @@ func Generate(cfg *Config) error {
 	for _, tbl := range tableNames {
 		fmt.Printf("\n─── 表: %s ───\n", tbl)
 		generateForTable(tbl, cfg, db,
-			repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
+			repoGenTmplPath, repoTmplPath, rawsqlGenTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
 			mapperTmplPath)
 	}
 

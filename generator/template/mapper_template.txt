@@ -1,5 +1,3 @@
-// 复制此文件到目标目录后，修改 package 名和 import 路径即可使用
-
 package mapper
 
 import (
@@ -12,7 +10,6 @@ import (
 	"{{.Package}}/{{.ModelPkgPath}}"
 {{- if .IsGoZero}}
 	// TODO: 填写 go-zero types 包的实际 import 路径，例如：
-	// "your-module/internal/types"
 {{- else if .SameDtoPkg}}
 	"{{.Package}}/{{.DtoPkgPath}}"
 {{- else}}
@@ -24,8 +21,7 @@ import (
 // I{{.ModelName}}Mapper {{.TableComment}} mapper 接口
 type I{{.ModelName}}Mapper interface {
 	// DtoToEntity 将请求结构体映射到数据库实体
-	// 类型不匹配的字段通过额外参数传入
-	DtoToEntity(d {{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
+	DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
 	// EntityToVo 将数据库实体映射到响应结构体
 	EntityToVo(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types{{else}}{{.VoPkgName}}{{end}}.{{.VoStructName}}
 }
@@ -39,11 +35,7 @@ func New{{.ModelName}}Mapper() I{{.ModelName}}Mapper {
 }
 
 // DtoToEntity 将 {{.DtoStructName}} 映射到 {{.ModelName}}Entity
-// 跳过规则（通过额外参数传入）：
-//   - 时间类型：dto/req 是 string，entity 是 time.Time，调用方解析后传入
-//   - decimal 类型：dto/req 是 string，entity 是 decimal.Decimal，内部用 decimal.NewFromString 转换
-//   - 审计字段：created_by/updated_by 来自业务上下文，调用方传入
-func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d {{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity {
 	e := &{{.ModelPkgName}}.{{.ModelName}}Entity{
 {{- range .Columns}}
 {{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by") .IsTimeType .IsDecimalType .IsAuditField)}}
@@ -66,9 +58,6 @@ func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d {{if .IsGoZero}}types{{else}}{
 }
 
 // EntityToVo 将 {{.ModelName}}Entity 映射到 {{.VoStructName}}
-// 转换规则：
-//   - 时间类型：entity 是 time.Time，vo/model 是 int64，转为 Unix 时间戳
-//   - decimal 类型：entity 是 decimal.Decimal，vo/model 是 string，转为字符串
 func (m *{{.ModelNameLower}}Mapper) EntityToVo(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types{{else}}{{.VoPkgName}}{{end}}.{{.VoStructName}} {
 	if e == nil {
 		return nil

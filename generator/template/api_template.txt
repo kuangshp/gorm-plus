@@ -48,7 +48,11 @@ type (
 	}
 	{{.ModelName}}PageResp {
 		PageBaseResp
-		Data []*{{.ModelName}}Model `json:"data"`
+		Data []{{.ModelName}}Model `json:"data"`
+	}
+
+	BatchDelete{{.ModelName}}ByIdListReq {
+	    IdList []int64 `json:"idList" validate:"required"` // id列表
 	}
 )
 
@@ -65,6 +69,10 @@ service admin-api {
 	@doc "根据id删除{{.TableComment}}"
 	@handler Delete{{.ModelName}}ByIdApi
 	delete /:id (IdReq) returns (string)
+
+	@doc "根据id列表批量删除{{.TableComment}}"
+	@handler BatchDelete{{.ModelName}}ByIdListApi
+	post /batchDelete(BatchDelete{{.ModelName}}ByIdListReq)returns(string)
 
 	@doc "根据id修改{{.TableComment}}"
 	@handler Modify{{.ModelName}}ByIdApi
