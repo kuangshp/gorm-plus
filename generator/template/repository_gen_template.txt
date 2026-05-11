@@ -37,20 +37,20 @@ type iDefault{{.ModelName}}Repository interface {
 	// UpdateMapById 根据ID更新Map数据
 	UpdateMapById(ctx context.Context, {{.ModelNameLower}}Id int64, data map[string]any) error
 	UpdateMapByIdTx(ctx context.Context, tx *dao.Query,{{.ModelNameLower}}Id int64, data map[string]any) error
-	// GetListByCondition 根据条件获取列表
-	GetListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// GetList 根据条件获取列表
-    GetList(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// GetPageByCondition 根据条件分页查询
-	GetPageByCondition(ctx context.Context, pageNumber int64, pageSize int64, cond ...gen.Condition) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
-	// GetPage 根据条件分页获取数据
-	GetPage(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
-	// GetById 根据ID获取详情
-	GetById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// GetByIdList 根据ID列表获取
-	GetByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64,orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// GetOneByCondition 根据条件获取单条
-	GetOneByCondition(ctx context.Context, cond ...gen.Condition) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindListByCondition 根据条件获取列表
+	FindListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindList 根据条件获取列表
+    FindList(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindPageByCondition 根据条件分页查询
+	FindPageByCondition(ctx context.Context, pageNumber int64, pageSize int64, cond ...gen.Condition) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
+	// FindPage 根据条件分页获取数据
+	FindPage(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
+	// FindById 根据ID获取详情
+	FindById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindByIdList 根据ID列表获取
+	FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64,orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindOneByCondition 根据条件获取单条
+	FindOneByCondition(ctx context.Context, cond ...gen.Condition) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// Exists 根据条件判断是否存在
 	Exists(ctx context.Context, cond ...gen.Condition) (bool, error)
 	// Count 根据条件统计数量
@@ -156,14 +156,14 @@ func (r *default{{.ModelName}}Repository) UpdateMapByIdTx(ctx context.Context,da
 		Updates(data)
 	return err
 }
-func (r *default{{.ModelName}}Repository) GetListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+func (r *default{{.ModelName}}Repository) FindListByCondition(ctx context.Context, cond ...gen.Condition) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(cond) > 0 {
 		tx = tx.Where(cond...)
 	}
 	return tx.Order(dao.{{.ModelName}}Entity.ID.Desc()).Find()
 }
-func (r *default{{.ModelName}}Repository) GetList(ctx context.Context,  fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error){
+func (r *default{{.ModelName}}Repository) FindList(ctx context.Context,  fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error){
     tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
     if fn != nil {
         fn(tx)
@@ -176,7 +176,7 @@ func (r *default{{.ModelName}}Repository) GetList(ctx context.Context,  fn func(
     }
     return entityDo.Find()
 }
-func (r *default{{.ModelName}}Repository) GetPageByCondition(ctx context.Context, pageNumber int64, pageSize int64, cond ...gen.Condition) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
+func (r *default{{.ModelName}}Repository) FindPageByCondition(ctx context.Context, pageNumber int64, pageSize int64, cond ...gen.Condition) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(cond) > 0 {
 		tx = tx.Where(cond...)
@@ -186,7 +186,7 @@ func (r *default{{.ModelName}}Repository) GetPageByCondition(ctx context.Context
 	return tx.Order(dao.{{.ModelName}}Entity.ID.Desc()).FindByPage(offset, limit)
 }
 
-func (r *default{{.ModelName}}Repository) GetPage(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
+func (r *default{{.ModelName}}Repository) FindPage(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]),orderFields ...field.Expr) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
     tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
     if fn != nil {
         fn(tx)
@@ -202,11 +202,11 @@ func (r *default{{.ModelName}}Repository) GetPage(ctx context.Context, pageNumbe
     return entityDo.FindByPage(offset, limit)
 }
 
-func (r *default{{.ModelName}}Repository) GetById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+func (r *default{{.ModelName}}Repository) FindById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
 	return dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.ID.Eq({{.ModelNameLower}}Id)).First()
 }
 
-func (r *default{{.ModelName}}Repository) GetByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64,orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64,orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
 	tx:= dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.ID.In({{.ModelNameLower}}Ids...))
 	if len(orderFields) > 0 {
 	    tx = tx.Order(orderFields...)
@@ -214,7 +214,7 @@ func (r *default{{.ModelName}}Repository) GetByIdList(ctx context.Context, {{.Mo
 	return tx.Find()
 }
 
-func (r *default{{.ModelName}}Repository) GetOneByCondition(ctx context.Context, cond ...gen.Condition) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+func (r *default{{.ModelName}}Repository) FindOneByCondition(ctx context.Context, cond ...gen.Condition) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(cond) > 0 {
 		tx = tx.Where(cond...)
