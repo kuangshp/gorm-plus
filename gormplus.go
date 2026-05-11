@@ -828,6 +828,7 @@ type SlowQueryConfig = query.SlowQueryConfig
 // SlowQueryInfo 慢查询详情，传递给自定义 Logger。
 // SQL 字段已将 ? 替换为实际参数值，可直接复制到客户端执行 EXPLAIN 分析。
 type SlowQueryInfo = query.SlowQueryInfo
+type QueryOption = query.QueryOption
 
 // RegisterSlowQuery 向指定 DB 注册慢查询监控插件。
 // 覆盖 Query / Create / Update / Delete / Row / Raw 全部操作类型。
