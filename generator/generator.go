@@ -732,7 +732,7 @@ func getGoType(sqlType string) string {
 
 // getGoTypeForApiDto 用于 API / DTO 的类型映射规则：
 //   - decimal/float/double → string（前端传字符串避免精度丢失）
-//   - datetime/timestamp/date → string（前端传日期字符串，如 "2024-01-01"）
+//   - datetime/timestamp/date → int64（前端传时间戳）
 //   - 其余规则与 getGoType 相同
 func getGoTypeForApiDto(sqlType string) string {
 	s := strings.ToLower(sqlType)
@@ -740,7 +740,7 @@ func getGoTypeForApiDto(sqlType string) string {
 		return "string"
 	}
 	if strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date") {
-		return "string"
+		return "int64"
 	}
 	return getGoType(sqlType)
 }
@@ -761,14 +761,30 @@ func getGoTypeForVo(sqlType string) string {
 }
 
 // pathToPkg 将路径转换为包路径，如 "./query/dao" -> "query/dao"
+// 如果是绝对路径，提取相对于项目根目录的部分
 func pathToPkg(path string) string {
 	path = strings.TrimPrefix(path, "./")
 	path = strings.TrimSuffix(path, "/")
+	// 如果是绝对路径（如 /Users/.../query/model），提取包部分
+	// 项目根目录通常是 go.mod 所在目录
+	if filepath.IsAbs(path) {
+		// 获取当前工作目录作为参考，提取相对路径
+		cwd, err := os.Getwd()
+		if err == nil {
+			rel, err := filepath.Rel(cwd, path)
+			if err == nil && !strings.HasPrefix(rel, "..") {
+				path = rel
+			}
+		}
+	}
 	return path
 }
 
 // getLastPathSegment 获取路径的最后一个段，如 "dal/model/entity" -> "entity"
 func getLastPathSegment(path string) string {
+	if path == "" {
+		return ""
+	}
 	path = strings.TrimPrefix(path, "./")
 	parts := strings.Split(path, "/")
 	return parts[len(parts)-1]
