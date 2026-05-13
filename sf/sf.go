@@ -10,6 +10,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // ================== SingleFlight + 可插拔缓存 ==================
@@ -84,13 +86,8 @@ const DefaultSFTTL = 5 * time.Minute
 //	// 注册（程序启动时调用一次）
 //	sf.RegisterCache(&RedisSFCache{rdb: rdb})
 type SFCache interface {
-	// Get 读取缓存，key 存在且未过期返回 (value, true)，否则返回 (nil, false)
 	Get(key string) (any, bool)
-
-	// Set 写入缓存，ttl 后自动过期
 	Set(key string, val any, ttl time.Duration)
-
-	// Del 主动删除指定 key 的缓存
 	Del(key string)
 }
 
@@ -98,18 +95,13 @@ type SFCache interface {
 
 var (
 	globalCacheMu sync.RWMutex
-	globalCache   SFCache // 全局缓存实例，默认 nil（懒初始化为内存缓存）
+	globalCache   SFCache
 )
 
 // RegisterCache 注册自定义缓存实现，程序启动时调用一次。
 // 注册后所有 SF / SFWithTTL / SFInvalidate 均使用此缓存，替代默认内存缓存。
 //
 // 注意：必须在第一次调用 SF 之前注册，否则已懒初始化的内存缓存不会被替换。
-//
-// 内存缓存示例（默认，无需注册）：
-//
-//	// 不注册任何缓存，SF 自动使用内置内存缓存
-//	list, err := sf.SF(fn, "Order.List", args)
 //
 // Redis 缓存示例：
 //
@@ -130,7 +122,6 @@ func getCache() SFCache {
 	}
 	globalCacheMu.RUnlock()
 
-	// 升级为写锁，初始化内存缓存
 	globalCacheMu.Lock()
 	defer globalCacheMu.Unlock()
 	if globalCache == nil {
@@ -153,7 +144,6 @@ type MemoryCache struct {
 }
 
 // NewMemoryCache 创建内存缓存实例并启动后台过期清理（每 30 秒扫描一次）。
-// 通常不需要手动创建，SF 未注册缓存时会自动使用内置内存缓存。
 func NewMemoryCache() *MemoryCache {
 	return newMemoryCache()
 }
@@ -177,7 +167,7 @@ func (c *MemoryCache) Get(key string) (any, bool) {
 	}
 	item := v.(*memoryCacheItem)
 	if time.Now().After(item.expireAt) {
-		c.m.Delete(key) // 惰性删除
+		c.m.Delete(key)
 		return nil, false
 	}
 	return item.val, true
@@ -192,7 +182,6 @@ func (c *MemoryCache) Del(key string) {
 }
 
 // Stop 停止后台过期清理 goroutine，应在应用退出时调用。
-// 如果使用默认内存缓存，通过 StopSFCache() 停止即可。
 func (c *MemoryCache) Stop() {
 	c.cancel()
 }
@@ -235,46 +224,13 @@ func StopSFCache() {
 	}
 }
 
-// ================== singleflight 实现 ==================
+// ================== singleflight（官方库） ==================
 
-var sfg sfGroup
-
-type sfGroup struct {
-	mu sync.Mutex
-	m  map[string]*sfCall
-}
-
-type sfCall struct {
-	wg  sync.WaitGroup
-	val any
-	err error
-}
-
-// Do 确保相同 key 的并发调用只有一个真正执行，其余等待并复用结果。
-func (g *sfGroup) Do(key string, fn func() (any, error)) (any, error) {
-	g.mu.Lock()
-	if g.m == nil {
-		g.m = make(map[string]*sfCall)
-	}
-	if c, ok := g.m[key]; ok {
-		g.mu.Unlock()
-		c.wg.Wait()
-		return c.val, c.err
-	}
-	c := &sfCall{}
-	c.wg.Add(1)
-	g.m[key] = c
-	g.mu.Unlock()
-
-	c.val, c.err = fn()
-	c.wg.Done()
-
-	g.mu.Lock()
-	delete(g.m, key)
-	g.mu.Unlock()
-
-	return c.val, c.err
-}
+// 直接使用 golang.org/x/sync/singleflight，无需自行实现：
+//   - 内置 panic 安全（panic 会传播给所有等待者，不会死锁）
+//   - 支持 Forget 主动释放 key
+//   - 支持 DoChan 异步调用
+var sfg singleflight.Group
 
 // ================== 公开 SF 函数 ==================
 
@@ -284,17 +240,15 @@ func (g *sfGroup) Do(key string, fn func() (any, error)) (any, error) {
 //   - fn:     实际查询函数，原封不动放入闭包即可，类型安全
 //   - fnName: 查询唯一标识，建议格式 "表名.方法名"，如 "Order.List"
 //   - args:   影响查询结果的所有参数（分页、筛选条件等）
-//     map key 自动排序后序列化为 cache key，{"a":1,"b":2} 与 {"b":2,"a":1} 视为同一查询
 //   - ttl:    可选，缓存时长；不传时使用 DefaultSFTTL（5分钟）；传 0 等价于 SFNoCache
 //
-// 缓存默认使用内存缓存，注册 Redis 后自动切换：
+// 示例：
 //
-//	// 内存缓存（默认）
-//	list, err := sf.SF(fn, "Order.List", args, 30*time.Second)
-//
-//	// Redis 缓存（注册后自动生效）
-//	sf.RegisterCache(&RedisSFCache{rdb: rdb})
-//	list, err := sf.SF(fn, "Order.List", args, 30*time.Second)
+//	list, err := sf.SF(func() ([]*model.Order, error) {
+//	    var result []*model.Order
+//	    err := db.WithContext(ctx).Where("user_id = ?", userId).Find(&result).Error
+//	    return result, err
+//	}, "Order.List", map[string]any{"user_id": userId}, 30*time.Second)
 func SF[T any](fn func() (T, error), fnName string, args map[string]any, ttl ...time.Duration) (T, error) {
 	t := DefaultSFTTL
 	if len(ttl) > 0 {
@@ -305,7 +259,7 @@ func SF[T any](fn func() (T, error), fnName string, args map[string]any, ttl ...
 
 // SFNoCache 纯 singleflight，只合并同一瞬间的并发请求，完成后立即释放，不缓存结果。
 //
-// 适合：详情接口、用户余额、敏感数据等对实时性要求高、不允许读到旧数据的场景。
+// 适合：详情接口、用户余额、敏感数据等对实时性要求高的场景。
 //
 // 示例：
 //
@@ -359,7 +313,8 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 	}
 
 	// 步骤 3-5：singleflight 保护
-	raw, err := sfg.Do(key, func() (any, error) {
+	// 官方库 Do 内置 panic 安全，panic 会传播给所有等待者而不会死锁
+	raw, err, _ := sfg.Do(key, func() (any, error) {
 		// 步骤 4：Do 内部二次查缓存（防止等待期间已由其他 goroutine 写入）
 		if ttl > 0 {
 			if cached, ok := cache.Get(key); ok {
@@ -370,6 +325,10 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 		result, err := fn()
 		if err == nil && ttl > 0 {
 			cache.Set(key, result, ttl)
+		}
+		// TTL=0 时立即 Forget，确保下次请求重新执行而不被合并
+		if ttl == 0 {
+			sfg.Forget(key)
 		}
 		return result, err
 	})
