@@ -76,6 +76,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 
 	"gorm.io/gen/field"
@@ -320,14 +321,14 @@ type IGenWrapper[T GenDo[T]] interface {
 // ================== GenWrapper 实现 ==================
 
 type GenWrapper[T GenDo[T]] struct {
-	do        T
-	ctx       context.Context // 保存原始 ctx，Apply 时复用
-	alias     string          // 表别名，As() 设置后在 Apply 时注入到底层 DB
-	limit     *int            // 限制行数，nil 表示不限制
-	offset    *int            // 偏移量，nil 表示不设置
-	selectCols []any          // 指定查询字段，nil 表示查询全部
-	group     *condGroup
-	replaceDB func(*gorm.DB) T
+	do         T
+	ctx        context.Context // 保存原始 ctx，Apply 时复用
+	alias      string          // 表别名，As() 设置后在 Apply 时注入到底层 DB
+	limit      *int            // 限制行数，nil 表示不限制
+	offset     *int            // 偏移量，nil 表示不设置
+	selectCols []any           // 指定查询字段，nil 表示查询全部
+	group      *condGroup
+	replaceDB  func(*gorm.DB) T
 }
 
 func (w *GenWrapper[T]) addExpr(expr field.Expr, typ condType) {
@@ -531,4 +532,11 @@ func callFieldMethod(col field.Expr, method string, args ...any) any {
 		return nil
 	}
 	return res[0].Interface()
+}
+
+// RawField 创建一个原始字段，用于构造 SQL。
+func RawField(sql string, vars ...interface{}) field.Expr {
+	// 内部常量直接 fmt.Sprintf
+	formatted := fmt.Sprintf(sql, vars...)
+	return field.NewUnsafeFieldRaw(formatted)
 }

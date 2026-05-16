@@ -87,6 +87,7 @@ package gormplus
 
 import (
 	"context"
+	"gorm.io/gen/field"
 	"time"
 
 	"gorm.io/gorm"
@@ -337,6 +338,11 @@ type IGenWrapper[D query.GenDo[D]] = query.IGenWrapper[D]
 //	    }).Apply().Find()
 func GenWrap[D query.GenDo[D]](do D) query.IGenWrapper[D] {
 	return query.Wrap(do)
+}
+
+// RawField 原生字段，用于 SELECT、WHERE 等原生 SQL 拼接。
+func RawField(rawSql string, args ...interface{}) field.Expr {
+	return query.RawField(rawSql, args...)
 }
 
 // ================== SingleFlight + 可插拔缓存 ==================
