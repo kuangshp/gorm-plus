@@ -55,9 +55,7 @@ func (q *QueryBuilder) Where(
 }
 
 // Order 排序
-func (q *QueryBuilder) Order(
-	fields ...field.Expr,
-) *QueryBuilder {
+func (q *QueryBuilder) Order(fields ...field.Expr) *QueryBuilder {
 
 	q.option.Order = append(
 		q.option.Order,
@@ -68,67 +66,46 @@ func (q *QueryBuilder) Order(
 }
 
 // Select 指定字段
-func (q *QueryBuilder) Select(
-	fields ...field.Expr,
-) *QueryBuilder {
-
+func (q *QueryBuilder) Select(fields ...field.Expr) *QueryBuilder {
 	q.option.Select = append(
 		q.option.Select,
 		fields...,
 	)
-
 	return q
 }
 
 // Omit 排除字段
-func (q *QueryBuilder) Omit(
-	fields ...field.Expr,
-) *QueryBuilder {
-
+func (q *QueryBuilder) Omit(fields ...field.Expr) *QueryBuilder {
 	q.option.OmitFields = append(
 		q.option.OmitFields,
 		fields...,
 	)
-
 	return q
 }
 
 // Limit 查询条数
-func (q *QueryBuilder) Limit(
-	limit int,
-) *QueryBuilder {
-
+func (q *QueryBuilder) Limit(limit int) *QueryBuilder {
 	q.option.Limit = &limit
-
 	return q
 }
 
 // WithSingleFlight 启用singleflight
-func (q *QueryBuilder) WithSingleFlight(
-	keyPrefix string,
-	ttl time.Duration,
-) *QueryBuilder {
+func (q *QueryBuilder) WithSingleFlight(keyPrefix string, ttl time.Duration) *QueryBuilder {
 	q.option.SF = &SingleFlightOption{
 		Enable:    true,
 		KeyPrefix: keyPrefix,
 		TTL:       ttl,
 	}
-
 	return q
 }
 
 // WithCache 启用缓存
-func (q *QueryBuilder) WithCache(
-	key string,
-	ttl time.Duration,
-) *QueryBuilder {
-
+func (q *QueryBuilder) WithCache(key string, ttl time.Duration) *QueryBuilder {
 	q.option.Cache = &CacheOption{
 		Enable: true,
 		Key:    key,
 		TTL:    ttl,
 	}
-
 	return q
 }
 
@@ -141,11 +118,8 @@ func (q *QueryBuilder) Build() QueryOption {
 func MergeQueryOptions(
 	opts ...QueryOption,
 ) QueryOption {
-
 	var result QueryOption
-
 	for _, opt := range opts {
-
 		// Cond
 		if len(opt.Cond) > 0 {
 			result.Cond = append(
@@ -153,7 +127,6 @@ func MergeQueryOptions(
 				opt.Cond...,
 			)
 		}
-
 		// Order
 		if len(opt.Order) > 0 {
 			result.Order = append(
@@ -187,12 +160,10 @@ func MergeQueryOptions(
 		if opt.SF != nil {
 			result.SF = opt.SF
 		}
-
 		// Cache
 		if opt.Cache != nil {
 			result.Cache = opt.Cache
 		}
 	}
-
 	return result
 }
