@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"text/template"
+	"unicode"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gen"
@@ -19,7 +20,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// findProjectRoot 从给定目录向上查找包含 go.mod 的目录（即项目根目录）
+// ═══════════════════════════════════════════════════════════
+//  路径工具
+// ═══════════════════════════════════════════════════════════
+
 func findProjectRoot(startDir string) (string, error) {
 	dir := startDir
 	for {
@@ -34,29 +38,21 @@ func findProjectRoot(startDir string) (string, error) {
 	}
 }
 
-// resolveConfigPaths 将 Config 中所有相对路径（以 ./ 或 ../ 开头，或不含分隔符的短路径）
-// 解析为相对于项目根目录的绝对路径，保证无论从哪里运行都指向同一位置。
 func resolveConfigPaths(cfg *Config) error {
-	// 始终从当前工作目录向上查找 go.mod，确保无论从哪里运行都指向项目根目录
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("获取当前工作目录失败: %w", err)
 	}
 	projectRoot, err := findProjectRoot(cwd)
 	if err != nil {
-		return fmt.Errorf("查找项目根目录(go.mod)失败: %w", err)
+		return fmt.Errorf("查找项目根目录失败: %w", err)
 	}
-
 	resolve := func(p string) string {
-		if p == "" {
-			return ""
-		}
-		if filepath.IsAbs(p) {
+		if p == "" || filepath.IsAbs(p) {
 			return p
 		}
 		return filepath.Join(projectRoot, p)
 	}
-
 	cfg.OutPath = resolve(cfg.OutPath)
 	cfg.ModelPkgPath = resolve(cfg.ModelPkgPath)
 	cfg.RepoPath = resolve(cfg.RepoPath)
@@ -67,8 +63,10 @@ func resolveConfigPaths(cfg *Config) error {
 	return nil
 }
 
-// 将模板文件嵌入二进制，无论在哪个目录执行都可以正常访问
-//
+// ═══════════════════════════════════════════════════════════
+//  嵌入模板
+// ═══════════════════════════════════════════════════════════
+
 //go:embed template/api_template.txt
 var embeddedApiTemplate string
 
@@ -90,7 +88,6 @@ var embeddedVoTemplate string
 //go:embed template/mapper_template.txt
 var embeddedMapperTemplate string
 
-// embeddedTemplates 内嵌模板映射表，key 为模板文件名
 var embeddedTemplates = map[string]string{
 	"api_template.txt":            embeddedApiTemplate,
 	"dto_template.txt":            embeddedDtoTemplate,
@@ -100,6 +97,101 @@ var embeddedTemplates = map[string]string{
 	"vo_template.txt":             embeddedVoTemplate,
 	"mapper_template.txt":         embeddedMapperTemplate,
 }
+
+// ═══════════════════════════════════════════════════════════
+//  gen.go 历史表解析
+// ═══════════════════════════════════════════════════════════
+
+// parseTablesFromGenFile 从已有 gen.go 的 Use() 函数中提取所有历史表名。
+//
+// gorm-gen 实际生成的 gen.go 格式（注意：无 Do 后缀）：
+//
+//	func Use(db *gorm.DB, opts ...gen.DOOption) *Query {
+//	    return &Query{
+//	        AccountEntity: newAccountEntity(db, opts...),   // ← 匹配字段名
+//	        SysUserEntity: newSysUserEntity(db, opts...),
+//	    }
+//	}
+//
+// 正则匹配 `XxxEntity: newXxx(` 中的字段名前缀，转换为数据库表名：
+//
+//	AccountEntity → Account → account
+//	SysUserEntity → SysUser → sys_user
+func parseTablesFromGenFile(outPath string) []string {
+	genFile := filepath.Join(outPath, "gen.go")
+	data, err := os.ReadFile(genFile)
+	if err != nil {
+		// gen.go 不存在（首次运行），返回空切片
+		return nil
+	}
+
+	// 精确匹配：字段名 XxxEntity 后跟 `: new`
+	// 从字段名提取 ModelName 前缀（去掉 Entity 后缀）
+	re := regexp.MustCompile(`(\w+)Entity\s*:\s*new\w+\(`)
+	matches := re.FindAllSubmatch(data, -1)
+
+	seen := make(map[string]bool)
+	var tables []string
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		modelPrefix := string(m[1]) // 如 "Account"、"SysUser"
+		if modelPrefix == "" {
+			continue
+		}
+		tbl := camelToSnake(modelPrefix) // SysUser → sys_user
+		if !seen[tbl] {
+			seen[tbl] = true
+			tables = append(tables, tbl)
+		}
+	}
+	return tables
+}
+
+// camelToSnake 驼峰转下划线：SysUser → sys_user，Account → account
+func camelToSnake(s string) string {
+	var result []rune
+	runes := []rune(s)
+	for i, r := range runes {
+		if unicode.IsUpper(r) {
+			if i > 0 {
+				prevIsLower := unicode.IsLower(runes[i-1])
+				nextIsLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
+				if prevIsLower || nextIsLower {
+					result = append(result, '_')
+				}
+			}
+			result = append(result, unicode.ToLower(r))
+		} else {
+			result = append(result, r)
+		}
+	}
+	return string(result)
+}
+
+// mergeTableNames 合并历史表和新表，去重保持顺序
+func mergeTableNames(existing []string, newTables ...string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(existing)+len(newTables))
+	for _, t := range existing {
+		if !seen[t] {
+			seen[t] = true
+			result = append(result, t)
+		}
+	}
+	for _, t := range newTables {
+		if t != "" && !seen[t] {
+			seen[t] = true
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// ═══════════════════════════════════════════════════════════
+//  命名工具
+// ═══════════════════════════════════════════════════════════
 
 func getGoctlPath() string {
 	cmd := exec.Command("which", "go")
@@ -114,10 +206,8 @@ func getGoctlPath() string {
 
 func Case2Camel(name string) string {
 	name = strings.Replace(name, "_", " ", -1)
-	// 使用Title后，再把特定的全大写缩写词恢复
 	name = strings.Title(name)
-	// 处理常见的缩写词，如 IP, ID, URL, API 等
-	acronyms := []string{"IP", "ID", "URL", "API", "IOS", "API", "XML", "JSON", "JWT", "SQL", "ORM"}
+	acronyms := []string{"IP", "ID", "URL", "API", "IOS", "XML", "JSON", "JWT", "SQL", "ORM"}
 	for _, acronym := range acronyms {
 		name = strings.ReplaceAll(name, strings.Title(strings.ToLower(acronym)), acronym)
 	}
@@ -125,7 +215,6 @@ func Case2Camel(name string) string {
 }
 
 func LowerCamelCase(name string) string {
-	// 如果已经是小写开头且没有大写字母，直接返回
 	if len(name) > 0 && name[0] >= 'a' && name[0] <= 'z' {
 		hasUpper := false
 		for _, c := range name[1:] {
@@ -142,16 +231,17 @@ func LowerCamelCase(name string) string {
 		return "id"
 	}
 	if len(name) >= 2 && strings.HasSuffix(name, "ID") && name[:2] != "id" {
-		prefix := name[:len(name)-2]
-		return LowerCamelCase(prefix) + "Id"
+		return LowerCamelCase(name[:len(name)-2]) + "Id"
 	}
 	name = Case2Camel(name)
 	return strings.ToLower(name[:1]) + name[1:]
 }
 
-func lowerFirst(name string) string {
-	return LowerCamelCase(name)
-}
+func lowerFirst(name string) string { return LowerCamelCase(name) }
+
+// ═══════════════════════════════════════════════════════════
+//  标准输入
+// ═══════════════════════════════════════════════════════════
 
 var inputLines []string
 var inputIndex int
@@ -177,14 +267,17 @@ func init() {
 	if (stat.Mode() & os.ModeCharDevice) == 0 {
 		data, _ := io.ReadAll(os.Stdin)
 		if len(data) > 0 {
-			allInput := string(data)
-			inputLines = strings.Split(allInput, "\n")
+			inputLines = strings.Split(string(data), "\n")
 			for i, line := range inputLines {
 				inputLines[i] = strings.TrimSpace(line)
 			}
 		}
 	}
 }
+
+// ═══════════════════════════════════════════════════════════
+//  数据结构
+// ═══════════════════════════════════════════════════════════
 
 func getTableColumns(db *gorm.DB, tableName string) ([]ColumnInfo, error) {
 	type Column struct {
@@ -198,7 +291,6 @@ func getTableColumns(db *gorm.DB, tableName string) ([]ColumnInfo, error) {
 	}
 	var columns []Column
 	err := db.Raw(fmt.Sprintf("SHOW FULL COLUMNS FROM `%s`", tableName)).Scan(&columns).Error
-
 	result := make([]ColumnInfo, len(columns))
 	for i, col := range columns {
 		result[i] = ColumnInfo{
@@ -214,78 +306,166 @@ func getTableColumns(db *gorm.DB, tableName string) ([]ColumnInfo, error) {
 }
 
 type ColumnInfo struct {
-	Name          string
-	Type          string
-	FieldName     string
-	FieldType     string
-	JsonTag       string
-	JsonTagOpt    string
-	CanNull       bool
-	IsKey         bool
-	Extra         string
-	Comment       string
-	Validate      string
-	IsTimeType    bool // 数据库原始类型是时间类型（datetime/timestamp/date）
-	IsAuditField  bool // 审计字段（created_by/updated_by）
-	IsDecimalType bool // 数据库原始类型是 decimal/float/double
+	Name, Type, FieldName, FieldType string
+	JsonTag, JsonTagOpt              string
+	CanNull, IsKey                   bool
+	Extra, Comment, Validate         string
+	IsTimeType, IsAuditField         bool
+	IsDecimalType                    bool
 }
 
 type ApiTemplateData struct {
-	TableName    string
-	ModelName    string
-	EntityName   string
-	TableComment string
-	Columns      []ColumnInfo
+	TableName, ModelName, EntityName, TableComment string
+	Columns                                        []ColumnInfo
 }
 
 type VoTemplateData struct {
-	TableName    string
-	ModelName    string
-	TableComment string
-	Columns      []ColumnInfo
+	TableName, ModelName, TableComment string
+	Columns                            []ColumnInfo
 }
 
 type RepositoryTemplateData struct {
-	ModelName        string
-	ModelNameLower   string
-	EntityName       string
-	EntityNameLower  string
-	Package          string
-	DaoPath          string
-	ModelPath        string
-	ModelPkgName     string // model包的名称，如 "entity"
-	RawsqlPkgPath    string // rawsql 包的完整 import 路径，如 "gin-admin-api/internal/dal/rawsql"
-	Columns          []ColumnInfo
-	PrimaryKeyField  string // 主键字段名，如 "ID" 或 "UserId"
-	PrimaryKeyColumn string // 主键原始列名，如 "id" 或 "user_id"
+	ModelName, ModelNameLower         string
+	EntityName, EntityNameLower       string
+	Package, DaoPath, ModelPath       string
+	ModelPkgName, RawsqlPkgPath       string
+	Columns                           []ColumnInfo
+	PrimaryKeyField, PrimaryKeyColumn string
 }
 
-// MapperTemplateData mapper 三个模板共用同一份数据
 type MapperTemplateData struct {
-	TableName       string
-	ModelName       string
-	ModelNameLower  string
-	TableComment    string
-	Package         string
-	ModelPkgPath    string // 完整包路径，如 internal/dal/model/entity
-	ModelPkgName    string // 包名最后一段，如 entity
-	DtoPkgPath      string // dto 完整包路径（go-zero 模式下为空）
-	DtoPkgName      string // dto 包名最后一段，如 dto 或 types
-	DtoStructName   string // 请求结构体名：CreateXxxDTO 或 CreateXxxReq
-	VoPkgPath       string // vo 完整包路径（go-zero 模式下为空）
-	VoPkgName       string // vo 包名最后一段，如 vo 或 types
-	VoStructName    string // 响应结构体名：XxxVo（普通）或 XxxModel（go-zero，对应 api 模板里的命名）
-	SameDtoPkg      bool   // DtoPkgPath == VoPkgPath，import 只写一次
-	IsGoZero        bool   // 是否 go-zero 项目，true 时结构体名用 Req/Resp，import 留 TODO
-	HasTimeField    bool   // 是否有时间类型字段，控制 import "time"
-	HasDecimalField bool   // 是否有 decimal 类型字段，控制 import decimal
-	Columns         []ColumnInfo
+	TableName, ModelName, ModelNameLower, TableComment string
+	Package, ModelPkgPath, ModelPkgName                string
+	DtoPkgPath, DtoPkgName, DtoStructName              string
+	VoPkgPath, VoPkgName, VoStructName                 string
+	SameDtoPkg, IsGoZero                               bool
+	HasTimeField, HasDecimalField                      bool
+	Columns                                            []ColumnInfo
 }
 
-func getTableComment(db *gorm.DB, tableName string) (string, error) {
+// ═══════════════════════════════════════════════════════════
+//  模板加载 & 渲染
+// ═══════════════════════════════════════════════════════════
+
+func loadTemplate(templatePath string) (*template.Template, error) {
+	templateName := filepath.Base(templatePath)
+	funcMap := template.FuncMap{"lowerFirst": lowerFirst}
+	if fileContent, err := os.ReadFile(templatePath); err == nil {
+		return template.New(templateName).Funcs(funcMap).Parse(string(fileContent))
+	}
+	embeddedContent, ok := embeddedTemplates[templateName]
+	if !ok {
+		return nil, fmt.Errorf("模板 %q 不存在且无内嵌版本", templatePath)
+	}
+	return template.New(templateName).Funcs(funcMap).Parse(embeddedContent)
+}
+
+func renderTemplate(tmplPath string, data any) (string, error) {
+	tmpl, err := loadTemplate(tmplPath)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err = tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// ═══════════════════════════════════════════════════════════
+//  类型映射
+// ═══════════════════════════════════════════════════════════
+
+func getGoType(sqlType string) string {
+	s := strings.ToLower(sqlType)
+	switch {
+	case strings.Contains(s, "varchar") || strings.Contains(s, "text") || strings.Contains(s, "char"):
+		return "string"
+	case strings.Contains(s, "int"):
+		return "int64"
+	case strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double"):
+		return "float64"
+	case strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date"):
+		return "int64"
+	case strings.Contains(s, "json"):
+		return "string"
+	case strings.Contains(s, "bool"):
+		return "bool"
+	}
+	return "string"
+}
+
+func getGoTypeForApiDto(sqlType string) string {
+	s := strings.ToLower(sqlType)
+	if strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double") {
+		return "string"
+	}
+	return getGoType(sqlType)
+}
+
+func getGoTypeForVo(sqlType string) string { return getGoTypeForApiDto(sqlType) }
+
+// ═══════════════════════════════════════════════════════════
+//  路径工具
+// ═══════════════════════════════════════════════════════════
+
+func pathToPkg(path string) string {
+	path = strings.TrimPrefix(path, "./")
+	path = strings.TrimSuffix(path, "/")
+	if filepath.IsAbs(path) {
+		if cwd, err := os.Getwd(); err == nil {
+			if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
+				path = rel
+			}
+		}
+	}
+	return path
+}
+
+func getLastPathSegment(path string) string {
+	if path == "" {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "./"), "/")
+	return parts[len(parts)-1]
+}
+
+func ensureDir(dir string) {
+	if dir != "" {
+		os.MkdirAll(dir, 0755)
+	}
+}
+
+func writeFileIfNotExist(filePath, content, label string) {
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		if err = os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			fmt.Printf("写入 %s 失败: %v\n", label, err)
+		} else {
+			fmt.Printf("已生成: %s\n", filePath)
+		}
+	} else {
+		fmt.Printf("已存在，跳过: %s\n", filePath)
+	}
+}
+
+func writeFileAlways(filePath, content, label string) {
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		fmt.Printf("写入 %s 失败: %v\n", label, err)
+	} else {
+		fmt.Printf("已生成(覆盖): %s\n", filePath)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════
+//  各类文件生成
+// ═══════════════════════════════════════════════════════════
+
+func getTableComment(db *gorm.DB, tableName string) string {
 	var comment string
-	err := db.Raw(fmt.Sprintf("SELECT TABLE_COMMENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '%s'", tableName)).Scan(&comment).Error
-	return comment, err
+	db.Raw(fmt.Sprintf(
+		"SELECT TABLE_COMMENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='%s'",
+		tableName)).Scan(&comment)
+	return comment
 }
 
 func generateValidateRule(col ColumnInfo) string {
@@ -303,52 +483,57 @@ func generateValidateRule(col ColumnInfo) string {
 		rules = append(rules, "mobile")
 	}
 	if strings.Contains(strings.ToLower(col.Comment), "1是") && strings.Contains(strings.ToLower(col.Comment), "2是") {
-		enumRegex := regexp.MustCompile(`(\d+)是([^，,]+)[,，]?`)
-		matches := enumRegex.FindAllStringSubmatch(col.Comment, -1)
-		if len(matches) > 0 {
-			values := make([]string, 0, len(matches))
-			for _, match := range matches {
-				if len(match) >= 3 {
-					values = append(values, match[1])
-				}
-			}
-			if len(values) > 0 {
-				rules = append(rules, fmt.Sprintf("oneof=%s", strings.Join(values, " ")))
+		re := regexp.MustCompile(`(\d+)是([^，,]+)[,，]?`)
+		var vals []string
+		for _, m := range re.FindAllStringSubmatch(col.Comment, -1) {
+			if len(m) >= 3 {
+				vals = append(vals, m[1])
 			}
 		}
+		if len(vals) > 0 {
+			rules = append(rules, "oneof="+strings.Join(vals, " "))
+		}
 	}
-	if !col.CanNull && col.FieldType == "int64" && (strings.Contains(col.Name, "status") || strings.Contains(col.Name, "type") || strings.Contains(col.Name, "is_")) {
+	if !col.CanNull && col.FieldType == "int64" &&
+		(strings.Contains(col.Name, "status") || strings.Contains(col.Name, "type") || strings.Contains(col.Name, "is_")) {
 		rules = append(rules, "gte=1")
 	}
 	return strings.Join(rules, ",")
 }
 
-func loadTemplate(templatePath string) (*template.Template, error) {
-	templateName := filepath.Base(templatePath)
-	funcMap := template.FuncMap{
-		"lowerFirst": lowerFirst,
+func buildRepoData(columns []ColumnInfo, modelName, pkg, daoPath, modelPath string) RepositoryTemplateData {
+	columnData := make([]ColumnInfo, len(columns))
+	primaryKeyField, primaryKeyColumn := "ID", "id"
+	for i, col := range columns {
+		fn := Case2Camel(col.Name)
+		columnData[i] = ColumnInfo{
+			Name: col.Name, Type: col.Type,
+			FieldName: fn, FieldType: getGoType(col.Type),
+			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
+		}
+		if col.IsKey {
+			primaryKeyField = fn
+			primaryKeyColumn = col.Name
+		}
 	}
+	return RepositoryTemplateData{
+		ModelName: modelName, ModelNameLower: LowerCamelCase(modelName),
+		EntityName: modelName + "Entity", EntityNameLower: LowerCamelCase(modelName + "Entity"),
+		Package: pkg, DaoPath: pkg + "/" + daoPath, ModelPath: pkg + "/" + modelPath,
+		ModelPkgName: getLastPathSegment(modelPath), Columns: columnData,
+		PrimaryKeyField: primaryKeyField, PrimaryKeyColumn: primaryKeyColumn,
+	}
+}
 
-	// 优先尝试从文件系统加载（方便用户自定义覆盖模板）
-	fileContent, err := os.ReadFile(templatePath)
-	if err == nil {
-		return template.New(templateName).Funcs(funcMap).Parse(string(fileContent))
-	}
+func generateRepositoryFile(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tmplPath string) (string, error) {
+	return renderTemplate(tmplPath, buildRepoData(columns, modelName, pkg, daoPath, modelPath))
+}
 
-	// 文件不存在时，回退到内嵌模板
-	embeddedContent, ok := embeddedTemplates[templateName]
-	if !ok {
-		return nil, fmt.Errorf("模板文件 %q 不存在，且没有对应的内嵌模板: %w", templatePath, err)
-	}
-	return template.New(templateName).Funcs(funcMap).Parse(embeddedContent)
+func generateRepositoryExtFile(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tmplPath string) (string, error) {
+	return renderTemplate(tmplPath, buildRepoData(columns, modelName, pkg, daoPath, modelPath))
 }
 
 func generateApiFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
-	tmpl, err := loadTemplate(tmplPath)
-	if err != nil {
-		return "", fmt.Errorf("加载模板失败: %w", err)
-	}
-
 	columnData := make([]ColumnInfo, len(columns))
 	for i, col := range columns {
 		jsonTagOpt := ""
@@ -356,234 +541,77 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 			jsonTagOpt = ",optional"
 		}
 		columnData[i] = ColumnInfo{
-			Name:       col.Name,
-			Type:       col.Type,
-			FieldName:  Case2Camel(col.Name),
-			FieldType:  getGoTypeForApiDto(col.Type),
-			JsonTag:    LowerCamelCase(Case2Camel(col.Name)),
-			JsonTagOpt: jsonTagOpt,
-			CanNull:    col.CanNull,
-			IsKey:      col.IsKey,
-			Extra:      col.Extra,
-			Comment:    col.Comment,
-			Validate:   generateValidateRule(ColumnInfo{CanNull: col.CanNull, IsKey: col.IsKey, FieldType: getGoTypeForApiDto(col.Type), Name: col.Name, Comment: col.Comment}),
+			Name: col.Name, Type: col.Type,
+			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForApiDto(col.Type),
+			JsonTag: LowerCamelCase(Case2Camel(col.Name)), JsonTagOpt: jsonTagOpt,
+			CanNull: col.CanNull, IsKey: col.IsKey, Extra: col.Extra, Comment: col.Comment,
+			Validate: generateValidateRule(ColumnInfo{
+				CanNull: col.CanNull, IsKey: col.IsKey,
+				FieldType: getGoTypeForApiDto(col.Type), Name: col.Name, Comment: col.Comment,
+			}),
 		}
 	}
-
-	tableComment, _ := getTableComment(db, tableName)
+	tableComment := getTableComment(db, tableName)
 	if tableComment == "" {
 		tableComment = modelName
 	}
-
-	data := ApiTemplateData{
-		TableName:    LowerCamelCase(Case2Camel(tableName)), // 转换为小驼峰
+	return renderTemplate(tmplPath, ApiTemplateData{
+		TableName:    LowerCamelCase(Case2Camel(tableName)),
 		ModelName:    modelName,
 		EntityName:   Case2Camel(strings.ToUpper(tableName[:1]+tableName[1:])) + "Entity",
 		TableComment: tableComment,
 		Columns:      columnData,
-	}
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, data)
-	if err != nil {
-		return "", fmt.Errorf("渲染模板失败: %w", err)
-	}
-
-	return buf.String(), nil
-}
-
-func generateRepositoryFile(columns []ColumnInfo, modelName string, pkg string, daoPath string, modelPath string, tmplPath string) (string, error) {
-	tmpl, err := loadTemplate(tmplPath)
-	if err != nil {
-		return "", fmt.Errorf("加载模板失败: %w", err)
-	}
-
-	columnData := make([]ColumnInfo, len(columns))
-	for i, col := range columns {
-		columnData[i] = ColumnInfo{
-			Name:      col.Name,
-			Type:      col.Type,
-			FieldName: Case2Camel(col.Name),
-			FieldType: getGoType(col.Type),
-			CanNull:   col.CanNull,
-			IsKey:     col.IsKey,
-			Comment:   col.Comment,
-		}
-	}
-
-	// 计算主键字段
-	primaryKeyField := "ID"
-	primaryKeyColumn := "id"
-	for _, col := range columnData {
-		if col.IsKey {
-			primaryKeyField = col.FieldName
-			primaryKeyColumn = col.Name
-			break
-		}
-	}
-
-	data := RepositoryTemplateData{
-		ModelName:        modelName,
-		ModelNameLower:   LowerCamelCase(modelName),
-		EntityName:       modelName + "Entity",
-		EntityNameLower:  LowerCamelCase(modelName + "Entity"),
-		Package:          pkg,
-		DaoPath:          pkg + "/" + daoPath,
-		ModelPath:        pkg + "/" + modelPath,
-		ModelPkgName:     getLastPathSegment(modelPath),
-		Columns:          columnData,
-		PrimaryKeyField:  primaryKeyField,
-		PrimaryKeyColumn: primaryKeyColumn,
-	}
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, data)
-	if err != nil {
-		return "", fmt.Errorf("渲染模板失败: %w", err)
-	}
-
-	return buf.String(), nil
-}
-
-func generateRepositoryExtFile(columns []ColumnInfo, modelName string, pkg string, daoPath string, modelPath string, tmplPath string) (string, error) {
-	tmpl, err := loadTemplate(tmplPath)
-	if err != nil {
-		return "", fmt.Errorf("加载扩展模板失败: %w", err)
-	}
-
-	columnData := make([]ColumnInfo, len(columns))
-	for i, col := range columns {
-		columnData[i] = ColumnInfo{
-			Name:      col.Name,
-			Type:      col.Type,
-			FieldName: Case2Camel(col.Name),
-			FieldType: getGoType(col.Type),
-			CanNull:   col.CanNull,
-			IsKey:     col.IsKey,
-			Comment:   col.Comment,
-		}
-	}
-
-	data := RepositoryTemplateData{
-		ModelName:       modelName,
-		ModelNameLower:  LowerCamelCase(modelName),
-		EntityName:      modelName + "Entity",
-		EntityNameLower: LowerCamelCase(modelName + "Entity"),
-		Package:         pkg,
-		DaoPath:         pkg + "/" + daoPath,
-		ModelPath:       pkg + "/" + modelPath,
-		ModelPkgName:    getLastPathSegment(modelPath),
-		Columns:         columnData,
-	}
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, data)
-	if err != nil {
-		return "", fmt.Errorf("渲染扩展模板失败: %w", err)
-	}
-
-	return buf.String(), nil
+	})
 }
 
 func generateVoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
-	tmpl, err := loadTemplate(tmplPath)
-	if err != nil {
-		return "", fmt.Errorf("加载模板失败: %w", err)
-	}
-
 	columnData := make([]ColumnInfo, len(columns))
 	for i, col := range columns {
 		columnData[i] = ColumnInfo{
-			Name:      col.Name,
-			Type:      col.Type,
-			FieldName: Case2Camel(col.Name),
-			FieldType: getGoTypeForVo(col.Type),
-			CanNull:   col.CanNull,
-			IsKey:     col.IsKey,
-			Comment:   col.Comment,
+			Name: col.Name, Type: col.Type,
+			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForVo(col.Type),
+			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 		}
 	}
-
-	tableComment, _ := getTableComment(db, tableName)
+	tableComment := getTableComment(db, tableName)
 	if tableComment == "" {
 		tableComment = modelName
 	}
-
-	data := VoTemplateData{
-		TableName:    tableName,
-		ModelName:    modelName,
-		TableComment: tableComment,
-		Columns:      columnData,
-	}
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, data)
-	if err != nil {
-		return "", fmt.Errorf("渲染模板失败: %w", err)
-	}
-
-	return buf.String(), nil
+	return renderTemplate(tmplPath, VoTemplateData{
+		TableName: tableName, ModelName: modelName,
+		TableComment: tableComment, Columns: columnData,
+	})
 }
 
 func generateDtoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
-	tmpl, err := loadTemplate(tmplPath)
-	if err != nil {
-		return "", fmt.Errorf("加载模板失败: %w", err)
-	}
-
 	columnData := make([]ColumnInfo, len(columns))
 	for i, col := range columns {
 		columnData[i] = ColumnInfo{
-			Name:      col.Name,
-			Type:      col.Type,
-			FieldName: Case2Camel(col.Name),
-			FieldType: getGoTypeForApiDto(col.Type),
-			CanNull:   col.CanNull,
-			IsKey:     col.IsKey,
-			Comment:   col.Comment,
-			Validate:  generateValidateRule(col),
+			Name: col.Name, Type: col.Type,
+			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForApiDto(col.Type),
+			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
+			Validate: generateValidateRule(col),
 		}
 	}
-
-	tableComment, _ := getTableComment(db, tableName)
+	tableComment := getTableComment(db, tableName)
 	if tableComment == "" {
 		tableComment = modelName
 	}
-
-	data := VoTemplateData{
-		TableName:    tableName,
-		ModelName:    modelName,
-		TableComment: tableComment,
-		Columns:      columnData,
-	}
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, data)
-	if err != nil {
-		return "", fmt.Errorf("渲染模板失败: %w", err)
-	}
-
-	return buf.String(), nil
+	return renderTemplate(tmplPath, VoTemplateData{
+		TableName: tableName, ModelName: modelName,
+		TableComment: tableComment, Columns: columnData,
+	})
 }
 
-// buildMapperData 构建 mapper 模板数据
-// isGoZero=true：go-zero 项目，结构体名用 CreateXxxReq/XxxResp，import 留 TODO
-// isGoZero=false：普通项目，结构体名用 CreateXxxDTO/XxxVo
 func buildMapperData(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB,
 	pkg, modelPkgPath, dtoPkgPath, voPkgPath string, isGoZero bool) MapperTemplateData {
-
 	auditFields := map[string]bool{"created_by": true, "updated_by": true}
-
 	columnData := make([]ColumnInfo, len(columns))
 	hasTime, hasDecimal := false, false
 	for i, col := range columns {
-		sqlLower := strings.ToLower(col.Type)
-		isTime := strings.Contains(sqlLower, "datetime") ||
-			strings.Contains(sqlLower, "timestamp") ||
-			strings.Contains(sqlLower, "date")
-		isDecimal := strings.Contains(sqlLower, "decimal") ||
-			strings.Contains(sqlLower, "float") ||
-			strings.Contains(sqlLower, "double")
+		s := strings.ToLower(col.Type)
+		isTime := strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
+		isDecimal := strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double")
 		if isTime {
 			hasTime = true
 		}
@@ -591,178 +619,38 @@ func buildMapperData(tableName string, columns []ColumnInfo, modelName string, d
 			hasDecimal = true
 		}
 		columnData[i] = ColumnInfo{
-			Name:          col.Name,
-			Type:          col.Type,
-			FieldName:     Case2Camel(col.Name),
-			FieldType:     getGoType(col.Type),
-			CanNull:       col.CanNull,
-			IsKey:         col.IsKey,
-			Comment:       col.Comment,
-			IsTimeType:    isTime,
-			IsAuditField:  auditFields[col.Name],
-			IsDecimalType: isDecimal,
+			Name: col.Name, Type: col.Type,
+			FieldName: Case2Camel(col.Name), FieldType: getGoType(col.Type),
+			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
+			IsTimeType: isTime, IsAuditField: auditFields[col.Name], IsDecimalType: isDecimal,
 		}
 	}
-
-	tableComment, _ := getTableComment(db, tableName)
+	tableComment := getTableComment(db, tableName)
 	if tableComment == "" {
 		tableComment = modelName
 	}
-
-	dtoPkgName := getLastPathSegment(dtoPkgPath)
-	voPkgName := getLastPathSegment(voPkgPath)
-	sameDtoPkg := dtoPkgPath != "" && dtoPkgPath == voPkgPath
-
-	dtoStructName := "Create" + modelName + "DTO"
-	voStructName := modelName + "Vo"
+	dtoStructName, voStructName := "Create"+modelName+"DTO", modelName+"Vo"
 	if isGoZero {
-		dtoStructName = "Create" + modelName + "Req"
-		voStructName = modelName + "Model" // go-zero api 模板里返回结构体命名规范
+		dtoStructName, voStructName = "Create"+modelName+"Req", modelName+"Model"
 	}
-
 	return MapperTemplateData{
-		TableName:       tableName,
-		ModelName:       modelName,
-		ModelNameLower:  LowerCamelCase(modelName),
-		TableComment:    tableComment,
-		Package:         pkg,
-		ModelPkgPath:    modelPkgPath,
-		ModelPkgName:    getLastPathSegment(modelPkgPath),
-		DtoPkgPath:      dtoPkgPath,
-		DtoPkgName:      dtoPkgName,
-		DtoStructName:   dtoStructName,
-		VoPkgPath:       voPkgPath,
-		VoPkgName:       voPkgName,
-		VoStructName:    voStructName,
-		SameDtoPkg:      sameDtoPkg,
-		IsGoZero:        isGoZero,
-		HasTimeField:    hasTime,
-		HasDecimalField: hasDecimal,
-		Columns:         columnData,
+		TableName: tableName, ModelName: modelName, ModelNameLower: LowerCamelCase(modelName),
+		TableComment: tableComment, Package: pkg,
+		ModelPkgPath: modelPkgPath, ModelPkgName: getLastPathSegment(modelPkgPath),
+		DtoPkgPath: dtoPkgPath, DtoPkgName: getLastPathSegment(dtoPkgPath), DtoStructName: dtoStructName,
+		VoPkgPath: voPkgPath, VoPkgName: getLastPathSegment(voPkgPath), VoStructName: voStructName,
+		SameDtoPkg: dtoPkgPath != "" && dtoPkgPath == voPkgPath, IsGoZero: isGoZero,
+		HasTimeField: hasTime, HasDecimalField: hasDecimal, Columns: columnData,
 	}
 }
 
-func getGoType(sqlType string) string {
-	sqlType = strings.ToLower(sqlType)
-	if strings.Contains(sqlType, "varchar") || strings.Contains(sqlType, "text") || strings.Contains(sqlType, "char") {
-		return "string"
-	}
-	if strings.Contains(sqlType, "int") {
-		return "int64"
-	}
-	if strings.Contains(sqlType, "decimal") || strings.Contains(sqlType, "float") || strings.Contains(sqlType, "double") {
-		return "float64"
-	}
-	if strings.Contains(sqlType, "datetime") || strings.Contains(sqlType, "timestamp") {
-		return "int64"
-	}
-	if strings.Contains(sqlType, "date") {
-		return "int64"
-	}
-	if strings.Contains(sqlType, "json") {
-		return "string"
-	}
-	if strings.Contains(sqlType, "bool") {
-		return "bool"
-	}
-	return "string"
-}
+// ═══════════════════════════════════════════════════════════
+//  单表文件生成入口
+// ═══════════════════════════════════════════════════════════
 
-// getGoTypeForApiDto 用于 API / DTO 的类型映射规则：
-//   - decimal/float/double → string（前端传字符串避免精度丢失）
-//   - datetime/timestamp/date → int64（前端传时间戳）
-//   - 其余规则与 getGoType 相同
-func getGoTypeForApiDto(sqlType string) string {
-	s := strings.ToLower(sqlType)
-	if strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double") {
-		return "string"
-	}
-	if strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date") {
-		return "int64"
-	}
-	return getGoType(sqlType)
-}
-
-// getGoTypeForVo 用于 VO 的类型映射规则：
-//   - decimal/float/double → string（返回给前端时保持字符串格式）
-//   - datetime/timestamp/date → int64（返回时间戳，前端自行格式化）
-//   - 其余规则与 getGoType 相同
-func getGoTypeForVo(sqlType string) string {
-	s := strings.ToLower(sqlType)
-	if strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double") {
-		return "string"
-	}
-	if strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date") {
-		return "int64"
-	}
-	return getGoType(sqlType)
-}
-
-// pathToPkg 将路径转换为包路径，如 "./query/dao" -> "query/dao"
-// 如果是绝对路径，提取相对于项目根目录的部分
-func pathToPkg(path string) string {
-	path = strings.TrimPrefix(path, "./")
-	path = strings.TrimSuffix(path, "/")
-	// 如果是绝对路径（如 /Users/.../query/model），提取包部分
-	// 项目根目录通常是 go.mod 所在目录
-	if filepath.IsAbs(path) {
-		// 获取当前工作目录作为参考，提取相对路径
-		cwd, err := os.Getwd()
-		if err == nil {
-			rel, err := filepath.Rel(cwd, path)
-			if err == nil && !strings.HasPrefix(rel, "..") {
-				path = rel
-			}
-		}
-	}
-	return path
-}
-
-// getLastPathSegment 获取路径的最后一个段，如 "dal/model/entity" -> "entity"
-func getLastPathSegment(path string) string {
-	if path == "" {
-		return ""
-	}
-	path = strings.TrimPrefix(path, "./")
-	parts := strings.Split(path, "/")
-	return parts[len(parts)-1]
-}
-
-// ensureDir 确保目录存在，不存在则创建
-func ensureDir(dir string) {
-	if dir != "" {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			os.MkdirAll(dir, 0755)
-		}
-	}
-}
-
-// writeFileIfNotExist 文件不存在时写入，已存在时打印跳过信息
-func writeFileIfNotExist(filePath string, content string, label string) {
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		if err = os.WriteFile(filePath, []byte(content), 0644); err != nil {
-			fmt.Printf("写入 %s 失败: %v\n", label, err)
-		} else {
-			fmt.Printf("已生成: %s\n", filePath)
-		}
-	} else {
-		fmt.Printf("已存在，跳过: %s\n", filePath)
-	}
-}
-
-// writeFileAlways 始终覆盖写入，用于 _gen.go / _option.go
-func writeFileAlways(filePath string, content string, label string) {
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		fmt.Printf("写入 %s 失败: %v\n", label, err)
-	} else {
-		fmt.Printf("已生成: %s\n", filePath)
-	}
-}
-
-// generateForTable 为单张表生成 Repo / API / VO / DTO / Mapper 文件
 func generateForTable(tbl string, cfg *Config, db *gorm.DB,
-	repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
-	mapperTmplPath string) {
+	repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath, mapperTmplPath string) {
+
 	columns, err := getTableColumns(db, tbl)
 	if err != nil {
 		fmt.Printf("[%s] 获取表结构失败，跳过: %v\n", tbl, err)
@@ -770,177 +658,132 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 	}
 	modelName := Case2Camel(strings.ToUpper(tbl[:1]) + tbl[1:])
 
-	// ── Repository _gen.go（已存在跳过）
+	// Repository _gen.go（始终覆盖，与 model 保持同步）
 	if cfg.RepoPath != "" {
-		content, err := generateRepositoryFile(columns, modelName, cfg.Package,
-			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath)
-		if err != nil {
+		if content, err := generateRepositoryFile(columns, modelName, cfg.Package,
+			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath); err != nil {
 			fmt.Printf("[%s] 生成 repository_gen 失败: %v\n", tbl, err)
 		} else {
-			writeFileIfNotExist(
+			writeFileAlways(
 				fmt.Sprintf("%s/%s_gen.go", cfg.RepoPath, strings.ToLower(modelName)),
 				content, "repository_gen",
 			)
 		}
 
-		// ── Repository .go（已存在跳过）
-		extContent, err := generateRepositoryExtFile(columns, modelName, cfg.Package,
-			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath)
-		if err != nil {
-			fmt.Printf("[%s] 生成 repository 扩展失败: %v\n", tbl, err)
+		// Repository .go（用户自定义，已存在则跳过）
+		if content, err := generateRepositoryExtFile(columns, modelName, cfg.Package,
+			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath); err != nil {
+			fmt.Printf("[%s] 生成 repository 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
 				fmt.Sprintf("%s/%s.go", cfg.RepoPath, strings.ToLower(modelName)),
-				extContent, "repository",
+				content, "repository",
 			)
 		}
 	}
 
-	// ── API .api（已存在跳过）
+	// API .api（go-zero 模式，已存在则跳过）
 	if cfg.ApiPath != "" {
-		// ── 生成 base.api（如果 ApiPath 存在且 base.api 不存在）──────
 		baseApiFile := filepath.Join(cfg.ApiPath, "base.api")
 		if _, err := os.Stat(baseApiFile); os.IsNotExist(err) {
-			// 从内嵌模板加载 base.api 内容
-			baseApiContent, ok := embeddedTemplates["base_api_template.txt"]
-			if !ok {
-				fmt.Printf("未找到 base_api_template.txt 内嵌模板\n")
-			} else {
-				fmt.Printf("[DEBUG] base.api 内容长度 = %d\n", len(baseApiContent))
-				if err := os.WriteFile(baseApiFile, []byte(baseApiContent), 0644); err != nil {
+			if content, ok := embeddedTemplates["base_api_template.txt"]; ok {
+				if err := os.WriteFile(baseApiFile, []byte(content), 0644); err != nil {
 					fmt.Printf("写入 base.api 失败: %v\n", err)
 				} else {
-					fmt.Printf("已生成base.api: %s\n", baseApiFile)
+					fmt.Printf("已生成: %s\n", baseApiFile)
 				}
 			}
-		} else {
-			fmt.Printf("已存在base.api，跳过: %s\n", baseApiFile)
 		}
-
-		apiContent, err := generateApiFile(tbl, columns, modelName, db, apiTmplPath)
-		if err != nil {
+		if content, err := generateApiFile(tbl, columns, modelName, db, apiTmplPath); err != nil {
 			fmt.Printf("[%s] 生成 api 失败: %v\n", tbl, err)
 		} else {
-			apiFileName := fmt.Sprintf("%s/%s.api", cfg.ApiPath, LowerCamelCase(Case2Camel(tbl)))
-			if _, err := os.Stat(apiFileName); os.IsNotExist(err) {
-				if err = os.WriteFile(apiFileName, []byte(apiContent), 0644); err != nil {
-					fmt.Printf("[%s] 写入 api 文件失败: %v\n", tbl, err)
+			apiFile := fmt.Sprintf("%s/%s.api", cfg.ApiPath, LowerCamelCase(Case2Camel(tbl)))
+			if _, err := os.Stat(apiFile); os.IsNotExist(err) {
+				if err = os.WriteFile(apiFile, []byte(content), 0644); err != nil {
+					fmt.Printf("[%s] 写入 api 失败: %v\n", tbl, err)
 				} else {
-					fmt.Printf("已生成: %s\n", apiFileName)
-					goctlPath := getGoctlPath()
-					cmd := exec.Command(goctlPath, "api", "go", "-api", apiFileName,
+					fmt.Printf("已生成: %s\n", apiFile)
+					cmd := exec.Command(getGoctlPath(), "api", "go", "-api", apiFile,
 						"--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
-					cmd.Dir = "."
 					if output, err := cmd.CombinedOutput(); err != nil {
-						fmt.Printf("[%s] 执行 goctl 失败: %v\n%s\n", tbl, err, output)
+						fmt.Printf("[%s] goctl 执行失败: %v\n%s\n", tbl, err, output)
 					} else {
 						fmt.Printf("[%s] go-zero 代码生成成功\n", tbl)
 					}
 				}
 			} else {
-				fmt.Printf("已存在，跳过: %s\n", apiFileName)
+				fmt.Printf("已存在，跳过: %s\n", apiFile)
 			}
 		}
 	}
 
-	// ── VO（有 api_path 时跳过，用 go-zero 生成的 types）
+	// VO（非 go-zero 模式，已存在则跳过）
 	if cfg.VoPath != "" && cfg.ApiPath == "" {
-		voContent, err := generateVoFile(tbl, columns, modelName, db, voTmplPath)
-		if err != nil {
+		if content, err := generateVoFile(tbl, columns, modelName, db, voTmplPath); err != nil {
 			fmt.Printf("[%s] 生成 VO 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
 				fmt.Sprintf("%s/%sVo.go", cfg.VoPath, LowerCamelCase(Case2Camel(modelName))),
-				voContent, "VO",
+				content, "VO",
 			)
 		}
 	}
 
-	// ── DTO（有 api_path 时跳过，用 go-zero 生成的 types）
+	// DTO（非 go-zero 模式，已存在则跳过）
 	if cfg.DtoPath != "" && cfg.ApiPath == "" {
-		dtoContent, err := generateDtoFile(tbl, columns, modelName, db, dtoTmplPath)
-		if err != nil {
+		if content, err := generateDtoFile(tbl, columns, modelName, db, dtoTmplPath); err != nil {
 			fmt.Printf("[%s] 生成 DTO 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
 				fmt.Sprintf("%s/%sDto.go", cfg.DtoPath, LowerCamelCase(Case2Camel(modelName))),
-				dtoContent, "DTO",
+				content, "DTO",
 			)
 		}
 	}
 
-	// ── Mapper：每张表生成一个文件，平铺在 MapperPath 下
-	// 文件名：supplier_mapper.go，package mapper，用户复制走后自行修改 import
+	// Mapper（已存在则跳过）
 	if cfg.MapperPath != "" {
-		var dtoPkg, voPkg string
-		if cfg.ApiPath != "" {
-			// go-zero 模式：包路径留空，模板里用 TODO 占位，用户自己填
-			dtoPkg = ""
-			voPkg = ""
-		} else {
+		dtoPkg, voPkg := "", ""
+		if cfg.ApiPath == "" {
 			dtoPkg = pathToPkg(cfg.DtoPath)
 			voPkg = pathToPkg(cfg.VoPath)
 		}
-
 		data := buildMapperData(tbl, columns, modelName, db,
-			cfg.Package,
-			pathToPkg(cfg.ModelPkgPath),
-			dtoPkg,
-			voPkg,
-			cfg.ApiPath != "",
-		)
-
-		// supplier_mapper.go：已存在跳过
-		if mapperContent, err := renderMapperTemplate(mapperTmplPath, data); err != nil {
+			cfg.Package, pathToPkg(cfg.ModelPkgPath), dtoPkg, voPkg, cfg.ApiPath != "")
+		if content, err := renderTemplate(mapperTmplPath, data); err != nil {
 			fmt.Printf("[%s] 生成 mapper 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
 				fmt.Sprintf("%s/%sMapper.go", cfg.MapperPath, LowerCamelCase(Case2Camel(tbl))),
-				mapperContent, "mapper",
+				content, "mapper",
 			)
 		}
 	}
 }
 
-// renderMapperTemplate 加载并渲染 mapper 模板
-func renderMapperTemplate(tmplPath string, data MapperTemplateData) (string, error) {
-	tmpl, err := loadTemplate(tmplPath)
-	if err != nil {
-		return "", fmt.Errorf("加载模板失败: %w", err)
-	}
-	var buf bytes.Buffer
-	if err = tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("渲染模板失败: %w", err)
-	}
-	return buf.String(), nil
-}
+// ═══════════════════════════════════════════════════════════
+//  主入口
+// ═══════════════════════════════════════════════════════════
 
 func Generate(cfg *Config) error {
-	// 从当前工作目录向上查找 go.mod 确定项目根目录，
-	// 将所有相对路径转换为绝对路径，确保无论从哪里运行都指向同一位置。
 	if err := resolveConfigPaths(cfg); err != nil {
-		return fmt.Errorf("解析项目根目录失败: %w", err)
+		return fmt.Errorf("解析路径失败: %w", err)
 	}
 
-	// 构建DSN
 	dsn := fmt.Sprintf("%s:%s@(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
-
 	db, err := gorm.Open(mysql.Open(dsn))
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
 
-	tableName := readInput("请输入表名（直接回车同步所有表）: ")
+	inputTable := strings.TrimSpace(readInput("请输入表名（直接回车同步所有表）: "))
+	isSingleTable := inputTable != ""
 
-	// 获取模板路径 - 优先使用环境变量或当前工作目录
+	// 定位模板目录
 	templateDir := os.Getenv("GENERATOR_TEMPLATE_DIR")
 	if templateDir == "" {
-		// 尝试相对于可执行文件的路径
-		exePath, err := os.Executable()
-		if err == nil {
-			// 对于 go run，可执行文件在缓存目录，需要找到源码目录
-			// 尝试向上查找 generator/template 目录
+		if exePath, err := os.Executable(); err == nil {
 			checkDir := filepath.Dir(exePath)
 			for i := 0; i < 10; i++ {
 				testDir := filepath.Join(checkDir, "generator", "template")
@@ -948,7 +791,6 @@ func Generate(cfg *Config) error {
 					templateDir = testDir
 					break
 				}
-				// 继续向上查找
 				parent := filepath.Dir(checkDir)
 				if parent == checkDir {
 					break
@@ -956,12 +798,12 @@ func Generate(cfg *Config) error {
 				checkDir = parent
 			}
 		}
-		// 如果还是没找到，尝试相对于当前工作目录的路径
-		if templateDir == "" {
-			cwd, _ := os.Getwd()
-			templateDir = filepath.Join(cwd, "generator", "template")
-		}
 	}
+	if templateDir == "" {
+		cwd, _ := os.Getwd()
+		templateDir = filepath.Join(cwd, "generator", "template")
+	}
+
 	apiTmplPath := filepath.Join(templateDir, "api_template.txt")
 	dtoTmplPath := filepath.Join(templateDir, "dto_template.txt")
 	repoGenTmplPath := filepath.Join(templateDir, "repository_gen_template.txt")
@@ -969,8 +811,7 @@ func Generate(cfg *Config) error {
 	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
 	mapperTmplPath := filepath.Join(templateDir, "mapper_template.txt")
 
-	// 路径为空表示该功能未配置，保持空值，后续按空值判断是否生成
-
+	// gorm-gen 配置
 	g := gen.NewGenerator(gen.Config{
 		OutPath:           cfg.OutPath,
 		ModelPkgPath:      cfg.ModelPkgPath,
@@ -981,95 +822,103 @@ func Generate(cfg *Config) error {
 		FieldWithIndexTag: false,
 		FieldWithTypeTag:  true,
 	})
-
 	g.UseDB(db)
+	g.WithDataTypeMap(map[string]func(gorm.ColumnType) string{
+		"int":       func(_ gorm.ColumnType) string { return "int64" },
+		"int2":      func(_ gorm.ColumnType) string { return "int64" },
+		"int4":      func(_ gorm.ColumnType) string { return "int64" },
+		"mediumint": func(_ gorm.ColumnType) string { return "int64" },
+		"smallint":  func(_ gorm.ColumnType) string { return "int64" },
+		"integer":   func(_ gorm.ColumnType) string { return "int64" },
+		"tinyint":   func(_ gorm.ColumnType) string { return "int64" },
+		"bigint":    func(_ gorm.ColumnType) string { return "int64" },
+		"json":      func(_ gorm.ColumnType) string { return "datatypes.JSON" },
+		"decimal":   func(_ gorm.ColumnType) string { return "decimal.Decimal" },
+	})
+	g.WithModelNameStrategy(func(tableName string) string {
+		return Case2Camel(strings.ToUpper(tableName[:1])+tableName[1:]) + "Entity"
+	})
 
-	dataMap := map[string]func(detailType gorm.ColumnType) (dataType string){
-		"int":       func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"int2":      func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"int4":      func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"mediumint": func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"smallint":  func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"integer":   func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"tinyint":   func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"bigint":    func(detailType gorm.ColumnType) (dataType string) { return "int64" },
-		"json":      func(detailType gorm.ColumnType) (dataType string) { return "datatypes.JSON" },
-		"decimal":   func(detailType gorm.ColumnType) (dataType string) { return "decimal.Decimal" },
+	fieldOpts := []gen.ModelOpt{
+		gen.FieldJSONTagWithNS(func(col string) string {
+			if col == "deleted_at" {
+				return "-"
+			}
+			return LowerCamelCase(Case2Camel(col))
+		}),
+		gen.FieldGORMTag("updated_at", func(_ field.GormTag) field.GormTag {
+			return map[string][]string{"column": {"updated_at"}, "comment": {"更新时间"}}
+		}),
+		gen.FieldGORMTag("created_at", func(_ field.GormTag) field.GormTag {
+			return map[string][]string{"column": {"created_at"}, "comment": {"创建时间"}}
+		}),
+		gen.FieldType("deleted_at", "gorm.DeletedAt"),
 	}
-	g.WithDataTypeMap(dataMap)
 
-	g.WithModelNameStrategy(func(tableName string) (modelName string) {
-		return Case2Camel(strings.ToUpper(tableName[:1]) + tableName[1:] + "Entity")
-	})
+	// ══════════════════════════════════════════════════════
+	// 【第一步】确定 Model 生成范围并执行
+	//
+	// 单表模式追加策略：
+	//   ① parseTablesFromGenFile 读取 gen.go 里已有表（字段名正则：XxxEntity: newXxx(）
+	//   ② 合并历史表 + 本次新输入表（去重）
+	//   ③ 用完整表集合调用 g.Execute() 重新生成 gen.go
+	//   → gen.go 始终包含所有历史表，不会丢失
+	// ══════════════════════════════════════════════════════
+	fmt.Println("\n【第一步】生成数据模型（Model / DAO）...")
 
-	jsonField := gen.FieldJSONTagWithNS(func(columnName string) (tagContent string) {
-		if strings.Contains(`deleted_at`, columnName) {
-			return "-"
-		}
-		return LowerCamelCase(Case2Camel(columnName)) // LowerCamelCase(columnName)
-	})
+	var modelTables []string // 最终传给 g.Execute() 的表集合
 
-	autoUpdateTimeField := gen.FieldGORMTag("updated_at", func(tag field.GormTag) field.GormTag {
-		return map[string][]string{
-			"column":  {"updated_at"},
-			"comment": {"更新时间"},
-		}
-	})
-	autoCreateTimeField := gen.FieldGORMTag("created_at", func(tag field.GormTag) field.GormTag {
-		return map[string][]string{
-			"column":  {"created_at"},
-			"comment": {"创建时间"},
-		}
-	})
-	softDeleteField := gen.FieldType("deleted_at", "gorm.DeletedAt")
-	fieldOpts := []gen.ModelOpt{jsonField, autoCreateTimeField, autoUpdateTimeField, softDeleteField}
+	if isSingleTable {
+		// ① 解析历史表
+		historyTables := parseTablesFromGenFile(cfg.OutPath)
+		fmt.Printf("  gen.go 中已记录 %d 张表: %v\n", len(historyTables), historyTables)
 
-	// ── 确定要处理的表名列表（Repo/API/VO/DTO/Mapper）────────────────────
-	var tableNames []string
-	if tableName != "" {
-		tableNames = []string{tableName}
+		// ② 合并
+		modelTables = mergeTableNames(historyTables, inputTable)
+		fmt.Printf("  合并后共 %d 张表（含本次 %q）: %v\n", len(modelTables), inputTable, modelTables)
 	} else {
-		var tables []string
-		if err := db.Raw("SHOW TABLES").Scan(&tables).Error; err != nil {
+		if err := db.Raw("SHOW TABLES").Scan(&modelTables).Error; err != nil {
 			return fmt.Errorf("获取表列表失败: %w", err)
 		}
-		if len(tables) == 0 {
+		if len(modelTables) == 0 {
 			return fmt.Errorf("数据库 %s 中没有找到任何表", cfg.Database)
 		}
-		tableNames = tables
-		fmt.Printf("共找到 %d 张表，开始生成所有表...\n", len(tableNames))
+		fmt.Printf("  全量模式，共 %d 张表\n", len(modelTables))
 	}
 
-	// ── 生成数据模型（始终覆盖，且始终包含数据库所有表）──────────
-	// 无论输入单张表还是全部表，gen.go 都必须包含数据库所有表，
-	// 否则每次只生成单张表会覆盖 gen.go 导致其他表的 DO 消失。
-	fmt.Println("\n【第一步】生成数据模型（Model）...")
-	var allTables []string
-	if err := db.Raw("SHOW TABLES").Scan(&allTables).Error; err != nil {
-		return fmt.Errorf("获取全量表列表失败: %w", err)
-	}
-	allModels := make([]interface{}, 0, len(allTables))
-	for _, tbl := range allTables {
+	// ③ 统一生成（含所有历史表 + 新表）
+	allModels := make([]interface{}, 0, len(modelTables))
+	for _, tbl := range modelTables {
 		allModels = append(allModels, g.GenerateModel(tbl, fieldOpts...))
 	}
 	g.ApplyBasic(allModels...)
 	g.Execute()
-	fmt.Println("数据模型生成完成。")
+	fmt.Println("  数据模型生成完成。")
 
-	// ── 创建输出目录 ──────────────────────────────────────────────
+	// ══════════════════════════════════════════════════════
+	// 【第二步】生成 Repo / API / VO / DTO / Mapper
+	//   单表模式：只对本次输入的表生成（其余已有文件自动跳过）
+	//   全量模式：对所有表生成
+	// ══════════════════════════════════════════════════════
 	ensureDir(cfg.RepoPath)
 	ensureDir(cfg.ApiPath)
 	ensureDir(cfg.VoPath)
 	ensureDir(cfg.DtoPath)
 	ensureDir(cfg.MapperPath)
 
-	// ── 逐张表生成 Repo / API / VO / DTO / Mapper（已存在的文件跳过）──────
-	fmt.Printf("\n【第二步】生成 Repo / API / VO / DTO / Mapper...\n")
-	for _, tbl := range tableNames {
+	var step2Tables []string
+	if isSingleTable {
+		step2Tables = []string{inputTable}
+	} else {
+		step2Tables = modelTables
+	}
+
+	fmt.Printf("\n【第二步】生成 Repo / API / VO / DTO / Mapper（共 %d 张表）...\n", len(step2Tables))
+	for _, tbl := range step2Tables {
 		fmt.Printf("\n─── 表: %s ───\n", tbl)
 		generateForTable(tbl, cfg, db,
-			repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
-			mapperTmplPath)
+			repoGenTmplPath, repoTmplPath,
+			apiTmplPath, voTmplPath, dtoTmplPath, mapperTmplPath)
 	}
 
 	fmt.Println("\n全部生成完成！")
