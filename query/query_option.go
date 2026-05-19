@@ -42,26 +42,20 @@ func Query() *QueryBuilder {
 }
 
 // Where 条件
-func (q *QueryBuilder) Where(
-	cond ...gen.Condition,
-) *QueryBuilder {
-
+func (q *QueryBuilder) Where(cond ...gen.Condition) *QueryBuilder {
 	q.option.Cond = append(
 		q.option.Cond,
 		cond...,
 	)
-
 	return q
 }
 
 // Order 排序
 func (q *QueryBuilder) Order(fields ...field.Expr) *QueryBuilder {
-
 	q.option.Order = append(
 		q.option.Order,
 		fields...,
 	)
-
 	return q
 }
 
@@ -115,9 +109,7 @@ func (q *QueryBuilder) Build() QueryOption {
 }
 
 // MergeQueryOptions 合并配置
-func MergeQueryOptions(
-	opts ...QueryOption,
-) QueryOption {
+func MergeQueryOptions(opts ...QueryOption) QueryOption {
 	var result QueryOption
 	for _, opt := range opts {
 		// Cond
