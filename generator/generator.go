@@ -796,16 +796,13 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		}
 	}
 
-	fmt.Println("【调试】cfg.ApiPath =", cfg.ApiPath)
 	// ── API .api（已存在跳过）
 	if cfg.ApiPath != "" {
 		// ── 生成 base.api（如果 ApiPath 存在且 base.api 不存在）──────
-		fmt.Println("开始base.api")
 		baseApiFile := filepath.Join(cfg.ApiPath, "base.api")
 		if _, err := os.Stat(baseApiFile); os.IsNotExist(err) {
 			// 从内嵌模板加载 base.api 内容
 			baseApiContent, ok := embeddedTemplates["base_api_template.txt"]
-			fmt.Println("获取到模板", baseApiContent, ok)
 			if !ok {
 				fmt.Printf("未找到 base_api_template.txt 内嵌模板\n")
 			} else {
