@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"text/template"
 
@@ -37,17 +36,15 @@ func findProjectRoot(startDir string) (string, error) {
 
 // resolveConfigPaths 将 Config 中所有相对路径（以 ./ 或 ../ 开头，或不含分隔符的短路径）
 // 解析为相对于项目根目录的绝对路径，保证无论从哪里运行都指向同一位置。
-// callerFile 是调用 Generate 的源文件的绝对路径（通过 runtime.Caller 获取）。
-func resolveConfigPaths(cfg *Config, callerFile string) error {
-	// 从调用方源文件出发，向上查找 go.mod
-	projectRoot, err := findProjectRoot(filepath.Dir(callerFile))
+func resolveConfigPaths(cfg *Config) error {
+	// 始终从当前工作目录向上查找 go.mod，确保无论从哪里运行都指向项目根目录
+	cwd, err := os.Getwd()
 	if err != nil {
-		// 兜底：从当前工作目录向上找
-		cwd, _ := os.Getwd()
-		projectRoot, err = findProjectRoot(cwd)
-		if err != nil {
-			return err
-		}
+		return fmt.Errorf("获取当前工作目录失败: %w", err)
+	}
+	projectRoot, err := findProjectRoot(cwd)
+	if err != nil {
+		return fmt.Errorf("查找项目根目录(go.mod)失败: %w", err)
 	}
 
 	resolve := func(p string) string {
@@ -960,14 +957,9 @@ func renderMapperTemplate(tmplPath string, data MapperTemplateData) (string, err
 }
 
 func Generate(cfg *Config) error {
-	// 通过 runtime.Caller 获取调用方（即用户 main.go）的源文件路径，
-	// 再向上查找 go.mod 确定项目根目录，将所有相对路径转换为绝对路径。
-	// 这样无论使用 go run、GoLand、还是编译后的二进制运行，路径始终一致。
-	_, callerFile, _, callerOk := runtime.Caller(1)
-	if !callerOk {
-		callerFile, _ = os.Getwd()
-	}
-	if err := resolveConfigPaths(cfg, callerFile); err != nil {
+	// 从当前工作目录向上查找 go.mod 确定项目根目录，
+	// 将所有相对路径转换为绝对路径，确保无论从哪里运行都指向同一位置。
+	if err := resolveConfigPaths(cfg); err != nil {
 		return fmt.Errorf("解析项目根目录失败: %w", err)
 	}
 
