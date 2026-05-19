@@ -445,46 +445,6 @@ func generateRepositoryFile(columns []ColumnInfo, modelName string, pkg string, 
 	return buf.String(), nil
 }
 
-func generateRepositoryInterfaceFile(columns []ColumnInfo, modelName string, pkg string, daoPath string, modelPath string, tmplPath string) (string, error) {
-	tmpl, err := loadTemplate(tmplPath)
-	if err != nil {
-		return "", fmt.Errorf("加载接口模板失败: %w", err)
-	}
-
-	columnData := make([]ColumnInfo, len(columns))
-	for i, col := range columns {
-		columnData[i] = ColumnInfo{
-			Name:      col.Name,
-			Type:      col.Type,
-			FieldName: Case2Camel(col.Name),
-			FieldType: getGoType(col.Type),
-			CanNull:   col.CanNull,
-			IsKey:     col.IsKey,
-			Comment:   col.Comment,
-		}
-	}
-
-	data := RepositoryTemplateData{
-		ModelName:       modelName,
-		ModelNameLower:  LowerCamelCase(modelName),
-		EntityName:      modelName + "Entity",
-		EntityNameLower: LowerCamelCase(modelName + "Entity"),
-		Package:         pkg,
-		DaoPath:         pkg + "/" + daoPath,
-		ModelPath:       pkg + "/" + modelPath,
-		ModelPkgName:    getLastPathSegment(modelPath),
-		Columns:         columnData,
-	}
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, data)
-	if err != nil {
-		return "", fmt.Errorf("渲染接口模板失败: %w", err)
-	}
-
-	return buf.String(), nil
-}
-
 func generateRepositoryExtFile(columns []ColumnInfo, modelName string, pkg string, daoPath string, modelPath string, tmplPath string) (string, error) {
 	tmpl, err := loadTemplate(tmplPath)
 	if err != nil {
@@ -522,44 +482,6 @@ func generateRepositoryExtFile(columns []ColumnInfo, modelName string, pkg strin
 		return "", fmt.Errorf("渲染扩展模板失败: %w", err)
 	}
 
-	return buf.String(), nil
-}
-
-func generateRawsqlGenFile(columns []ColumnInfo, modelName string, pkg string, daoPath string, modelPath string, rawsqlPkgPath string, tmplPath string) (string, error) {
-	tmpl, err := loadTemplate(tmplPath)
-	if err != nil {
-		return "", fmt.Errorf("加载 rawsql_gen 模板失败: %w", err)
-	}
-
-	columnData := make([]ColumnInfo, len(columns))
-	for i, col := range columns {
-		columnData[i] = ColumnInfo{
-			Name:      col.Name,
-			Type:      col.Type,
-			FieldName: Case2Camel(col.Name),
-			FieldType: getGoType(col.Type),
-			CanNull:   col.CanNull,
-			IsKey:     col.IsKey,
-			Comment:   col.Comment,
-		}
-	}
-
-	data := RepositoryTemplateData{
-		ModelName:      modelName,
-		ModelNameLower: LowerCamelCase(modelName),
-		EntityName:     modelName + "Entity",
-		Package:        pkg,
-		DaoPath:        pkg + "/" + daoPath,
-		ModelPath:      pkg + "/" + modelPath,
-		ModelPkgName:   getLastPathSegment(modelPath),
-		RawsqlPkgPath:  rawsqlPkgPath,
-		Columns:        columnData,
-	}
-
-	var buf bytes.Buffer
-	if err = tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("渲染 rawsql_gen 模板失败: %w", err)
-	}
 	return buf.String(), nil
 }
 
@@ -839,9 +761,8 @@ func writeFileAlways(filePath string, content string, label string) {
 
 // generateForTable 为单张表生成 Repo / API / VO / DTO / Mapper 文件
 func generateForTable(tbl string, cfg *Config, db *gorm.DB,
-	repoGenTmplPath, repoTmplPath, rawsqlGenTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
+	repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
 	mapperTmplPath string) {
-
 	columns, err := getTableColumns(db, tbl)
 	if err != nil {
 		fmt.Printf("[%s] 获取表结构失败，跳过: %v\n", tbl, err)
@@ -875,8 +796,30 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		}
 	}
 
+	fmt.Println("【调试】cfg.ApiPath =", cfg.ApiPath)
 	// ── API .api（已存在跳过）
 	if cfg.ApiPath != "" {
+		// ── 生成 base.api（如果 ApiPath 存在且 base.api 不存在）──────
+		fmt.Println("开始base.api")
+		baseApiFile := filepath.Join(cfg.ApiPath, "base.api")
+		if _, err := os.Stat(baseApiFile); os.IsNotExist(err) {
+			// 从内嵌模板加载 base.api 内容
+			baseApiContent, ok := embeddedTemplates["base_api_template.txt"]
+			fmt.Println("获取到模板", baseApiContent, ok)
+			if !ok {
+				fmt.Printf("未找到 base_api_template.txt 内嵌模板\n")
+			} else {
+				fmt.Printf("[DEBUG] base.api 内容长度 = %d\n", len(baseApiContent))
+				if err := os.WriteFile(baseApiFile, []byte(baseApiContent), 0644); err != nil {
+					fmt.Printf("写入 base.api 失败: %v\n", err)
+				} else {
+					fmt.Printf("已生成base.api: %s\n", baseApiFile)
+				}
+			}
+		} else {
+			fmt.Printf("已存在base.api，跳过: %s\n", baseApiFile)
+		}
+
 		apiContent, err := generateApiFile(tbl, columns, modelName, db, apiTmplPath)
 		if err != nil {
 			fmt.Printf("[%s] 生成 api 失败: %v\n", tbl, err)
@@ -900,25 +843,6 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 			} else {
 				fmt.Printf("已存在，跳过: %s\n", apiFileName)
 			}
-		}
-
-		// ── 生成 base.api（如果 ApiPath 存在且 base.api 不存在）──────
-		baseApiFile := filepath.Join(cfg.ApiPath, "base.api")
-		if _, err := os.Stat(baseApiFile); os.IsNotExist(err) {
-			// 从内嵌模板加载 base.api 内容
-			baseApiContent, ok := embeddedTemplates["base_api_template.txt"]
-			if !ok {
-				fmt.Printf("未找到 base_api_template.txt 内嵌模板\n")
-			} else {
-				fmt.Printf("[DEBUG] base.api 内容长度 = %d\n", len(baseApiContent))
-				if err := os.WriteFile(baseApiFile, []byte(baseApiContent), 0644); err != nil {
-					fmt.Printf("写入 base.api 失败: %v\n", err)
-				} else {
-					fmt.Printf("已生成: %s\n", baseApiFile)
-				}
-			}
-		} else {
-			fmt.Printf("已存在，跳过: %s\n", baseApiFile)
 		}
 	}
 
@@ -1047,7 +971,6 @@ func Generate(cfg *Config) error {
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
 	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
 	mapperTmplPath := filepath.Join(templateDir, "mapper_template.txt")
-	rawsqlGenTmplPath := filepath.Join(templateDir, "rawsql_gen_template.txt")
 
 	// 路径为空表示该功能未配置，保持空值，后续按空值判断是否生成
 
@@ -1148,7 +1071,7 @@ func Generate(cfg *Config) error {
 	for _, tbl := range tableNames {
 		fmt.Printf("\n─── 表: %s ───\n", tbl)
 		generateForTable(tbl, cfg, db,
-			repoGenTmplPath, repoTmplPath, rawsqlGenTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
+			repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath,
 			mapperTmplPath)
 	}
 
