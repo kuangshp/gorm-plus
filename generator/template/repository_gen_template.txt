@@ -97,45 +97,33 @@ func (r *default{{.ModelName}}Repository) buildTx(ctx context.Context, query []g
 	return tx
 }
 
-func (r *default{{.ModelName}}Repository) buildWrapperTx(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) dao.I{{.ModelName}}EntityDo {
+func (r *default{{.ModelName}}Repository) buildWrapperTx(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query []gormplus.QueryOption) dao.I{{.ModelName}}EntityDo {
 	tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
-	hasQuery := len(query) > 0
 
-	// 如果有 query option，在 wrapper 上设置 Cond / Select / Limit
-	if hasQuery {
-		q := query[0]
-		if len(q.Cond) > 0 {
-			for _, cond := range q.Cond {
-				tx.WhereIf(true, cond)
-			}
-		}
-		if len(q.Select) > 0 {
-			tx.Select(q.Select...)
-		}
-		if q.Limit != nil {
-			tx.Limit(*q.Limit)
-		}
-	}
-
-	// 用户自定义条件回调
-	if fn != nil {
-		fn(tx)
-	}
-
-	entityDo := tx.Apply()
-
-	// 应用 Order
-	if hasQuery {
-		q := query[0]
-		if len(q.Order) > 0 {
-			entityDo = entityDo.Order(q.Order...)
-		} else {
-			entityDo = entityDo.Order(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Desc())
-		}
-	} else {
-		entityDo = entityDo.Order(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Desc())
-	}
-
+    if fn != nil {
+        fn(tx)
+    }
+    entityDo := tx.Apply()
+    if len(query) > 0 {
+        q := query[0]
+        if len(q.Cond) > 0 {
+            entityDo = entityDo.Where(q.Cond...)
+        }
+        if len(q.Select) > 0 {
+            entityDo = entityDo.Select(q.Select...)
+        }
+        if len(q.OmitFields) > 0 {
+            entityDo = entityDo.Omit(q.OmitFields...)
+        }
+        if len(q.Order) > 0 {
+            entityDo = entityDo.Order(q.Order...)
+        } else {
+            entityDo = entityDo.Order(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Desc())
+        }
+        if q.Limit != nil {
+            entityDo = entityDo.Limit(*q.Limit)
+        }
+    }
 	return entityDo
 }
 
