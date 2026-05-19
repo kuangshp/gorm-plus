@@ -242,16 +242,18 @@ type VoTemplateData struct {
 }
 
 type RepositoryTemplateData struct {
-	ModelName       string
-	ModelNameLower  string
-	EntityName      string
-	EntityNameLower string
-	Package         string
-	DaoPath         string
-	ModelPath       string
-	ModelPkgName    string // model包的名称，如 "entity"
-	RawsqlPkgPath   string // rawsql 包的完整 import 路径，如 "gin-admin-api/internal/dal/rawsql"
-	Columns         []ColumnInfo
+	ModelName         string
+	ModelNameLower    string
+	EntityName        string
+	EntityNameLower   string
+	Package           string
+	DaoPath           string
+	ModelPath         string
+	ModelPkgName      string // model包的名称，如 "entity"
+	RawsqlPkgPath     string // rawsql 包的完整 import 路径，如 "gin-admin-api/internal/dal/rawsql"
+	Columns           []ColumnInfo
+	PrimaryKeyField   string // 主键字段名，如 "ID" 或 "UserId"
+	PrimaryKeyColumn  string // 主键原始列名，如 "id" 或 "user_id"
 }
 
 // MapperTemplateData mapper 三个模板共用同一份数据
@@ -405,16 +407,29 @@ func generateRepositoryFile(columns []ColumnInfo, modelName string, pkg string, 
 		}
 	}
 
+	// 计算主键字段
+	primaryKeyField := "ID"
+	primaryKeyColumn := "id"
+	for _, col := range columnData {
+		if col.IsKey {
+			primaryKeyField = col.FieldName
+			primaryKeyColumn = col.Name
+			break
+		}
+	}
+
 	data := RepositoryTemplateData{
-		ModelName:       modelName,
-		ModelNameLower:  LowerCamelCase(modelName),
-		EntityName:      modelName + "Entity",
-		EntityNameLower: LowerCamelCase(modelName + "Entity"),
-		Package:         pkg,
-		DaoPath:         pkg + "/" + daoPath,
-		ModelPath:       pkg + "/" + modelPath,
-		ModelPkgName:    getLastPathSegment(modelPath),
-		Columns:         columnData,
+		ModelName:         modelName,
+		ModelNameLower:    LowerCamelCase(modelName),
+		EntityName:        modelName + "Entity",
+		EntityNameLower:   LowerCamelCase(modelName + "Entity"),
+		Package:           pkg,
+		DaoPath:           pkg + "/" + daoPath,
+		ModelPath:         pkg + "/" + modelPath,
+		ModelPkgName:      getLastPathSegment(modelPath),
+		Columns:           columnData,
+		PrimaryKeyField:   primaryKeyField,
+		PrimaryKeyColumn:  primaryKeyColumn,
 	}
 
 	var buf bytes.Buffer
