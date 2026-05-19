@@ -55,10 +55,10 @@ type iDefault{{.ModelName}}Repository interface {
 	FindById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// FindByIdList 根据ID列表获取
 	FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64, orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// FindOneByCondition 根据原生条件获取单条
-	FindOneByCondition(ctx context.Context, cond ...gen.Condition) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// FindOne 根据wrapper条件获取单条
-	FindOne(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindOne 根据原生条件获取单条
+	FindOne(ctx context.Context, cond ...gen.Condition) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindOneWrapper 根据wrapper条件获取单条
+	FindOneWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// Exists 根据原生条件判断是否存在
 	Exists(ctx context.Context, cond ...gen.Condition) (bool, error)
 	// ExistsByWrapper 根据wrapper条件判断是否存在
@@ -274,7 +274,7 @@ func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.M
 	return tx.Find()
 }
 
-func (r *default{{.ModelName}}Repository) FindOneByCondition(ctx context.Context, cond ...gen.Condition) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+func (r *default{{.ModelName}}Repository) FindOne(ctx context.Context, cond ...gen.Condition) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(cond) > 0 {
 		tx = tx.Where(cond...)
@@ -282,7 +282,7 @@ func (r *default{{.ModelName}}Repository) FindOneByCondition(ctx context.Context
 	return tx.First()
 }
 
-func (r *default{{.ModelName}}Repository) FindOne(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+func (r *default{{.ModelName}}Repository) FindOneWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
 	tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
 	if fn != nil {
 		fn(tx)
