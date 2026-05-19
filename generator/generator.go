@@ -75,6 +75,9 @@ var embeddedApiTemplate string
 //go:embed template/dto_template.txt
 var embeddedDtoTemplate string
 
+//go:embed template/base_api_template.txt
+var embeddedBaseApiTemplate string
+
 //go:embed template/repository_gen_template.txt
 var embeddedRepoGenTemplate string
 
@@ -91,6 +94,7 @@ var embeddedMapperTemplate string
 var embeddedTemplates = map[string]string{
 	"api_template.txt":            embeddedApiTemplate,
 	"dto_template.txt":            embeddedDtoTemplate,
+	"base_api_template.txt":       embeddedBaseApiTemplate,
 	"repository_gen_template.txt": embeddedRepoGenTemplate,
 	"repository_template.txt":     embeddedRepoTemplate,
 	"vo_template.txt":             embeddedVoTemplate,
@@ -242,18 +246,18 @@ type VoTemplateData struct {
 }
 
 type RepositoryTemplateData struct {
-	ModelName         string
-	ModelNameLower    string
-	EntityName        string
-	EntityNameLower   string
-	Package           string
-	DaoPath           string
-	ModelPath         string
-	ModelPkgName      string // model包的名称，如 "entity"
-	RawsqlPkgPath     string // rawsql 包的完整 import 路径，如 "gin-admin-api/internal/dal/rawsql"
-	Columns           []ColumnInfo
-	PrimaryKeyField   string // 主键字段名，如 "ID" 或 "UserId"
-	PrimaryKeyColumn  string // 主键原始列名，如 "id" 或 "user_id"
+	ModelName        string
+	ModelNameLower   string
+	EntityName       string
+	EntityNameLower  string
+	Package          string
+	DaoPath          string
+	ModelPath        string
+	ModelPkgName     string // model包的名称，如 "entity"
+	RawsqlPkgPath    string // rawsql 包的完整 import 路径，如 "gin-admin-api/internal/dal/rawsql"
+	Columns          []ColumnInfo
+	PrimaryKeyField  string // 主键字段名，如 "ID" 或 "UserId"
+	PrimaryKeyColumn string // 主键原始列名，如 "id" 或 "user_id"
 }
 
 // MapperTemplateData mapper 三个模板共用同一份数据
@@ -419,17 +423,17 @@ func generateRepositoryFile(columns []ColumnInfo, modelName string, pkg string, 
 	}
 
 	data := RepositoryTemplateData{
-		ModelName:         modelName,
-		ModelNameLower:    LowerCamelCase(modelName),
-		EntityName:        modelName + "Entity",
-		EntityNameLower:   LowerCamelCase(modelName + "Entity"),
-		Package:           pkg,
-		DaoPath:           pkg + "/" + daoPath,
-		ModelPath:         pkg + "/" + modelPath,
-		ModelPkgName:      getLastPathSegment(modelPath),
-		Columns:           columnData,
-		PrimaryKeyField:   primaryKeyField,
-		PrimaryKeyColumn:  primaryKeyColumn,
+		ModelName:        modelName,
+		ModelNameLower:   LowerCamelCase(modelName),
+		EntityName:       modelName + "Entity",
+		EntityNameLower:  LowerCamelCase(modelName + "Entity"),
+		Package:          pkg,
+		DaoPath:          pkg + "/" + daoPath,
+		ModelPath:        pkg + "/" + modelPath,
+		ModelPkgName:     getLastPathSegment(modelPath),
+		Columns:          columnData,
+		PrimaryKeyField:  primaryKeyField,
+		PrimaryKeyColumn: primaryKeyColumn,
 	}
 
 	var buf bytes.Buffer
@@ -896,6 +900,25 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 			} else {
 				fmt.Printf("已存在，跳过: %s\n", apiFileName)
 			}
+		}
+
+		// ── 生成 base.api（如果 ApiPath 存在且 base.api 不存在）──────
+		baseApiFile := filepath.Join(cfg.ApiPath, "base.api")
+		if _, err := os.Stat(baseApiFile); os.IsNotExist(err) {
+			// 从内嵌模板加载 base.api 内容
+			baseApiContent, ok := embeddedTemplates["base_api_template.txt"]
+			if !ok {
+				fmt.Printf("未找到 base_api_template.txt 内嵌模板\n")
+			} else {
+				fmt.Printf("[DEBUG] base.api 内容长度 = %d\n", len(baseApiContent))
+				if err := os.WriteFile(baseApiFile, []byte(baseApiContent), 0644); err != nil {
+					fmt.Printf("写入 base.api 失败: %v\n", err)
+				} else {
+					fmt.Printf("已生成: %s\n", baseApiFile)
+				}
+			}
+		} else {
+			fmt.Printf("已存在，跳过: %s\n", baseApiFile)
 		}
 	}
 

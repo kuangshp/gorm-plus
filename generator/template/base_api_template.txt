@@ -1,0 +1,26 @@
+// PageBaseResp 基础分页
+type PageBaseResp {
+    Total      int64 `json:"total"` // 总条数
+    PageSize   int64 `json:"pageSize"` // 当前条数
+    PageNumber int64 `json:"pageNumber"` // 当前页数
+}
+
+// Base分页Req 基础请求
+type PageBaseReq {
+    PageSize   int64 `json:"pageSize,optional,default=10"` // 当前条数
+    PageNumber int64 `json:"pageNumber,optional,default=1"` // 当前页数
+}
+
+// 主键id
+type IdReq {
+    Id int64 `path:"id" validate:"required,number,gte=1"` // 主键id
+}
+
+type IdBodyReq {
+    Id int64 `json:"id" validate:"required,number,gte=1"` // 主键id
+}
+
+type PageFormReq {
+    PageNumber int64 `form:"pageNumber"`
+    PageSize   int64 `form:"pageSize"`
+}
