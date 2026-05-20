@@ -309,7 +309,7 @@ func TestQuery_LoaderError(t *testing.T) {
 
 func TestQuery_NotInitialized(t *testing.T) {
 	// 清空全局实例
-	defaultDAL = nil
+	defaultDAL.Store(nil)
 
 	defer func() {
 		if r := recover(); r == nil {

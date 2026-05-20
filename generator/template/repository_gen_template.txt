@@ -73,37 +73,38 @@ type iDefault{{.ModelName}}Repository interface {
 //
 // 缓存策略总览（统一以 "{{.TableName}}.方法名" 为 fnName）：
 //
-//	写操作          失效范围
-//	──────────     ─────────────────────────────────────────────────────────
-//	Create / Batch  FindList / FindPage / Count / Exists（前缀失效）
-//	Update          FindList / FindPage（前缀失效）+ FindById（精确失效）
-//	Delete          FindList / FindPage / Count / Exists（前缀失效）+ FindById（精确失效）
-//	条件 Update/Delete  整张表（按表名前缀失效）
+//	写操作              失效范围
+//	──────────         ─────────────────────────────────────────────────────────
+//	Create / Update     invalidateWriteCaches：清 List/Page/Count/Exists 全部前缀
+//	  / Delete (by id)  + 单条 FindById（精确）
+//	条件 Update/Delete  invalidateAllTableCaches：整张表（按表名前缀失效）
 //
-// 为什么 Update 不清 Count / Exists：
-//   仅修改字段不会改变记录数和"是否存在"的结果（除非 Update 影响了 Where 条件，
-//   这种边缘情况业务方可手动调用 SFInvalidatePrefix）。
+// 设计说明：
+//   - 三类写操作的 List/Aggregate 失效范围相同，合并成一个函数，避免 Redis 多次 SCAN
+//   - 用 SFInvalidatePrefixes 批量接口：Redis 场景下从 11 次 SCAN 降为 1 次 pipeline
+//   - 关于 Update 清 Count/Exists：软删除场景（deleted_at 字段更新）走的就是 Update，
+//     若不清 Count/Exists 会导致"删了但 Count 还是旧值"，所以宁可保守失效
 
-// invalidateListCaches 失效列表/分页类缓存（用于 Update）。
-func (r *default{{.ModelName}}Repository) invalidateListCaches() {
-	gormplus.SFInvalidatePrefix("{{.TableName}}.FindList")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.FindListByWrapper")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.FindPage")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.FindPageByWrapper")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.FindByIdList")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.FindOne")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.FindOneWrapper")
-}
-
-// invalidateAggregateCaches 失效聚合类缓存（用于 Create / Delete）。
-func (r *default{{.ModelName}}Repository) invalidateAggregateCaches() {
-	gormplus.SFInvalidatePrefix("{{.TableName}}.Count")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.CountByWrapper")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.Exists")
-	gormplus.SFInvalidatePrefix("{{.TableName}}.ExistsByWrapper")
+// invalidateWriteCaches 失效所有受写操作影响的缓存（List / Page / Count / Exists + 衍生方法）。
+// 用于 Create / Update / Delete 三类已知 ID 的写操作。
+func (r *default{{.ModelName}}Repository) invalidateWriteCaches() {
+	gormplus.SFInvalidatePrefixes([]string{
+		"{{.TableName}}.FindList",
+		"{{.TableName}}.FindListByWrapper",
+		"{{.TableName}}.FindPage",
+		"{{.TableName}}.FindPageByWrapper",
+		"{{.TableName}}.FindByIdList",
+		"{{.TableName}}.FindOne",
+		"{{.TableName}}.FindOneWrapper",
+		"{{.TableName}}.Count",
+		"{{.TableName}}.CountByWrapper",
+		"{{.TableName}}.Exists",
+		"{{.TableName}}.ExistsByWrapper",
+	})
 }
 
 // invalidateAllTableCaches 失效整张表所有缓存（用于条件 Update / Delete，无法预知影响的 ID）。
+// 包括 FindById 在内的所有方法都会被清掉。
 func (r *default{{.ModelName}}Repository) invalidateAllTableCaches() {
 	gormplus.SFInvalidatePrefix("{{.TableName}}.")
 }
@@ -176,8 +177,7 @@ func (r *default{{.ModelName}}Repository) Create(ctx context.Context, m *{{.Mode
 	err := tx.Create(m)
 	if err == nil {
 		// 新增：列表/分页 + 数量/存在性缓存全部失效
-		r.invalidateListCaches()
-		r.invalidateAggregateCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -189,8 +189,7 @@ func (r *default{{.ModelName}}Repository) CreateTx(ctx context.Context, daoTx *d
 	}
 	err := tx.Create(m)
 	if err == nil {
-		r.invalidateListCaches()
-		r.invalidateAggregateCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -202,8 +201,7 @@ func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*
 	}
 	err := tx.CreateInBatches(m, len(m))
 	if err == nil {
-		r.invalidateListCaches()
-		r.invalidateAggregateCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -215,8 +213,7 @@ func (r *default{{.ModelName}}Repository) CreateBatchTx(ctx context.Context, dao
 	}
 	err := tx.CreateInBatches(m, len(m))
 	if err == nil {
-		r.invalidateListCaches()
-		r.invalidateAggregateCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -226,8 +223,7 @@ func (r *default{{.ModelName}}Repository) DeleteById(ctx context.Context, {{.Mod
 	if err == nil {
 		// 删除：单条精确失效 + 列表/分页前缀失效 + 数量/存在性前缀失效
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
-		r.invalidateListCaches()
-		r.invalidateAggregateCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -236,8 +232,7 @@ func (r *default{{.ModelName}}Repository) DeleteByIdTx(ctx context.Context, daoT
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).Delete()
 	if err == nil {
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
-		r.invalidateListCaches()
-		r.invalidateAggregateCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -248,8 +243,7 @@ func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{
 		for _, id := range {{.ModelNameLower}}Ids {
 			gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", id))
 		}
-		r.invalidateListCaches()
-		r.invalidateAggregateCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -260,8 +254,7 @@ func (r *default{{.ModelName}}Repository) DeleteByIdListTx(ctx context.Context, 
 		for _, id := range {{.ModelNameLower}}Ids {
 			gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", id))
 		}
-		r.invalidateListCaches()
-		r.invalidateAggregateCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -320,7 +313,7 @@ func (r *default{{.ModelName}}Repository) UpdateById(ctx context.Context, {{.Mod
 	if err == nil {
 		// 修改：单条精确失效 + 列表/分页前缀失效（数量/存在性一般不受影响）
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
-		r.invalidateListCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -329,7 +322,7 @@ func (r *default{{.ModelName}}Repository) UpdateByIdTx(ctx context.Context, daoT
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).UpdateSimple(columns...)
 	if err == nil {
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
-		r.invalidateListCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -340,7 +333,7 @@ func (r *default{{.ModelName}}Repository) UpdateMapById(ctx context.Context, {{.
 		Updates(data)
 	if err == nil {
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
-		r.invalidateListCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }
@@ -351,7 +344,7 @@ func (r *default{{.ModelName}}Repository) UpdateMapByIdTx(ctx context.Context, d
 		Updates(data)
 	if err == nil {
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
-		r.invalidateListCaches()
+		r.invalidateWriteCaches()
 	}
 	return err
 }

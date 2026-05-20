@@ -211,6 +211,64 @@ func SFInvalidatePrefix(fnName string) {
 	sf.SFInvalidatePrefix(fnName)
 }
 
+// SFInvalidatePrefixes 批量按前缀失效缓存（一次调用清多个 fnName 的缓存）。
+//
+// 适用场景：写操作后需要一次性失效多个前缀。比如 Update 操作要清掉
+// FindList / FindPage / Count / Exists 等多个前缀的缓存，用本函数比多次单独调用
+// SFInvalidatePrefix 性能好得多——Redis 场景下从 N 次 SCAN 降为 1 次 pipeline。
+//
+// 执行优先级：
+//   - 缓存实现了 SFCachePrefixBatchDeleter：走批量接口（最快）
+//   - 缓存只实现了 SFCachePrefixDeleter：自动 fallback 为循环调用
+//   - 都没实现：静默无操作
+//
+// 安全校验：每个 fnName 都过和 SFInvalidatePrefix 一样的过滤规则。
+//
+// 示例（在 service 层批量失效）：
+//
+//	gormplus.SFInvalidatePrefixes([]string{
+//	    "sys_user.FindList",
+//	    "sys_user.FindPage",
+//	    "sys_user.Count",
+//	    "sys_user.Exists",
+//	})
+func SFInvalidatePrefixes(fnNames []string) {
+	sf.SFInvalidatePrefixes(fnNames)
+}
+
+// SFCachePrefixBatchDeleter 可选接口，支持批量按前缀删除 key。
+// Redis 等外部缓存实现此接口可大幅减少 RTT（用 pipeline 一次处理多个前缀）。
+// 内置 MemoryCache 已实现，开箱即用。
+//
+// 详细说明和 Redis 实现示例见 sf.SFCachePrefixBatchDeleter。
+type SFCachePrefixBatchDeleter = sf.SFCachePrefixBatchDeleter
+
+// SetCacheUnwrapErrorHandler 注入缓存反序列化失败钩子。
+//
+// 当 SF/SFWithTTL 取到缓存但还原成业务类型失败时（json.Unmarshal 报错 / 类型断言失败），
+// 框架默认行为是降级到 fn() 重新查 DB，**对业务透明**。这意味着缓存可能悄悄失效，
+// 生产环境难以察觉。注入此钩子可以监控这类异常：
+//
+//	gormplus.SetCacheUnwrapErrorHandler(func(key string, err error) {
+//	    zap.L().Warn("cache unwrap failed",
+//	        zap.String("key", key),
+//	        zap.Error(err),
+//	    )
+//	    metrics.CacheUnwrapErrors.Inc()
+//	})
+//
+// 触发场景：
+//   - Redis 数据格式损坏（手动改过、跨版本结构变更）
+//   - 缓存里存的类型和业务期望类型不匹配（极少见，通常是 bug）
+//
+// 注意：钩子可能在高频路径执行，实现要尽量快、不阻塞、不 panic。
+// 钩子 panic 会被框架吞掉，不影响主流程。
+//
+// 传 nil 可清除已注入的钩子。
+func SetCacheUnwrapErrorHandler(fn func(key string, err error)) {
+	sf.OnUnwrapError = fn
+}
+
 // StopSFCache 统一关闭入口，应在应用退出时调用（推荐 defer）。
 //
 // 行为：

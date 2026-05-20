@@ -92,6 +92,43 @@ type SFCachePrefixDeleter interface {
 	DelByPrefix(prefix string)
 }
 
+// SFCachePrefixBatchDeleter 可选接口：批量按前缀删除 key（性能优化）。
+//
+// 适用场景：写操作后需要一次性失效多个前缀（如 generator 模板里 Update 操作
+// 要清掉 FindList / FindPage / Count / Exists 等 7 个前缀的缓存）。
+//
+// 单次 SFInvalidatePrefix 在 Redis 场景下会触发独立的 SCAN，
+// 一张表 100 QPS 写入就是 700 次 SCAN/秒，对 Redis 压力很大。
+// 实现此接口后框架会用 1 次 pipeline 处理多个前缀，减少 RTT。
+//
+// 优先级：
+//   - 实现 SFCachePrefixBatchDeleter：批量调用走此接口（推荐）
+//   - 只实现 SFCachePrefixDeleter：框架自动 fallback 为循环调用
+//   - 都没实现：批量调用静默无操作
+//
+// Redis pipeline 实现示例：
+//
+//	func (c *RedisSFCache) DelByPrefixes(prefixes []string) {
+//	    ctx := context.Background()
+//	    pipe := c.rdb.Pipeline()
+//	    for _, prefix := range prefixes {
+//	        var cursor uint64
+//	        for {
+//	            keys, next, err := c.rdb.Scan(ctx, cursor, c.prefix+prefix+"*", 500).Result()
+//	            if err != nil { break }
+//	            if len(keys) > 0 { pipe.Del(ctx, keys...) }
+//	            cursor = next
+//	            if cursor == 0 { break }
+//	        }
+//	    }
+//	    _, _ = pipe.Exec(ctx)
+//	}
+//
+// 内置 MemoryCache 也实现了此接口（一次扫描处理所有前缀，比循环 N 次快 N 倍）。
+type SFCachePrefixBatchDeleter interface {
+	DelByPrefixes(prefixes []string)
+}
+
 // SFCacheCloser 可选接口：缓存资源释放能力。
 // 实现此接口后，StopSFCache 会自动调用 Close()，统一关闭入口。
 //
@@ -158,6 +195,45 @@ type SFCacheCloser interface {
 //	    c.rdb.Del(context.Background(), c.prefix+key)
 //	}
 type RawValue []byte
+
+// ── 观测性：缓存反序列化失败钩子 ────────────────────────────────
+
+// OnUnwrapError 当 SFWithTTL 还原缓存值失败时被调用（缓存命中但反序列化/类型断言失败）。
+//
+// 触发场景：
+//   - Redis 里数据格式损坏（手动改过、跨版本结构变更、序列化器不一致）
+//   - 缓存里存的类型和业务期望的类型不匹配（极少见，通常是 bug）
+//
+// 默认行为：err 不为 nil 时，框架会降级到 fn() 重新查 DB，**对业务透明**。
+// 但这意味着"缓存悄悄失效"，生产排查困难。注入此钩子可以：
+//   - 上报 metrics（grafana 看板告警）
+//   - 打日志（zap.Warn 让 ELK 能搜到）
+//   - 触发缓存清理（Redis DEL 掉坏数据避免重复触发）
+//
+// 注入示例：
+//
+//	sf.OnUnwrapError = func(key string, err error) {
+//	    zap.L().Warn("cache unwrap failed",
+//	        zap.String("key", key),
+//	        zap.Error(err),
+//	    )
+//	    metrics.CacheUnwrapErrors.Inc()
+//	}
+//
+// 注意：此钩子可能在高频路径执行，实现要尽量快、不阻塞、不 panic。
+var OnUnwrapError func(key string, err error)
+
+// reportUnwrapError 安全调用 OnUnwrapError，防止用户钩子 panic 影响主流程。
+func reportUnwrapError(key string, err error) {
+	if OnUnwrapError == nil || err == nil {
+		return
+	}
+	defer func() {
+		// 用户钩子 panic 不能影响业务，直接吞掉
+		_ = recover()
+	}()
+	OnUnwrapError(key, err)
+}
 
 // ── 全局缓存注册 ──────────────────────────────────────────────
 
@@ -321,6 +397,27 @@ func (c *MemoryCache) DelByPrefix(prefix string) {
 	})
 }
 
+// DelByPrefixes 批量删除：一次 Range 扫描处理所有前缀，避免 N 次扫描。
+// 实现 SFCachePrefixBatchDeleter 接口。
+func (c *MemoryCache) DelByPrefixes(prefixes []string) {
+	if len(prefixes) == 0 {
+		return
+	}
+	c.m.Range(func(k, _ any) bool {
+		ks, ok := k.(string)
+		if !ok {
+			return true
+		}
+		for _, p := range prefixes {
+			if strings.HasPrefix(ks, p) {
+				c.m.Delete(k)
+				return true // 命中一个前缀即可删除，无需再匹配其他前缀
+			}
+		}
+		return true
+	})
+}
+
 // Stop 停止后台过期清理 goroutine，应在应用退出时调用。
 func (c *MemoryCache) Stop() {
 	c.cancel()
@@ -458,6 +555,66 @@ func SFInvalidatePrefix(fnName string) {
 	// 未实现 SFCachePrefixDeleter 时静默忽略（保持向后兼容，业务可继续运行）。
 }
 
+// SFInvalidatePrefixes 批量按前缀失效缓存（一次调用清多个 fnName 的缓存）。
+//
+// 适用场景：generator 模板的 invalidateListCaches 等批量失效逻辑。
+// 一张表 Update 操作通常要清 FindList / FindPage / Count / Exists 等 7 个前缀，
+// 用本函数比 7 次 SFInvalidatePrefix 性能好得多——尤其是 Redis 场景下从 7 次 SCAN
+// 降为 1 次 pipeline。
+//
+// 执行优先级：
+//   - 缓存实现了 SFCachePrefixBatchDeleter：走批量接口（最快）
+//   - 缓存只实现了 SFCachePrefixDeleter：自动 fallback 为循环调用
+//   - 都没实现：静默无操作
+//
+// 安全校验：和 SFInvalidatePrefix 一致，每个 fnName 都过相同的过滤规则。
+//
+// 示例（generator 模板内使用）：
+//
+//	sf.SFInvalidatePrefixes([]string{
+//	    "sys_user.FindList",
+//	    "sys_user.FindListByWrapper",
+//	    "sys_user.FindPage",
+//	    "sys_user.FindPageByWrapper",
+//	    "sys_user.Count",
+//	    "sys_user.Exists",
+//	})
+func SFInvalidatePrefixes(fnNames []string) {
+	if len(fnNames) == 0 {
+		return
+	}
+
+	// 按相同规则过滤可疑前缀，并拼上 keyPrefix + 尾点号
+	prefixes := make([]string, 0, len(fnNames))
+	for _, fn := range fnNames {
+		if fn == "" {
+			continue
+		}
+		if len(fn) < 3 && !strings.Contains(fn, ".") {
+			continue
+		}
+		prefixes = append(prefixes, keyPrefix+fn+":")
+	}
+	if len(prefixes) == 0 {
+		return
+	}
+
+	c := getCache()
+
+	// 优先：批量接口
+	if bd, ok := c.(SFCachePrefixBatchDeleter); ok {
+		bd.DelByPrefixes(prefixes)
+		return
+	}
+
+	// 兜底：循环调用单个接口（Redis 用户没实现批量时的降级路径）
+	if pd, ok := c.(SFCachePrefixDeleter); ok {
+		for _, p := range prefixes {
+			pd.DelByPrefix(p)
+		}
+	}
+}
+
 // SFWithTTL 通用 singleflight + 缓存封装，手动指定缓存时长（底层实现）。
 //
 // 类型安全机制：
@@ -476,8 +633,11 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 	// 步骤 1：缓存快速路径
 	if ttl > 0 {
 		if cached, ok := cache.Get(key); ok {
-			if result, ok := unwrapCached[T](cached); ok {
+			if result, uerr := unwrapCached[T](cached); uerr == nil {
 				return result, nil
+			} else {
+				// 命中缓存但还原失败：上报观测钩子（默认行为是降级到 DB，业务无感知）
+				reportUnwrapError(key, uerr)
 			}
 		}
 	}
@@ -507,11 +667,11 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 	}
 
 	// 步骤 3：类型还原（支持 RawValue 反序列化）
-	result, ok := unwrapCached[T](raw)
-	if !ok {
+	result, uerr := unwrapCached[T](raw)
+	if uerr != nil {
+		reportUnwrapError(key, uerr)
 		var zero T
-		return zero, fmt.Errorf("SF: 类型还原失败 key=%s, 期望 %s 实际 %s",
-			key, reflect.TypeOf(zero), reflect.TypeOf(raw))
+		return zero, fmt.Errorf("SF: 类型还原失败 key=%s: %w", key, uerr)
 	}
 	return result, nil
 }
@@ -522,27 +682,33 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 //  1. 内存缓存：raw 本身就是 T（或可断言为 T），直接断言成功返回
 //  2. 外部缓存（Redis 等）：raw 是 RawValue（已序列化字节），用 json.Unmarshal 还原
 //
+// 返回值：
+//   - (T, nil)         还原成功
+//   - (zero, err)      还原失败（json 反序列化报错 / 类型断言失败），err 描述具体原因
+//
 // 注意：RawValue 必须在断言 T 之前判断——如果 T 恰好是 []byte，会优先走 RawValue 分支
 // 反序列化（json 把 []byte 当 base64 字符串处理），这是符合预期的：业务上 T=[]byte
 // 的缓存值本来就该自己处理序列化。
-func unwrapCached[T any](raw any) (T, bool) {
+func unwrapCached[T any](raw any) (T, error) {
 	var zero T
 
 	// 优先识别 RawValue（Redis 等外部缓存的协议）
 	if rv, isRaw := raw.(RawValue); isRaw {
 		var t T
 		if err := json.Unmarshal(rv, &t); err != nil {
-			return zero, false
+			return zero, fmt.Errorf("RawValue json.Unmarshal 失败 (期望 %s): %w",
+				reflect.TypeOf(zero), err)
 		}
-		return t, true
+		return t, nil
 	}
 
 	// 普通类型断言（内存缓存路径）
 	if t, ok := raw.(T); ok {
-		return t, true
+		return t, nil
 	}
 
-	return zero, false
+	return zero, fmt.Errorf("类型断言失败，期望 %s 实际 %s",
+		reflect.TypeOf(zero), reflect.TypeOf(raw))
 }
 
 // ================== cache key 构建 ==================

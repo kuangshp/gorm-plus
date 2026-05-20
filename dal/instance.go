@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -29,8 +30,12 @@ type DAL struct {
 	stopCh   chan struct{}
 }
 
-// 默认全局实例，通过 New 初始化后自动设置
-var defaultDAL *DAL
+// 默认全局实例（atomic 保护，避免 NewDal / resolve 并发时的 data race）。
+//
+// 设计选择：用 atomic.Pointer 而非 sync.RWMutex，因为 resolve 是热路径
+// （每次 Query / Exec 都会调一次），atomic load 是单条 CPU 指令、零锁竞争，
+// 比 RWMutex 的 RLock/RUnlock 快约 5 倍。
+var defaultDAL atomic.Pointer[DAL]
 
 // ctxKey 用于在 context 中存取 DAL 实例（多数据源场景）
 type ctxKey struct{}
@@ -74,7 +79,7 @@ func NewDal(
 	}
 
 	d := newDAL(&singleDBProvider{db: db}, loader, opts...)
-	defaultDAL = d
+	defaultDAL.Store(d)
 
 	return d, nil
 }
@@ -182,11 +187,11 @@ func resolve(ctx context.Context) *DAL {
 		return d
 	}
 
-	if defaultDAL == nil {
+	d := defaultDAL.Load()
+	if d == nil {
 		panic("dal: 未初始化，请先调用 dal.NewDal()")
 	}
-
-	return defaultDAL
+	return d
 }
 
 // Preload 预热 SQL 文件缓存（使用默认全局实例）
@@ -207,12 +212,13 @@ func resolve(ctx context.Context) *DAL {
 //	    log.Fatal("SQL 预热失败:", err)
 //	}
 func Preload(files ...string) error {
-	if defaultDAL == nil {
+	d := defaultDAL.Load()
+	if d == nil {
 		panic("dal: 未初始化，请先调用 dal.NewDal()")
 	}
 
 	for _, file := range files {
-		if _, err := defaultDAL.loader.Load(file); err != nil {
+		if _, err := d.loader.Load(file); err != nil {
 			return err
 		}
 	}
