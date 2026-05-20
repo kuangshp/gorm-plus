@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,8 +27,9 @@ import (
 //     在纯 singleflight 基础上增加缓存，TTL 内的重复请求直接返回缓存。
 //     缓存实现由用户决定：默认内存缓存，也可注入 Redis / Memcached 等。
 //
-//  3. 【主动失效】SFInvalidate
-//     写操作后主动清除对应缓存，避免数据不一致。
+//  3. 【主动失效】SFInvalidate / SFInvalidatePrefix
+//     - SFInvalidate         精确失效：写操作后清除指定 args 的缓存。
+//     - SFInvalidatePrefix   前缀失效：清除某方法/某表下所有缓存（list/page/count/exists 写场景）。
 //
 // ── 缓存接口注册 ──────────────────────────────────────────────
 //
@@ -46,9 +48,12 @@ import (
 // DefaultSFTTL SF 不传 ttl 时使用的默认缓存时长（5 分钟）。
 const DefaultSFTTL = 5 * time.Minute
 
+// keyPrefix 全局 cache key 前缀，统一便于 Redis 实现按前缀扫描。
+const keyPrefix = "sf:"
+
 // ================== 缓存接口 ==================
 
-// SFCache 可插拔缓存接口。
+// SFCache 可插拔缓存基础接口（保持向后兼容，不强制实现 DelByPrefix）。
 // 实现此接口后通过 RegisterCache 注入，替换默认的内存缓存。
 //
 // 接口约定：
@@ -56,39 +61,59 @@ const DefaultSFTTL = 5 * time.Minute
 //   - Set：存储 key-value，ttl 后自动过期
 //   - Del：主动删除指定 key（供 SFInvalidate 使用）
 //
-// Redis 实现示例：
-//
-//	type RedisSFCache struct {
-//	    rdb *redis.Client
-//	}
-//
-//	func (c *RedisSFCache) Get(key string) (any, bool) {
-//	    val, err := c.rdb.Get(context.Background(), key).Bytes()
-//	    if err != nil {
-//	        return nil, false
-//	    }
-//	    var result any
-//	    if err := json.Unmarshal(val, &result); err != nil {
-//	        return nil, false
-//	    }
-//	    return result, true
-//	}
-//
-//	func (c *RedisSFCache) Set(key string, val any, ttl time.Duration) {
-//	    b, _ := json.Marshal(val)
-//	    c.rdb.Set(context.Background(), key, b, ttl)
-//	}
-//
-//	func (c *RedisSFCache) Del(key string) {
-//	    c.rdb.Del(context.Background(), key)
-//	}
-//
-//	// 注册（程序启动时调用一次）
-//	sf.RegisterCache(&RedisSFCache{rdb: rdb})
+// ⚠️ 若需要支持 SFInvalidatePrefix（list/page/count/exists 写场景的前缀失效），
+// 请额外实现可选接口 SFCachePrefixDeleter（见下方）。
+// 不实现也不会编译报错，但 SFInvalidatePrefix 调用会被静默忽略（日志友好提示由用户自行加）。
 type SFCache interface {
 	Get(key string) (any, bool)
 	Set(key string, val any, ttl time.Duration)
 	Del(key string)
+}
+
+// SFCachePrefixDeleter 可选接口：支持按前缀批量删除 key。
+// 实现此接口后，SFInvalidatePrefix 才会真正生效；否则调用是无操作。
+//
+// Redis 实现示例（务必用 SCAN 而非 KEYS，避免阻塞集群）：
+//
+//	func (c *RedisSFCache) DelByPrefix(prefix string) {
+//	    ctx := context.Background()
+//	    var cursor uint64
+//	    for {
+//	        keys, next, err := c.rdb.Scan(ctx, cursor, c.prefix+prefix+"*", 500).Result()
+//	        if err != nil { return }
+//	        if len(keys) > 0 { c.rdb.Del(ctx, keys...) }
+//	        cursor = next
+//	        if cursor == 0 { break }
+//	    }
+//	}
+//
+// 内置 MemoryCache 已实现此接口，开箱即用。
+type SFCachePrefixDeleter interface {
+	DelByPrefix(prefix string)
+}
+
+// SFCacheCloser 可选接口：缓存资源释放能力。
+// 实现此接口后，StopSFCache 会自动调用 Close()，统一关闭入口。
+//
+// 适用场景：Redis 客户端、数据库连接等需要显式释放资源的缓存实现。
+//
+// Redis 实现示例：
+//
+//	func (c *RedisSFCache) Close() error {
+//	    return c.rdb.Close()
+//	}
+//
+// 用户侧使用：
+//
+//	func main() {
+//	    gormplus.RegisterCache(&RedisSFCache{rdb: rdb})
+//	    defer gormplus.StopSFCache()   // 自动调用 Close()，关闭 Redis 连接
+//	    // ...
+//	}
+//
+// 内置 MemoryCache 不需要 Close（用 Stop 停后台 goroutine），StopSFCache 会自动处理。
+type SFCacheCloser interface {
+	Close() error
 }
 
 // ── 全局缓存注册 ──────────────────────────────────────────────
@@ -99,14 +124,9 @@ var (
 )
 
 // RegisterCache 注册自定义缓存实现，程序启动时调用一次。
-// 注册后所有 SF / SFWithTTL / SFInvalidate 均使用此缓存，替代默认内存缓存。
+// 注册后所有 SF / SFWithTTL / SFInvalidate / SFInvalidatePrefix 均使用此缓存，替代默认内存缓存。
 //
 // 注意：必须在第一次调用 SF 之前注册，否则已懒初始化的内存缓存不会被替换。
-//
-// Redis 缓存示例：
-//
-//	sf.RegisterCache(&RedisSFCache{rdb: rdb})
-//	list, err := sf.SF(fn, "Order.List", args, 30*time.Second)
 func RegisterCache(c SFCache) {
 	globalCacheMu.Lock()
 	defer globalCacheMu.Unlock()
@@ -133,11 +153,6 @@ func getCache() SFCache {
 // ================== 内置内存缓存实现 ==================
 
 // MemoryCache 内置内存缓存，实现 SFCache 接口。
-// 默认使用，也可显式创建后注册（方便单元测试替换）。
-//
-// 示例（显式注册内存缓存）：
-//
-//	sf.RegisterCache(sf.NewMemoryCache())
 type MemoryCache struct {
 	m      sync.Map
 	cancel context.CancelFunc
@@ -181,6 +196,17 @@ func (c *MemoryCache) Del(key string) {
 	c.m.Delete(key)
 }
 
+// DelByPrefix 删除所有以 prefix 开头的 key。
+// 内存实现是 O(n) 全表扫描，对大数据量场景请使用 Redis 等支持 SCAN 的缓存。
+func (c *MemoryCache) DelByPrefix(prefix string) {
+	c.m.Range(func(k, _ any) bool {
+		if ks, ok := k.(string); ok && strings.HasPrefix(ks, prefix) {
+			c.m.Delete(k)
+		}
+		return true
+	})
+}
+
 // Stop 停止后台过期清理 goroutine，应在应用退出时调用。
 func (c *MemoryCache) Stop() {
 	c.cancel()
@@ -205,50 +231,53 @@ func (c *MemoryCache) cleanLoop(ctx context.Context) {
 	}
 }
 
-// StopSFCache 停止内置内存缓存的后台清理 goroutine，应在应用退出时调用。
-// 如果使用自定义缓存（Redis 等），由用户自行管理生命周期，此函数无需调用。
+// StopSFCache 统一关闭入口，应在应用退出时调用（推荐 defer）。
 //
-// 示例：
+// 行为：
+//   - 默认内存缓存（MemoryCache）：停掉后台过期清理 goroutine
+//   - 自定义缓存实现了 SFCacheCloser：自动调用 Close() 释放资源
+//   - 都没匹配：no-op，不会报错
+//
+// 推荐用法（内存 / Redis 通用，业务代码无需关心底层实现）：
 //
 //	func main() {
-//	    defer sf.StopSFCache()
+//	    // 方式 A：内存缓存（零配置）
+//	    // 方式 B：Redis 缓存
+//	    // gormplus.RegisterCache(&RedisSFCache{rdb: rdb})
+//
+//	    defer gormplus.StopSFCache()   // 一行兼顾两种场景
 //	    // ... 启动服务
 //	}
-func StopSFCache() {
+//
+// 返回值：自定义缓存 Close() 的错误（内存缓存场景固定返回 nil）。
+func StopSFCache() error {
 	globalCacheMu.RLock()
 	c := globalCache
 	globalCacheMu.RUnlock()
 
+	if c == nil {
+		return nil
+	}
+
+	// 内存缓存：停后台清理 goroutine
 	if mc, ok := c.(*MemoryCache); ok {
 		mc.Stop()
 	}
+
+	// 任何实现了 Close() 的缓存：自动调用（Redis 客户端等）
+	if closer, ok := c.(SFCacheCloser); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // ================== singleflight（官方库） ==================
 
-// 直接使用 golang.org/x/sync/singleflight，无需自行实现：
-//   - 内置 panic 安全（panic 会传播给所有等待者，不会死锁）
-//   - 支持 Forget 主动释放 key
-//   - 支持 DoChan 异步调用
 var sfg singleflight.Group
 
 // ================== 公开 SF 函数 ==================
 
 // SF 通用 singleflight + 缓存查询封装（最常用入口）。
-//
-// 参数：
-//   - fn:     实际查询函数，原封不动放入闭包即可，类型安全
-//   - fnName: 查询唯一标识，建议格式 "表名.方法名"，如 "Order.List"
-//   - args:   影响查询结果的所有参数（分页、筛选条件等）
-//   - ttl:    可选，缓存时长；不传时使用 DefaultSFTTL（5分钟）；传 0 等价于 SFNoCache
-//
-// 示例：
-//
-//	list, err := sf.SF(func() ([]*model.Order, error) {
-//	    var result []*model.Order
-//	    err := db.WithContext(ctx).Where("user_id = ?", userId).Find(&result).Error
-//	    return result, err
-//	}, "Order.List", map[string]any{"user_id": userId}, 30*time.Second)
 func SF[T any](fn func() (T, error), fnName string, args map[string]any, ttl ...time.Duration) (T, error) {
 	t := DefaultSFTTL
 	if len(ttl) > 0 {
@@ -258,52 +287,55 @@ func SF[T any](fn func() (T, error), fnName string, args map[string]any, ttl ...
 }
 
 // SFNoCache 纯 singleflight，只合并同一瞬间的并发请求，完成后立即释放，不缓存结果。
-//
-// 适合：详情接口、用户余额、敏感数据等对实时性要求高的场景。
-//
-// 示例：
-//
-//	account, err := sf.SFNoCache(func() (*model.Account, error) {
-//	    var a model.Account
-//	    err := db.WithContext(ctx).Where("id = ?", id).First(&a).Error
-//	    return &a, err
-//	}, "Account.Detail", map[string]any{"id": id})
 func SFNoCache[T any](fn func() (T, error), fnName string, args map[string]any) (T, error) {
 	return SFWithTTL(fn, fnName, args, 0)
 }
 
-// SFInvalidate 主动使指定查询的缓存立即失效。
-// 写操作（Create / Update / Delete）后调用，避免后续读取到旧缓存数据。
-// args 需要与查询时传入的完全一致（key-value 相同，顺序无关）。
+// SFInvalidate 主动使指定查询的缓存立即失效（精确失效，args 必须完全一致）。
+//
+// 适用场景：FindById 这种 args 完全可预知的缓存。
 //
 // 示例：
 //
-//	func (s *AccountService) Update(ctx context.Context, id int64) error {
-//	    if err := repo.Update(ctx, id); err != nil {
-//	        return err
-//	    }
-//	    sf.SFInvalidate("Account.List", map[string]any{"status": 1})
-//	    return nil
-//	}
+//	sf.SFInvalidate("sys_user.FindById", map[string]any{"id": int64(1)})
 func SFInvalidate(fnName string, args map[string]any) {
 	key := buildSFKey(fnName, args)
 	getCache().Del(key)
 }
 
-// SFWithTTL 通用 singleflight + 缓存封装，手动指定缓存时长（底层实现）。
+// SFInvalidatePrefix 按前缀批量失效缓存（前缀失效，不需要知道具体 args）。
 //
-// 执行流程：
-//  1. 用 fnName + args 构建确定性 cache key（map key 自动排序）
-//  2. TTL>0 时先查缓存，命中则直接返回（最快路径）
-//  3. 进入 singleflight Do：同一 key 只有一个 goroutine 真正执行
-//  4. Do 内部再查一次缓存（防止等待期间其他 goroutine 已写入）
-//  5. 执行 fn()，成功且 TTL>0 时写入缓存
-//  6. 类型断言后返回结果
+// 适用场景：list/page/count/exists 类查询的 args 因 Where 条件 / 业务参数变化而无法穷举，
+// 写操作后需要把整张表的列表/统计缓存全部清掉。
+//
+// 入参支持两种粒度：
+//
+//	// ① 清掉某个方法的所有缓存（推荐，粒度更细）
+//	sf.SFInvalidatePrefix("sys_user.FindList")
+//	sf.SFInvalidatePrefix("sys_user.FindPage")
+//
+//	// ② 清掉整张表的所有缓存（注意尾部加点，避免误伤其他表）
+//	sf.SFInvalidatePrefix("sys_user.")
+//
+// 实现说明：
+//   - 内存缓存：O(n) 扫描，写入压力不大的场景没问题
+//   - Redis 缓存：用户实现 SFCachePrefixDeleter 时建议用 SCAN 而非 KEYS 避免阻塞
+//   - 自定义缓存未实现 SFCachePrefixDeleter 时静默忽略（业务不会报错，但缓存不会清）
+func SFInvalidatePrefix(fnName string) {
+	c := getCache()
+	if pd, ok := c.(SFCachePrefixDeleter); ok {
+		// 与 buildSFKey 保持一致：noargs 的 key 也以 "sf:{fnName}:" 开头，
+		// 用同样的前缀即可一次清干净。
+		pd.DelByPrefix(keyPrefix + fnName + ":")
+	}
+	// 未实现 SFCachePrefixDeleter 时静默忽略（保持向后兼容，业务可继续运行）。
+}
+
+// SFWithTTL 通用 singleflight + 缓存封装，手动指定缓存时长（底层实现）。
 func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, ttl time.Duration) (T, error) {
 	key := buildSFKey(fnName, args)
 	cache := getCache()
 
-	// 步骤 2：缓存快速路径
 	if ttl > 0 {
 		if cached, ok := cache.Get(key); ok {
 			if result, ok := cached.(T); ok {
@@ -312,21 +344,16 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 		}
 	}
 
-	// 步骤 3-5：singleflight 保护
-	// 官方库 Do 内置 panic 安全，panic 会传播给所有等待者而不会死锁
 	raw, err, _ := sfg.Do(key, func() (any, error) {
-		// 步骤 4：Do 内部二次查缓存（防止等待期间已由其他 goroutine 写入）
 		if ttl > 0 {
 			if cached, ok := cache.Get(key); ok {
 				return cached, nil
 			}
 		}
-		// 步骤 5：真正执行查询
 		result, err := fn()
 		if err == nil && ttl > 0 {
 			cache.Set(key, result, ttl)
 		}
-		// TTL=0 时立即 Forget，确保下次请求重新执行而不被合并
 		if ttl == 0 {
 			sfg.Forget(key)
 		}
@@ -338,7 +365,6 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 		return zero, err
 	}
 
-	// 步骤 6：类型断言
 	result, ok := raw.(T)
 	if !ok {
 		var zero T
@@ -351,19 +377,22 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 // ================== cache key 构建 ==================
 
 // buildSFKey 将 fnName + args 构建为确定性字符串 key。
-// key 格式：sf:{fnName}:{md5(sorted_json(args))}
+// key 格式：sf:{fnName}:{md5(sorted_json(args))}    （有 args）
+// key 格式：sf:{fnName}:noargs                       （无 args）
+//
+// 注意：SFInvalidatePrefix 依赖 "sf:{fnName}:" 这个公共前缀，修改 key 格式时要同步调整。
 func buildSFKey(fnName string, args map[string]any) string {
 	if len(args) == 0 {
-		return fmt.Sprintf("sf:%s:noargs", fnName)
+		return fmt.Sprintf("%s%s:noargs", keyPrefix, fnName)
 	}
 	b, err := marshalSorted(args)
 	if err != nil {
 		fallback := fmt.Sprintf("%v", args)
 		hash := md5.Sum([]byte(fallback))
-		return fmt.Sprintf("sf:%s:%x", fnName, hash)
+		return fmt.Sprintf("%s%s:%x", keyPrefix, fnName, hash)
 	}
 	hash := md5.Sum(b)
-	return fmt.Sprintf("sf:%s:%x", fnName, hash)
+	return fmt.Sprintf("%s%s:%x", keyPrefix, fnName, hash)
 }
 
 // marshalSorted 将 map 按 key 字母序排列后序列化为 JSON 字节。

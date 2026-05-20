@@ -1368,3 +1368,15 @@ func DALMustExec(ctx context.Context, sqlFile string, args ...any) {
 func DALMustQueryOne[T any](ctx context.Context, sqlFile string, args ...any) *T {
 	return dal.MustQueryOne[T](ctx, sqlFile, args...)
 }
+
+// 示例（清掉整张表的所有缓存，注意尾部加点，避免误伤前缀相同的其他表名）：
+//
+//	gormplus.SFInvalidatePrefix("sys_user.")
+//
+// 性能说明：
+//   - 默认内存缓存（MemoryCache）：O(n) 全表扫描，写入压力不大时可接受
+//   - Redis 缓存：需自行实现 SFCachePrefixDeleter，建议用 SCAN（非 KEYS）避免阻塞集群
+//   - 未实现 SFCachePrefixDeleter 的自定义缓存：本调用静默无操作（不报错，但缓存不会被清，业务可继续运行）
+func SFInvalidatePrefix(fnName string) {
+	sf.SFInvalidatePrefix(fnName)
+}
