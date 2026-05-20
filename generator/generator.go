@@ -14,7 +14,6 @@ import (
 	"text/template"
 	"unicode"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gen"
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
@@ -772,9 +771,8 @@ func Generate(cfg *Config) error {
 		return fmt.Errorf("解析路径失败: %w", err)
 	}
 
-	dsn := fmt.Sprintf("%s:%s@(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
-	db, err := gorm.Open(mysql.Open(dsn))
+	// 按 db_type 自动选择驱动(mysql / postgres / sqlite / sqlserver)
+	db, err := OpenDB(cfg)
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
@@ -855,6 +853,8 @@ func Generate(cfg *Config) error {
 			return map[string][]string{"column": {"created_at"}, "comment": {"创建时间"}}
 		}),
 		gen.FieldType("deleted_at", "gorm.DeletedAt"),
+		// 乐观锁
+		gen.FieldType("version", "optimisticlock.Version"),
 	}
 
 	// ══════════════════════════════════════════════════════

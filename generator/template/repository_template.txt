@@ -24,4 +24,107 @@ func New{{.ModelName}}Repository() {{.ModelName}}Repository {
 	}
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  自定义方法示例:如何用 SF + 缓存包装自定义查询(DAL / 原生 SQL / 复合查询)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 默认 Repository 里的 FindById / FindList / FindPage 等方法已经自动接入了
+// SF + 缓存,无需手动包装。但下面这些场景需要自己写 SF 调用:
+//
+//   1. 跨表 / 复合查询(JOIN、子查询)
+//   2. DAL 文件化 SQL 查询(dal.Query / dal.QueryOne)
+//   3. 原生 gorm 链式查询
+//   4. 任何非生成代码里的自定义查询方法
+//
+// 模板:任何自定义查询都按下面这个套路包装即可
+//
+// ─────────────────────────────────────────────────────────────────────────
+//  示例 1:用 DAL 做复合查询 + SF 缓存
+// ─────────────────────────────────────────────────────────────────────────
+//
+// func (r *customer{{.ModelName}}Repository) FindActiveUsersWithRole(
+//     ctx context.Context, roleId int64, status int,
+// ) ([]*UserWithRoleVO, error) {
+//     return gormplus.SF(func() ([]*UserWithRoleVO, error) {
+//         // DAL:执行 sql 文件里的命名查询
+//         return dal.Query[*UserWithRoleVO](ctx, "user/active_with_role.sql",
+//             roleId, status)
+//     },
+//         "{{.TableName}}.FindActiveUsersWithRole",   // fnName:表名.方法名
+//         gormplus.BuildArgs(                          // 参与 cache key 的参数
+//             "role_id", roleId,
+//             "status",  status,
+//         ),
+//         30*time.Second,                              // TTL,0 等价于 SFNoCache
+//     )
+// }
+//
+// ─────────────────────────────────────────────────────────────────────────
+//  示例 2:用 gorm 原生链式 + SF 缓存
+// ─────────────────────────────────────────────────────────────────────────
+//
+// func (r *customer{{.ModelName}}Repository) FindTopActiveUsers(
+//     ctx context.Context, limit int,
+// ) ([]*{{.ModelName}}, error) {
+//     return gormplus.SF(func() ([]*{{.ModelName}}, error) {
+//         var list []*{{.ModelName}}
+//         err := gormplus.Query[*{{.ModelName}}](r.GetDB(), ctx).
+//             Where("status = ? AND last_active_at > ?", 1, time.Now().Add(-7*24*time.Hour)).
+//             OrderBy("last_active_at DESC").
+//             Limit(limit).
+//             Build().Find(&list)
+//         return list, err
+//     },
+//         "{{.TableName}}.FindTopActiveUsers",
+//         gormplus.BuildArgs("limit", limit),
+//         5*time.Minute,
+//     )
+// }
+//
+// ─────────────────────────────────────────────────────────────────────────
+//  示例 3:不要缓存,仅合并并发(防止热点击穿)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// func (r *customer{{.ModelName}}Repository) GetRealtimeBalance(
+//     ctx context.Context, userId int64,
+// ) (decimal.Decimal, error) {
+//     return gormplus.SFNoCache(func() (decimal.Decimal, error) {
+//         // 实时余额不缓存,但同一秒来 100 个请求只打 1 次 DB
+//         return dal.QueryOne[decimal.Decimal](ctx, "account/balance.sql", userId)
+//     },
+//         "{{.TableName}}.GetRealtimeBalance",
+//         gormplus.BuildArgs("user_id", userId),
+//     )
+// }
+//
+// ─────────────────────────────────────────────────────────────────────────
+//  示例 4:写操作后主动失效自定义缓存
+// ─────────────────────────────────────────────────────────────────────────
+//
+// func (r *customer{{.ModelName}}Repository) UpdateActiveStatus(
+//     ctx context.Context, userId int64, active bool,
+// ) error {
+//     err := dal.Exec(ctx, "user/update_active.sql", active, userId)
+//     if err != nil {
+//         return err
+//     }
+//     // 精确失效:只清掉这个 user 的相关缓存
+//     gormplus.SFInvalidate("{{.TableName}}.FindActiveUsersWithRole",
+//         gormplus.BuildArgs("role_id", roleId, "status", 1))
+//     // 或前缀失效:清掉所有 FindTopActiveUsers / FindActiveUsersWithRole 缓存
+//     gormplus.SFInvalidatePrefixes([]string{
+//         "{{.TableName}}.FindTopActiveUsers",
+//         "{{.TableName}}.FindActiveUsersWithRole",
+//     })
+//     return nil
+// }
+//
+// ─────────────────────────────────────────────────────────────────────────
+//  关键约定
+// ─────────────────────────────────────────────────────────────────────────
+//
+// - fnName 用 "{{.TableName}}.方法名" 格式,方便后续按表批量失效
+// - args 必须包含所有影响查询结果的参数(WHERE 条件值、limit、orderBy 字段等),
+//   否则不同查询会命中同一 cache key 串数据
+// - 写操作记得主动调 SFInvalidate / SFInvalidatePrefix 失效缓存
 

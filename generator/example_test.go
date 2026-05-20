@@ -14,10 +14,11 @@ func ExampleGenerate() {
 		Username:     "root",
 		Password:     "123456",
 		Database:     "gin-admin-api",
-		OutPath:      "./query/dao",
-		ModelPkgPath: "./query/model",
-		RepoPath:     "./query/repository1",
-		ApiPath:      "./apps/admin/desc",
+		OutPath:      "query/dao",
+		ModelPkgPath: "query/model",
+		RepoPath:     "query/repository1",
+		ApiPath:      "apps/admin/desc",
+		MapperPath:   "query/mapper",
 		Package:      "esim-api",
 	}
 
