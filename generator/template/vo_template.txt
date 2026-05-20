@@ -1,4 +1,4 @@
-package model
+package vo
 
 // {{.ModelName}}Vo {{.TableComment}}视图对象
 type {{.ModelName}}Vo struct {
