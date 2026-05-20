@@ -16,34 +16,31 @@ type default{{.ModelName}}Repository struct {
 }
 
 type iDefault{{.ModelName}}Repository interface {
-	// Create 创建记录
+	// Create 创建记录（自动失效 FindList / FindPage / Count / Exists 前缀缓存）
 	Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
 	CreateTx(ctx context.Context, tx *dao.Query, m *{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
-	// CreateBatch 批量创建
+	// CreateBatch 批量创建（自动失效 FindList / FindPage / Count / Exists 前缀缓存）
 	CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
 	CreateBatchTx(ctx context.Context, tx *dao.Query, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
-	// DeleteById 根据ID删除（自动失效 FindById 缓存）
+	// DeleteById 根据ID删除（自动失效该 ID 的 FindById，以及 FindList/FindPage/Count/Exists 前缀缓存）
 	DeleteById(ctx context.Context, {{.ModelNameLower}}Id int64) error
 	DeleteByIdTx(ctx context.Context, tx *dao.Query, {{.ModelNameLower}}Id int64) error
-	// DeleteByIdList 根据ID列表批量删除（自动失效每个 ID 的 FindById 缓存）
+	// DeleteByIdList 根据ID列表批量删除（自动失效每个 ID 的 FindById，以及 FindList/FindPage/Count/Exists 前缀缓存）
 	DeleteByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64) error
 	DeleteByIdListTx(ctx context.Context, tx *dao.Query, {{.ModelNameLower}}Ids []int64) error
-	// DeleteByCondition 根据原生条件删除
-	// 提示：条件删除无法预知影响的 ID，若有 FindById 缓存请业务方手动调用 gormplus.SFInvalidate 失效。
+	// DeleteByCondition 根据原生条件删除（自动按表名前缀失效全部缓存，因无法预知影响的 ID）
 	DeleteByCondition(ctx context.Context, cond ...gen.Condition) error
 	DeleteByConditionTx(ctx context.Context, tx *dao.Query, cond ...gen.Condition) error
-	// DeleteByWrapper 根据wrapper条件删除
-	// 提示：条件删除无法预知影响的 ID，若有 FindById 缓存请业务方手动调用 gormplus.SFInvalidate 失效。
+	// DeleteByWrapper 根据wrapper条件删除（自动按表名前缀失效全部缓存，因无法预知影响的 ID）
 	DeleteByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) error
 	DeleteByWrapperTx(ctx context.Context, tx *dao.Query, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) error
-	// UpdateById 根据ID更新指定字段（自动失效 FindById 缓存）
+	// UpdateById 根据ID更新指定字段（自动失效该 ID 的 FindById，以及 FindList/FindPage 前缀缓存）
 	UpdateById(ctx context.Context, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error
 	UpdateByIdTx(ctx context.Context, tx *dao.Query, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error
-	// UpdateMapById 根据ID更新Map数据（自动失效 FindById 缓存）
+	// UpdateMapById 根据ID更新Map数据（自动失效该 ID 的 FindById，以及 FindList/FindPage 前缀缓存）
 	UpdateMapById(ctx context.Context, {{.ModelNameLower}}Id int64, data map[string]any) error
 	UpdateMapByIdTx(ctx context.Context, tx *dao.Query, {{.ModelNameLower}}Id int64, data map[string]any) error
-	// UpdateByWrapper 根据wrapper条件更新指定字段
-	// 提示：条件更新无法预知影响的 ID，若有 FindById 缓存请业务方手动调用 gormplus.SFInvalidate 失效。
+	// UpdateByWrapper 根据wrapper条件更新（自动按表名前缀失效全部缓存，因无法预知影响的 ID）
 	UpdateByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), columns ...field.AssignExpr) error
 	UpdateByWrapperTx(ctx context.Context, tx *dao.Query, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), columns ...field.AssignExpr) error
 	// FindList 根据原生条件获取列表
@@ -56,20 +53,59 @@ type iDefault{{.ModelName}}Repository interface {
 	FindPageByWrapper(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
 	// FindById 根据ID获取详情（支持 query.WithCache / query.WithSingleFlight）
 	FindById(ctx context.Context, {{.ModelNameLower}}Id int64, query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// FindByIdList 根据ID列表获取（支持 query.WithCache / query.WithSingleFlight，排序通过 query.Query().Order(...) 传入）
+	// FindByIdList 根据ID列表获取（支持 query.WithCache / query.WithSingleFlight）
 	FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64, query ...gormplus.QueryOption) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// FindOne 根据原生条件获取单条
 	FindOne(ctx context.Context, query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// FindOneWrapper 根据wrapper条件获取单条
 	FindOneWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// Exists 根据原生条件判断是否存在（支持 query.WithCache / query.WithSingleFlight，条件通过 query.Query().Where(...) 传入）
+	// Exists 根据原生条件判断是否存在（支持 query.WithCache / query.WithSingleFlight）
 	Exists(ctx context.Context, query ...gormplus.QueryOption) (bool, error)
 	// ExistsByWrapper 根据wrapper条件判断是否存在（支持 query.WithCache / query.WithSingleFlight）
 	ExistsByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (bool, error)
-	// Count 根据原生条件统计数量（支持 query.WithCache / query.WithSingleFlight，条件通过 query.Query().Where(...) 传入）
+	// Count 根据原生条件统计数量（支持 query.WithCache / query.WithSingleFlight）
 	Count(ctx context.Context, query ...gormplus.QueryOption) (int64, error)
 	// CountByWrapper 根据wrapper条件统计数量（支持 query.WithCache / query.WithSingleFlight）
 	CountByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (int64, error)
+}
+
+// ==================== 缓存失效辅助方法 ====================
+//
+// 缓存策略总览（统一以 "{{.TableName}}.方法名" 为 fnName）：
+//
+//	写操作          失效范围
+//	──────────     ─────────────────────────────────────────────────────────
+//	Create / Batch  FindList / FindPage / Count / Exists（前缀失效）
+//	Update          FindList / FindPage（前缀失效）+ FindById（精确失效）
+//	Delete          FindList / FindPage / Count / Exists（前缀失效）+ FindById（精确失效）
+//	条件 Update/Delete  整张表（按表名前缀失效）
+//
+// 为什么 Update 不清 Count / Exists：
+//   仅修改字段不会改变记录数和"是否存在"的结果（除非 Update 影响了 Where 条件，
+//   这种边缘情况业务方可手动调用 SFInvalidatePrefix）。
+
+// invalidateListCaches 失效列表/分页类缓存（用于 Update）。
+func (r *default{{.ModelName}}Repository) invalidateListCaches() {
+	gormplus.SFInvalidatePrefix("{{.TableName}}.FindList")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.FindListByWrapper")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.FindPage")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.FindPageByWrapper")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.FindByIdList")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.FindOne")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.FindOneWrapper")
+}
+
+// invalidateAggregateCaches 失效聚合类缓存（用于 Create / Delete）。
+func (r *default{{.ModelName}}Repository) invalidateAggregateCaches() {
+	gormplus.SFInvalidatePrefix("{{.TableName}}.Count")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.CountByWrapper")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.Exists")
+	gormplus.SFInvalidatePrefix("{{.TableName}}.ExistsByWrapper")
+}
+
+// invalidateAllTableCaches 失效整张表所有缓存（用于条件 Update / Delete，无法预知影响的 ID）。
+func (r *default{{.ModelName}}Repository) invalidateAllTableCaches() {
+	gormplus.SFInvalidatePrefix("{{.TableName}}.")
 }
 
 // ==================== 公共构建方法 ====================
@@ -137,7 +173,13 @@ func (r *default{{.ModelName}}Repository) Create(ctx context.Context, m *{{.Mode
 	if len(omitFields) > 0 {
 		tx = tx.Omit(omitFields...)
 	}
-	return tx.Create(m)
+	err := tx.Create(m)
+	if err == nil {
+		// 新增：列表/分页 + 数量/存在性缓存全部失效
+		r.invalidateListCaches()
+		r.invalidateAggregateCaches()
+	}
+	return err
 }
 
 func (r *default{{.ModelName}}Repository) CreateTx(ctx context.Context, daoTx *dao.Query, m *{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error {
@@ -145,7 +187,12 @@ func (r *default{{.ModelName}}Repository) CreateTx(ctx context.Context, daoTx *d
 	if len(omitFields) > 0 {
 		tx = tx.Omit(omitFields...)
 	}
-	return tx.Create(m)
+	err := tx.Create(m)
+	if err == nil {
+		r.invalidateListCaches()
+		r.invalidateAggregateCaches()
+	}
+	return err
 }
 
 func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error {
@@ -153,7 +200,12 @@ func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*
 	if len(omitFields) > 0 {
 		tx = tx.Omit(omitFields...)
 	}
-	return tx.CreateInBatches(m, len(m))
+	err := tx.CreateInBatches(m, len(m))
+	if err == nil {
+		r.invalidateListCaches()
+		r.invalidateAggregateCaches()
+	}
+	return err
 }
 
 func (r *default{{.ModelName}}Repository) CreateBatchTx(ctx context.Context, daoTx *dao.Query, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error {
@@ -161,13 +213,21 @@ func (r *default{{.ModelName}}Repository) CreateBatchTx(ctx context.Context, dao
 	if len(omitFields) > 0 {
 		tx = tx.Omit(omitFields...)
 	}
-	return tx.CreateInBatches(m, len(m))
+	err := tx.CreateInBatches(m, len(m))
+	if err == nil {
+		r.invalidateListCaches()
+		r.invalidateAggregateCaches()
+	}
+	return err
 }
 
 func (r *default{{.ModelName}}Repository) DeleteById(ctx context.Context, {{.ModelNameLower}}Id int64) error {
 	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).Delete()
 	if err == nil {
+		// 删除：单条精确失效 + 列表/分页前缀失效 + 数量/存在性前缀失效
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+		r.invalidateListCaches()
+		r.invalidateAggregateCaches()
 	}
 	return err
 }
@@ -176,6 +236,8 @@ func (r *default{{.ModelName}}Repository) DeleteByIdTx(ctx context.Context, daoT
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).Delete()
 	if err == nil {
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+		r.invalidateListCaches()
+		r.invalidateAggregateCaches()
 	}
 	return err
 }
@@ -186,6 +248,8 @@ func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{
 		for _, id := range {{.ModelNameLower}}Ids {
 			gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", id))
 		}
+		r.invalidateListCaches()
+		r.invalidateAggregateCaches()
 	}
 	return err
 }
@@ -196,6 +260,8 @@ func (r *default{{.ModelName}}Repository) DeleteByIdListTx(ctx context.Context, 
 		for _, id := range {{.ModelNameLower}}Ids {
 			gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", id))
 		}
+		r.invalidateListCaches()
+		r.invalidateAggregateCaches()
 	}
 	return err
 }
@@ -205,6 +271,10 @@ func (r *default{{.ModelName}}Repository) DeleteByCondition(ctx context.Context,
 		return errors.New("删除条件不能为空")
 	}
 	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).Where(cond...).Delete()
+	if err == nil {
+		// 条件删除无法预知影响哪些 ID，全表缓存清掉最安全
+		r.invalidateAllTableCaches()
+	}
 	return err
 }
 
@@ -213,6 +283,9 @@ func (r *default{{.ModelName}}Repository) DeleteByConditionTx(ctx context.Contex
 		return errors.New("删除条件不能为空")
 	}
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).Where(cond...).Delete()
+	if err == nil {
+		r.invalidateAllTableCaches()
+	}
 	return err
 }
 
@@ -223,6 +296,9 @@ func (r *default{{.ModelName}}Repository) DeleteByWrapper(ctx context.Context, f
 	tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
 	fn(tx)
 	_, err := tx.Apply().Delete()
+	if err == nil {
+		r.invalidateAllTableCaches()
+	}
 	return err
 }
 
@@ -233,13 +309,18 @@ func (r *default{{.ModelName}}Repository) DeleteByWrapperTx(ctx context.Context,
 	tx := gormplus.GenWrap(daoTx.{{.ModelName}}Entity.WithContext(ctx))
 	fn(tx)
 	_, err := tx.Apply().Delete()
+	if err == nil {
+		r.invalidateAllTableCaches()
+	}
 	return err
 }
 
 func (r *default{{.ModelName}}Repository) UpdateById(ctx context.Context, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error {
 	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).UpdateSimple(columns...)
 	if err == nil {
+		// 修改：单条精确失效 + 列表/分页前缀失效（数量/存在性一般不受影响）
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+		r.invalidateListCaches()
 	}
 	return err
 }
@@ -248,6 +329,7 @@ func (r *default{{.ModelName}}Repository) UpdateByIdTx(ctx context.Context, daoT
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).UpdateSimple(columns...)
 	if err == nil {
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+		r.invalidateListCaches()
 	}
 	return err
 }
@@ -258,6 +340,7 @@ func (r *default{{.ModelName}}Repository) UpdateMapById(ctx context.Context, {{.
 		Updates(data)
 	if err == nil {
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+		r.invalidateListCaches()
 	}
 	return err
 }
@@ -268,6 +351,7 @@ func (r *default{{.ModelName}}Repository) UpdateMapByIdTx(ctx context.Context, d
 		Updates(data)
 	if err == nil {
 		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+		r.invalidateListCaches()
 	}
 	return err
 }
@@ -279,6 +363,10 @@ func (r *default{{.ModelName}}Repository) UpdateByWrapper(ctx context.Context, f
 	tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
 	fn(tx)
 	_, err := tx.Apply().UpdateSimple(columns...)
+	if err == nil {
+		// 条件更新无法预知影响哪些 ID，全表缓存清掉最安全
+		r.invalidateAllTableCaches()
+	}
 	return err
 }
 
@@ -289,6 +377,9 @@ func (r *default{{.ModelName}}Repository) UpdateByWrapperTx(ctx context.Context,
 	tx := gormplus.GenWrap(daoTx.{{.ModelName}}Entity.WithContext(ctx))
 	fn(tx)
 	_, err := tx.Apply().UpdateSimple(columns...)
+	if err == nil {
+		r.invalidateAllTableCaches()
+	}
 	return err
 }
 
