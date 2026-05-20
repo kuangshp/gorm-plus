@@ -166,13 +166,84 @@ var (
 	globalCache   SFCache
 )
 
-// RegisterCache 注册自定义缓存实现，程序启动时调用一次。
+// RegisterCache 注册自定义缓存实现，**全局只能调用一次**，应在程序启动期 main 函数早期完成。
 // 注册后所有 SF / SFWithTTL / SFInvalidate / SFInvalidatePrefix 均使用此缓存，替代默认内存缓存。
 //
-// 注意：必须在第一次调用 SF 之前注册，否则已懒初始化的内存缓存不会被替换。
+// ── 行为规则 ──────────────────────────────────────────────────
+//
+//   - 首次调用：直接注册成功（即使内存缓存已懒初始化，这是正常路径）
+//   - 已注册过自定义缓存再次调用：panic，强制 fail-fast 暴露重复注册的 bug
+//
+// 设计原因：运行期切换缓存会导致数据不一致（goroutine A 在旧缓存 Set，goroutine B 在新缓存 Get）。
+// 这种问题在测试环境不易复现，生产环境出问题难排查。所以做成"启动期一次性"的强约束。
+//
+// ── 使用示例 ──────────────────────────────────────────────────
+//
+// 方式一：内存缓存（默认，零配置）：
+//
+//	// 不调用 RegisterCache，SF 自动懒加载内存缓存
+//	defer gormplus.StopSFCache()
+//
+// 方式二：Redis 缓存（多实例部署推荐）：
+//
+//	gormplus.RegisterCache(&RedisSFCache{rdb: rdb, prefix: "myapp:sf:"})
+//	defer gormplus.StopSFCache()
+//
+// ── 运行期需要切换缓存？ ──────────────────────────────────────
+//
+// 极少数场景（单元测试隔离、运行期切换缓存层）必须替换缓存，请使用 ForceReplaceCache。
+// 名字带 Force 表示"我清楚自己在做什么、能承担数据不一致的风险"。
 func RegisterCache(c SFCache) {
+	if c == nil {
+		panic("sf.RegisterCache: cache 不能为 nil")
+	}
 	globalCacheMu.Lock()
 	defer globalCacheMu.Unlock()
+
+	// 已经懒加载了内存缓存：允许替换（这是正常路径，用户首次调用本就发生在内存缓存懒加载之后）
+	// 已经注册过自定义缓存：拒绝（避免运行期重复注册）
+	if globalCache != nil {
+		if _, isMemory := globalCache.(*MemoryCache); !isMemory {
+			panic("sf.RegisterCache: 缓存已经被注册过，重复注册会导致数据不一致；" +
+				"如确需运行期替换缓存，请使用 ForceReplaceCache（带数据丢失风险）")
+		}
+		// 替换前停掉旧内存缓存的后台 goroutine，避免泄漏
+		if mc, ok := globalCache.(*MemoryCache); ok {
+			mc.Stop()
+		}
+	}
+	globalCache = c
+}
+
+// ForceReplaceCache 强制替换全局缓存，无任何幂等检查。
+//
+// ⚠️ 危险操作：运行期替换缓存会导致并发 goroutine 读写到不同的缓存实例，
+// 已经 Set 的数据可能丢失，已经合并的 singleflight key 行为未定义。
+//
+// 仅在以下场景使用：
+//   - 单元测试用例之间清理状态（通常 ForceReplaceCache(NewMemoryCache())）
+//   - 运维灰度切换缓存层（必须确认业务无 in-flight 请求）
+//
+// 一般业务请使用 RegisterCache，启动期注册一次即可。
+//
+// 单元测试示例：
+//
+//	func TestXxx(t *testing.T) {
+//	    sf.ForceReplaceCache(sf.NewMemoryCache())  // 每个测试用独立缓存隔离
+//	    defer sf.StopSFCache()
+//	    // ... 测试逻辑
+//	}
+func ForceReplaceCache(c SFCache) {
+	if c == nil {
+		panic("sf.ForceReplaceCache: cache 不能为 nil")
+	}
+	globalCacheMu.Lock()
+	defer globalCacheMu.Unlock()
+
+	// 替换前停掉旧内存缓存的后台 goroutine 避免泄漏
+	if mc, ok := globalCache.(*MemoryCache); ok {
+		mc.Stop()
+	}
 	globalCache = c
 }
 
