@@ -331,6 +331,7 @@ type RepositoryTemplateData struct {
 	ModelPkgName, RawsqlPkgPath       string
 	Columns                           []ColumnInfo
 	PrimaryKeyField, PrimaryKeyColumn string
+	TableName                         string // 用于 SF / Cache 的 key 前缀（如 "sys_user.FindById"）
 }
 
 type MapperTemplateData struct {
@@ -501,7 +502,7 @@ func generateValidateRule(col ColumnInfo) string {
 	return strings.Join(rules, ",")
 }
 
-func buildRepoData(columns []ColumnInfo, modelName, pkg, daoPath, modelPath string) RepositoryTemplateData {
+func buildRepoData(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tableName string) RepositoryTemplateData {
 	columnData := make([]ColumnInfo, len(columns))
 	primaryKeyField, primaryKeyColumn := "ID", "id"
 	for i, col := range columns {
@@ -522,15 +523,16 @@ func buildRepoData(columns []ColumnInfo, modelName, pkg, daoPath, modelPath stri
 		Package: pkg, DaoPath: pkg + "/" + daoPath, ModelPath: pkg + "/" + modelPath,
 		ModelPkgName: getLastPathSegment(modelPath), Columns: columnData,
 		PrimaryKeyField: primaryKeyField, PrimaryKeyColumn: primaryKeyColumn,
+		TableName: tableName,
 	}
 }
 
-func generateRepositoryFile(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tmplPath string) (string, error) {
-	return renderTemplate(tmplPath, buildRepoData(columns, modelName, pkg, daoPath, modelPath))
+func generateRepositoryFile(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tmplPath, tableName string) (string, error) {
+	return renderTemplate(tmplPath, buildRepoData(columns, modelName, pkg, daoPath, modelPath, tableName))
 }
 
-func generateRepositoryExtFile(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tmplPath string) (string, error) {
-	return renderTemplate(tmplPath, buildRepoData(columns, modelName, pkg, daoPath, modelPath))
+func generateRepositoryExtFile(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tmplPath, tableName string) (string, error) {
+	return renderTemplate(tmplPath, buildRepoData(columns, modelName, pkg, daoPath, modelPath, tableName))
 }
 
 func generateApiFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
@@ -661,7 +663,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 	// Repository _gen.go（始终覆盖，与 model 保持同步）
 	if cfg.RepoPath != "" {
 		if content, err := generateRepositoryFile(columns, modelName, cfg.Package,
-			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath); err != nil {
+			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath, tbl); err != nil {
 			fmt.Printf("[%s] 生成 repository_gen 失败: %v\n", tbl, err)
 		} else {
 			writeFileAlways(
@@ -672,7 +674,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 
 		// Repository .go（用户自定义，已存在则跳过）
 		if content, err := generateRepositoryExtFile(columns, modelName, cfg.Package,
-			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath); err != nil {
+			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath, tbl); err != nil {
 			fmt.Printf("[%s] 生成 repository 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(

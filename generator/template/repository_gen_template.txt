@@ -22,25 +22,28 @@ type iDefault{{.ModelName}}Repository interface {
 	// CreateBatch 批量创建
 	CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
 	CreateBatchTx(ctx context.Context, tx *dao.Query, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
-	// DeleteById 根据ID删除
+	// DeleteById 根据ID删除（自动失效 FindById 缓存）
 	DeleteById(ctx context.Context, {{.ModelNameLower}}Id int64) error
 	DeleteByIdTx(ctx context.Context, tx *dao.Query, {{.ModelNameLower}}Id int64) error
-	// DeleteByIdList 根据ID列表批量删除
+	// DeleteByIdList 根据ID列表批量删除（自动失效每个 ID 的 FindById 缓存）
 	DeleteByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64) error
 	DeleteByIdListTx(ctx context.Context, tx *dao.Query, {{.ModelNameLower}}Ids []int64) error
 	// DeleteByCondition 根据原生条件删除
+	// 提示：条件删除无法预知影响的 ID，若有 FindById 缓存请业务方手动调用 gormplus.SFInvalidate 失效。
 	DeleteByCondition(ctx context.Context, cond ...gen.Condition) error
 	DeleteByConditionTx(ctx context.Context, tx *dao.Query, cond ...gen.Condition) error
 	// DeleteByWrapper 根据wrapper条件删除
+	// 提示：条件删除无法预知影响的 ID，若有 FindById 缓存请业务方手动调用 gormplus.SFInvalidate 失效。
 	DeleteByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) error
 	DeleteByWrapperTx(ctx context.Context, tx *dao.Query, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) error
-	// UpdateById 根据ID更新指定字段
+	// UpdateById 根据ID更新指定字段（自动失效 FindById 缓存）
 	UpdateById(ctx context.Context, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error
 	UpdateByIdTx(ctx context.Context, tx *dao.Query, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error
-	// UpdateMapById 根据ID更新Map数据
+	// UpdateMapById 根据ID更新Map数据（自动失效 FindById 缓存）
 	UpdateMapById(ctx context.Context, {{.ModelNameLower}}Id int64, data map[string]any) error
 	UpdateMapByIdTx(ctx context.Context, tx *dao.Query, {{.ModelNameLower}}Id int64, data map[string]any) error
 	// UpdateByWrapper 根据wrapper条件更新指定字段
+	// 提示：条件更新无法预知影响的 ID，若有 FindById 缓存请业务方手动调用 gormplus.SFInvalidate 失效。
 	UpdateByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), columns ...field.AssignExpr) error
 	UpdateByWrapperTx(ctx context.Context, tx *dao.Query, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), columns ...field.AssignExpr) error
 	// FindList 根据原生条件获取列表
@@ -51,22 +54,22 @@ type iDefault{{.ModelName}}Repository interface {
 	FindPage(ctx context.Context, pageNumber int64, pageSize int64, query ...gormplus.QueryOption) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
 	// FindPageByWrapper 根据wrapper条件分页查询
 	FindPageByWrapper(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error)
-	// FindById 根据ID获取详情
-	FindById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// FindByIdList 根据ID列表获取
-	FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64, orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindById 根据ID获取详情（支持 query.WithCache / query.WithSingleFlight）
+	FindById(ctx context.Context, {{.ModelNameLower}}Id int64, query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
+	// FindByIdList 根据ID列表获取（支持 query.WithCache / query.WithSingleFlight，排序通过 query.Query().Order(...) 传入）
+	FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64, query ...gormplus.QueryOption) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// FindOne 根据原生条件获取单条
 	FindOne(ctx context.Context, query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
 	// FindOneWrapper 根据wrapper条件获取单条
 	FindOneWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error)
-	// Exists 根据原生条件判断是否存在
-	Exists(ctx context.Context, cond ...gen.Condition) (bool, error)
-	// ExistsByWrapper 根据wrapper条件判断是否存在
-	ExistsByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (bool, error)
-	// Count 根据原生条件统计数量
-	Count(ctx context.Context, cond ...gen.Condition) (int64, error)
-	// CountByWrapper 根据wrapper条件统计数量
-	CountByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (int64, error)
+	// Exists 根据原生条件判断是否存在（支持 query.WithCache / query.WithSingleFlight，条件通过 query.Query().Where(...) 传入）
+	Exists(ctx context.Context, query ...gormplus.QueryOption) (bool, error)
+	// ExistsByWrapper 根据wrapper条件判断是否存在（支持 query.WithCache / query.WithSingleFlight）
+	ExistsByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (bool, error)
+	// Count 根据原生条件统计数量（支持 query.WithCache / query.WithSingleFlight，条件通过 query.Query().Where(...) 传入）
+	Count(ctx context.Context, query ...gormplus.QueryOption) (int64, error)
+	// CountByWrapper 根据wrapper条件统计数量（支持 query.WithCache / query.WithSingleFlight）
+	CountByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (int64, error)
 }
 
 // ==================== 公共构建方法 ====================
@@ -163,21 +166,37 @@ func (r *default{{.ModelName}}Repository) CreateBatchTx(ctx context.Context, dao
 
 func (r *default{{.ModelName}}Repository) DeleteById(ctx context.Context, {{.ModelNameLower}}Id int64) error {
 	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).Delete()
+	if err == nil {
+		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+	}
 	return err
 }
 
 func (r *default{{.ModelName}}Repository) DeleteByIdTx(ctx context.Context, daoTx *dao.Query, {{.ModelNameLower}}Id int64) error {
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).Delete()
+	if err == nil {
+		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+	}
 	return err
 }
 
 func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64) error {
 	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.In({{.ModelNameLower}}Ids...)).Delete()
+	if err == nil {
+		for _, id := range {{.ModelNameLower}}Ids {
+			gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", id))
+		}
+	}
 	return err
 }
 
 func (r *default{{.ModelName}}Repository) DeleteByIdListTx(ctx context.Context, daoTx *dao.Query, {{.ModelNameLower}}Ids []int64) error {
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.In({{.ModelNameLower}}Ids...)).Delete()
+	if err == nil {
+		for _, id := range {{.ModelNameLower}}Ids {
+			gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", id))
+		}
+	}
 	return err
 }
 
@@ -219,11 +238,17 @@ func (r *default{{.ModelName}}Repository) DeleteByWrapperTx(ctx context.Context,
 
 func (r *default{{.ModelName}}Repository) UpdateById(ctx context.Context, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error {
 	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).UpdateSimple(columns...)
+	if err == nil {
+		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+	}
 	return err
 }
 
 func (r *default{{.ModelName}}Repository) UpdateByIdTx(ctx context.Context, daoTx *dao.Query, {{.ModelNameLower}}Id int64, columns ...field.AssignExpr) error {
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).UpdateSimple(columns...)
+	if err == nil {
+		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+	}
 	return err
 }
 
@@ -231,6 +256,9 @@ func (r *default{{.ModelName}}Repository) UpdateMapById(ctx context.Context, {{.
 	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).
 		Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).
 		Updates(data)
+	if err == nil {
+		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+	}
 	return err
 }
 
@@ -238,6 +266,9 @@ func (r *default{{.ModelName}}Repository) UpdateMapByIdTx(ctx context.Context, d
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).
 		Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).
 		Updates(data)
+	if err == nil {
+		gormplus.SFInvalidate("{{.TableName}}.FindById", gormplus.BuildArgs("id", {{.ModelNameLower}}Id))
+	}
 	return err
 }
 
@@ -262,83 +293,159 @@ func (r *default{{.ModelName}}Repository) UpdateByWrapperTx(ctx context.Context,
 }
 
 func (r *default{{.ModelName}}Repository) FindList(ctx context.Context, query ...gormplus.QueryOption) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
-	return r.buildTx(ctx, query).Find()
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindList", nil,
+		func() ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+			return r.buildTx(ctx, query).Find()
+		},
+	)
 }
 
 func (r *default{{.ModelName}}Repository) FindListByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
-	return r.buildWrapperTx(ctx, fn, query).Find()
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindListByWrapper", nil,
+		func() ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+			return r.buildWrapperTx(ctx, fn, query).Find()
+		},
+	)
 }
 
 func (r *default{{.ModelName}}Repository) FindPage(ctx context.Context, pageNumber int64, pageSize int64, query ...gormplus.QueryOption) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
 	offset := int((pageNumber - 1) * pageSize)
 	limit := int(pageSize)
-	return r.buildTx(ctx, query).FindByPage(offset, limit)
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecutePage(opt, "{{.TableName}}.FindPage",
+		gormplus.BuildArgs("page", pageNumber, "size", pageSize),
+		func() ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, int64, error) {
+			return r.buildTx(ctx, query).FindByPage(offset, limit)
+		},
+	)
 }
 
 func (r *default{{.ModelName}}Repository) FindPageByWrapper(ctx context.Context, pageNumber int64, pageSize int64, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (list []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
 	offset := int((pageNumber - 1) * pageSize)
 	limit := int(pageSize)
-	return r.buildWrapperTx(ctx, fn, query).FindByPage(offset, limit)
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecutePage(opt, "{{.TableName}}.FindPageByWrapper",
+		gormplus.BuildArgs("page", pageNumber, "size", pageSize),
+		func() ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, int64, error) {
+			return r.buildWrapperTx(ctx, fn, query).FindByPage(offset, limit)
+		},
+	)
 }
 
-func (r *default{{.ModelName}}Repository) FindById(ctx context.Context, {{.ModelNameLower}}Id int64) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
-	return dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).First()
+func (r *default{{.ModelName}}Repository) FindById(ctx context.Context, {{.ModelNameLower}}Id int64, query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindById",
+		gormplus.BuildArgs("id", {{.ModelNameLower}}Id),
+		func() (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+			return dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.Eq({{.ModelNameLower}}Id)).First()
+		},
+	)
 }
 
-func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64, orderFields ...field.Expr) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
-	tx := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.In({{.ModelNameLower}}Ids...))
-	if len(orderFields) > 0 {
-		tx = tx.Order(orderFields...)
-	}
-	return tx.Find()
+func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []int64, query ...gormplus.QueryOption) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindByIdList",
+		gormplus.BuildArgs("ids", {{.ModelNameLower}}Ids),
+		func() ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+			tx := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.In({{.ModelNameLower}}Ids...))
+			if len(opt.Cond) > 0 {
+				tx = tx.Where(opt.Cond...)
+			}
+			if len(opt.Select) > 0 {
+				tx = tx.Select(opt.Select...)
+			}
+			if len(opt.OmitFields) > 0 {
+				tx = tx.Omit(opt.OmitFields...)
+			}
+			if len(opt.Order) > 0 {
+				tx = tx.Order(opt.Order...)
+			}
+			if opt.Limit != nil {
+				tx = tx.Limit(*opt.Limit)
+			}
+			return tx.Find()
+		},
+	)
 }
 
 func (r *default{{.ModelName}}Repository) FindOne(ctx context.Context, query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
-	return r.buildTx(ctx, query).First()
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindOne", nil,
+		func() (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+			return r.buildTx(ctx, query).First()
+		},
+	)
 }
 
 func (r *default{{.ModelName}}Repository) FindOneWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
-	return r.buildWrapperTx(ctx, fn, query).First()
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindOneWrapper", nil,
+		func() (*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+			return r.buildWrapperTx(ctx, fn, query).First()
+		},
+	)
 }
 
-func (r *default{{.ModelName}}Repository) Exists(ctx context.Context, cond ...gen.Condition) (bool, error) {
-	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
-	if len(cond) > 0 {
-		tx = tx.Where(cond...)
-	}
-	cnt, err := tx.Count()
-	if err != nil {
-		return false, err
-	}
-	return cnt > 0, nil
+func (r *default{{.ModelName}}Repository) Exists(ctx context.Context, query ...gormplus.QueryOption) (bool, error) {
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.Exists", nil,
+		func() (bool, error) {
+			tx := dao.{{.ModelName}}Entity.WithContext(ctx)
+			if len(opt.Cond) > 0 {
+				tx = tx.Where(opt.Cond...)
+			}
+			cnt, err := tx.Count()
+			if err != nil {
+				return false, err
+			}
+			return cnt > 0, nil
+		},
+	)
 }
 
-func (r *default{{.ModelName}}Repository) ExistsByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (bool, error) {
-	tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
-	if fn != nil {
-		fn(tx)
-	}
-	cnt, err := tx.Apply().Count()
-	if err != nil {
-		return false, err
-	}
-	return cnt > 0, nil
+func (r *default{{.ModelName}}Repository) ExistsByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (bool, error) {
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.ExistsByWrapper", nil,
+		func() (bool, error) {
+			tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
+			if fn != nil {
+				fn(tx)
+			}
+			cnt, err := tx.Apply().Count()
+			if err != nil {
+				return false, err
+			}
+			return cnt > 0, nil
+		},
+	)
 }
 
-func (r *default{{.ModelName}}Repository) Count(ctx context.Context, cond ...gen.Condition) (int64, error) {
-	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
-	if len(cond) > 0 {
-		tx = tx.Where(cond...)
-	}
-	return tx.Count()
+func (r *default{{.ModelName}}Repository) Count(ctx context.Context, query ...gormplus.QueryOption) (int64, error) {
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.Count", nil,
+		func() (int64, error) {
+			tx := dao.{{.ModelName}}Entity.WithContext(ctx)
+			if len(opt.Cond) > 0 {
+				tx = tx.Where(opt.Cond...)
+			}
+			return tx.Count()
+		},
+	)
 }
 
-func (r *default{{.ModelName}}Repository) CountByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo])) (int64, error) {
-	tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
-	if fn != nil {
-		fn(tx)
-	}
-	return tx.Apply().Count()
+func (r *default{{.ModelName}}Repository) CountByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (int64, error) {
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.CountByWrapper", nil,
+		func() (int64, error) {
+			tx := gormplus.GenWrap(dao.{{.ModelName}}Entity.WithContext(ctx))
+			if fn != nil {
+				fn(tx)
+			}
+			return tx.Apply().Count()
+		},
+	)
 }
 
 func newDefault{{.ModelName}}Repository() *default{{.ModelName}}Repository {
