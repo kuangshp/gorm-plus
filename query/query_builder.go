@@ -142,6 +142,47 @@ type IQueryBuilder interface {
 	//   built.Count(&total)
 	//   built.Select("id", "username").Order("created_at DESC").Limit(20).Find(&list)
 	Build() *gorm.DB
+
+	// -------- 调试 --------
+
+	// PrintSQL 立即把当前 builder 的最终 SQL(含填好的参数值)打印到 stdout,
+	// 并继续返回 builder 用于链式调用,不影响实际查询执行。
+	//
+	// 不需要任何 logger 配置,纯粹排查用。
+	//
+	//   query.Query[*User](db, ctx).
+	//       LLike("username", "admin").
+	//       PrintSQL().                     // ← 打印 SELECT * FROM users WHERE username LIKE '%admin' ...
+	//       Build().Find(&users)
+	PrintSQL() IQueryBuilder
+
+	// ToSQL 返回当前查询的最终 SQL 字符串(含填好的参数值),不真正执行 SQL。
+	//
+	// 内部用 gorm 的 DryRun Session 渲染,常用于单测断言、日志记录、调试展示。
+	//
+	// ⚠️ 安全提示:返回的 SQL 已经把参数填进了占位符,不再提供 SQL 注入保护。
+	// 仅用于调试,不要把它喂回 db.Exec / db.Raw 执行。
+	//
+	//   sql := query.Query[*User](db, ctx).
+	//       LLike("username", username).
+	//       ToSQL()
+	//   // sql == "SELECT * FROM users WHERE username LIKE '%admin'"
+	ToSQL() string
+
+	// Explain 执行 EXPLAIN <SQL> 拿到数据库的执行计划,扫描到 target。
+	//
+	// target 通常是 []map[string]any 或自定义 struct slice,字段名匹配 EXPLAIN 输出列。
+	// 不同数据库的 EXPLAIN 输出格式不同(MySQL 字段:id/select_type/table/type/key/rows 等),
+	// 业务方根据所用数据库选合适的接收类型。
+	//
+	//   var plan []map[string]any
+	//   err := query.Query[*User](db, ctx).
+	//       Where("status = ?", 1).
+	//       Explain(&plan)
+	//   for _, row := range plan {
+	//       fmt.Printf("%+v\n", row)
+	//   }
+	Explain(target any) error
 }
 
 // ================== 内部条件节点 ==================
@@ -218,6 +259,35 @@ func (b *Builder) Build() *gorm.DB {
 		db = applyClause(db, c)
 	}
 	return db
+}
+
+// ──── 调试方法 ──────────────────────────────────────────────────────────────
+
+func (b *Builder) PrintSQL() IQueryBuilder {
+	fmt.Println(b.ToSQL())
+	return b
+}
+
+func (b *Builder) ToSQL() string {
+	return b.db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		built := tx
+		for _, c := range b.clauses {
+			built = applyClause(built, c)
+		}
+		// 必须调用一个终结方法(Find/First/Count 等),否则 gorm 不会生成完整 SQL。
+		// 这里用通用的 Find 触发 SELECT;调用方真实意图(Update/Delete/Insert)
+		// 应该用 ToSQL 之外的工具,本方法仅服务于查询场景的调试。
+		return built.Find(&struct{}{})
+	})
+}
+
+func (b *Builder) Explain(target any) error {
+	sql := b.ToSQL()
+	if sql == "" {
+		return fmt.Errorf("ToSQL returned empty,无法 EXPLAIN")
+	}
+	// gorm 的 ToSQL 输出末尾不带分号,直接前缀 EXPLAIN 即可
+	return b.db.Raw("EXPLAIN " + sql).Scan(target).Error
 }
 
 // ================== SQL 构建（内部）==================

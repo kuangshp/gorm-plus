@@ -399,6 +399,39 @@ type IGenWrapper[T GenDo[T]] interface {
 	//     OrderDefault(query.RawField("b.id DESC"))   // 全 0 时才用
 	OrderDefault(fields ...field.Expr) IGenWrapper[T]
 
+	// ── 调试 ──────────────────────────────────────────────────
+
+	// PrintSQL 立即把当前 wrapper 的最终 SQL(含填好的参数值)打印到 stdout,
+	// 并继续返回 wrapper 用于链式调用,不影响实际查询执行。
+	//
+	//   query.Wrap(dao.AccountEntity.WithContext(ctx)).
+	//       LLike(dao.AccountEntity.Username, username).
+	//       PrintSQL().                                  // ← 打印 SELECT * FROM ...
+	//       Apply().Find()
+	PrintSQL() IGenWrapper[T]
+
+	// ToSQL 返回当前查询的最终 SQL 字符串(含填好的参数值),不真正执行 SQL。
+	// 适合单测断言、日志记录、调试展示等场景。
+	//
+	// ⚠️ 返回的 SQL 已经把参数填进了占位符,不再提供 SQL 注入保护,仅用于调试。
+	//
+	//   sql := query.Wrap(dao.AccountEntity.WithContext(ctx)).
+	//       LLike(dao.AccountEntity.Username, "admin").
+	//       ToSQL()
+	ToSQL() string
+
+	// Explain 执行 EXPLAIN <SQL> 拿到数据库的执行计划,扫描到 target。
+	//
+	// target 通常是 []map[string]any 或自定义 struct slice。
+	//
+	//   var plan []map[string]any
+	//   err := query.Wrap(dao.AccountEntity.WithContext(ctx)).
+	//       Where(dao.AccountEntity.Status.Eq(1)).
+	//       Explain(&plan)
+	Explain(target any) error
+
+	// ── 完成构建 ──────────────────────────────────────────────
+
 	// Apply 结束扩展条件构建，返回已注入所有条件的原生 DO。
 	// 之后可继续调用 gorm-gen 原生方法：Order / Limit / Offset / Count / Find 等。
 	//
@@ -634,9 +667,10 @@ func (w *GenWrapper[T]) OrderDefault(fields ...field.Expr) IGenWrapper[T] {
 	return w
 }
 
-func (w *GenWrapper[T]) Apply() T {
-	db := w.do.UnderlyingDB()
-	// 注入表别名：gorm 支持 "table_name alias" 格式
+// buildDB 把所有累积的条件、字段选择、排序、分页应用到 db,返回新的 *gorm.DB。
+// Apply / ToSQL / Explain 共用此方法,保持行为一致。
+func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
+	// 注入表别名:gorm 支持 "table_name alias" 格式
 	if w.alias != "" {
 		db = db.Table(db.Statement.Table + " " + w.alias)
 	}
@@ -657,9 +691,37 @@ func (w *GenWrapper[T]) Apply() T {
 	if w.offset != nil {
 		db = db.Offset(*w.offset)
 	}
+	return db
+}
+
+func (w *GenWrapper[T]) Apply() T {
+	db := w.buildDB(w.do.UnderlyingDB())
 	newDO := w.do.WithContext(w.ctx)
 	newDO.ReplaceDB(db)
 	return newDO
+}
+
+// ──── 调试方法 ──────────────────────────────────────────────────────────────
+
+func (w *GenWrapper[T]) PrintSQL() IGenWrapper[T] {
+	fmt.Println(w.ToSQL())
+	return w
+}
+
+func (w *GenWrapper[T]) ToSQL() string {
+	return w.do.UnderlyingDB().ToSQL(func(tx *gorm.DB) *gorm.DB {
+		// 必须调用一个终结方法(Find/First/Count 等),否则 gorm 不会生成完整 SQL。
+		// 这里用通用的 Find 触发 SELECT;Update/Delete 的调试场景请用 gorm 原生 ToSQL。
+		return w.buildDB(tx).Find(&struct{}{})
+	})
+}
+
+func (w *GenWrapper[T]) Explain(target any) error {
+	sql := w.ToSQL()
+	if sql == "" {
+		return fmt.Errorf("ToSQL returned empty,无法 EXPLAIN")
+	}
+	return w.do.UnderlyingDB().Raw("EXPLAIN " + sql).Scan(target).Error
 }
 
 // ================== SQL 构建（内部） ==================
