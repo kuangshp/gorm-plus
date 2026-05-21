@@ -76,7 +76,7 @@ package query
 
 import (
 	"context"
-	"reflect"
+	"fmt"
 
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
@@ -268,6 +268,8 @@ type IGenWrapper[T GenDo[T]] interface {
 	//
 	//   // 子查询场景
 	//   .RawWhere("id IN (SELECT account_id FROM vip WHERE level > ?)", 2)
+	//
+	// Deprecated: 用 WhereRaw 替代,命名更符合 Go 习惯。两者行为完全一致。
 	RawWhere(sql string, args ...any) IGenWrapper[T]
 
 	// RawOrWhere 追加一段原生 SQL 作为 OR 条件。
@@ -275,12 +277,16 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
 	//    RawOrWhere("role = ? AND dept_id = ?", 99, 10)
 	//   => WHERE status = 1 OR (role = 99 AND dept_id = 10)
+	//
+	// Deprecated: 用 OrWhereRaw 替代,命名更符合 Go 习惯。两者行为完全一致。
 	RawOrWhere(sql string, args ...any) IGenWrapper[T]
 
 	// RawWhereIf condition 为 true 时才追加原生 SQL AND 条件。
 	//
 	//   .RawWhereIf(orgID > 0, "org_id = ?", orgID)
 	//   => WHERE (org_id = 1)  （orgID=0 时无此条件）
+	//
+	// Deprecated: 用 WhereRawIf 替代,命名更符合 Go 习惯。两者行为完全一致。
 	RawWhereIf(condition bool, sql string, args ...any) IGenWrapper[T]
 
 	// Limit 限制查询行数，适合在 fn 回调内直接控制返回数量。
@@ -305,6 +311,94 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   g.Select("b.id", "b.name", "c.name AS category_name")
 	Select(columns ...any) IGenWrapper[T]
 
+	// WhereRaw 追加一段原生 SQL 作为 AND 条件,功能等同 RawWhere(命名更符合 Go 习惯)。
+	//
+	//   .WhereRaw("(discount_amount IS NOT NULL AND discount_amount != '') " +
+	//             "OR (discount_label IS NOT NULL AND discount_label != '')")
+	//   .WhereRaw("created_at BETWEEN ? AND ?", startTime, endTime)
+	//
+	// 空 sql 静默跳过。
+	WhereRaw(sql string, args ...any) IGenWrapper[T]
+
+	// WhereRawIf condition 为 true 时才追加原生 SQL AND 条件,语义更紧凑。
+	//
+	//   .WhereRawIf(req.IsDiscount == 1,
+	//       "(discount_amount IS NOT NULL AND discount_amount != '') " +
+	//       "OR (discount_label IS NOT NULL AND discount_label != '')").
+	//    WhereRawIf(req.IsDiscount == 2,
+	//       "(discount_amount IS NULL OR discount_amount = '') " +
+	//       "AND (discount_label IS NULL OR discount_label = '')")
+	WhereRawIf(condition bool, sql string, args ...any) IGenWrapper[T]
+
+	// OrWhereRaw 追加一段原生 SQL 作为 OR 条件,功能等同 RawOrWhere。
+	//
+	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+	//    OrWhereRaw("role = ? AND dept_id = ?", 99, 10)
+	//   => WHERE status = 1 OR (role = 99 AND dept_id = 10)
+	OrWhereRaw(sql string, args ...any) IGenWrapper[T]
+
+	// Order 追加排序字段(链式顺序生效,先调先排)。
+	//
+	// 既支持 gorm-gen 类型安全字段(dao.X.Y.Desc()),也支持 RawField 包装的原生 SQL。
+	// 多次调用按顺序累积,Apply 时一次性注入到底层 DB。
+	//
+	//   g.Order(dao.AccountEntity.Status.Asc()).
+	//     Order(dao.AccountEntity.CreatedAt.Desc())
+	//   => ORDER BY status ASC, created_at DESC
+	Order(fields ...field.Expr) IGenWrapper[T]
+
+	// OrderRaw 用原生 SQL 片段追加排序,内部走 RawField。
+	//
+	// 适合多表 JOIN 字段、SQL 函数排序、CASE WHEN 表达式等场景。
+	//
+	//   g.OrderRaw("b.id DESC")                                       // 多表别名
+	//   g.OrderRaw("CASE WHEN status='vip' THEN 0 ELSE 1 END ASC")     // CASE WHEN
+	//   g.OrderRaw("a.priority DESC, b.id DESC")                       // 多字段一次性
+	//
+	// ⚠️ sql 严禁拼接用户输入(SQL 注入);vars 走 ? 占位符。
+	OrderRaw(sql string, vars ...interface{}) IGenWrapper[T]
+
+	// OrderIf 条件性追加排序:cond 为 true 用 truthy,否则用 falsy(可省)。
+	//
+	//   // bool 决定 asc/desc
+	//   g.OrderIf(req.SortDesc,
+	//       dao.X.CreatedAt.Desc(),
+	//       dao.X.CreatedAt.Asc())
+	//
+	//   // 只有 truthy,false 时整个跳过
+	//   g.OrderIf(req.UrgentOnly, dao.X.Priority.Desc())
+	OrderIf(cond bool, truthy field.Expr, falsy ...field.Expr) IGenWrapper[T]
+
+	// OrderTriState 按 0/1/2 三态选择排序方向,贴合前端 sort 字段约定。
+	//
+	//   - state == 0   → 跳过此字段
+	//   - state == 1   → 用 asc(升序)
+	//   - state == 2   → 用 desc(降序)
+	//   - 其他值       → 跳过
+	//
+	// 用法对比:
+	//
+	//   // ❌ 旧写法:每字段两层包裹
+	//   if req.AmountSort != 0 {
+	//       g.OrderIf(req.AmountSort == 1, dao.X.Amount.Asc(), dao.X.Amount.Desc())
+	//   }
+	//
+	//   // ✅ 新写法:一行一字段,0 自动跳过
+	//   g.OrderTriState(req.AmountSort, dao.X.Amount.Asc(), dao.X.Amount.Desc()).
+	//     OrderTriState(req.TimeSort,   dao.X.CreatedAt.Asc(), dao.X.CreatedAt.Desc())
+	//
+	// state 类型用 any 兼容前端可能传 int/int8/string("1"/"2"/"asc"/"desc")等。
+	OrderTriState(state any, asc, desc field.Expr) IGenWrapper[T]
+
+	// OrderDefault 仅在此前未设置任何排序时生效(用作默认/兜底)。
+	//
+	// 调用顺序无关,Apply 时检测到 orders 已被填过则被忽略。
+	//
+	//   g.OrderTriState(req.AmountSort, ...).
+	//     OrderTriState(req.TimeSort, ...).
+	//     OrderDefault(query.RawField("b.id DESC"))   // 全 0 时才用
+	OrderDefault(fields ...field.Expr) IGenWrapper[T]
+
 	// Apply 结束扩展条件构建，返回已注入所有条件的原生 DO。
 	// 之后可继续调用 gorm-gen 原生方法：Order / Limit / Offset / Count / Find 等。
 	//
@@ -326,6 +420,7 @@ type GenWrapper[T GenDo[T]] struct {
 	limit      *int            // 限制行数，nil 表示不限制
 	offset     *int            // 偏移量，nil 表示不设置
 	selectCols []any           // 指定查询字段，nil 表示查询全部
+	orders     []field.Expr    // 排序字段(Order/OrderRaw/OrderIf/OrderTriState/OrderDefault 累积),Apply 时注入
 	group      *condGroup
 	replaceDB  func(*gorm.DB) T
 }
@@ -357,11 +452,12 @@ func (w *GenWrapper[T]) addFnGroup(fn func(IGenWrapper[T]), typ condType) {
 }
 
 func (w *GenWrapper[T]) like(col field.Expr, pattern string) {
-	if pattern != "" {
-		if expr, ok := callFieldMethod(col, "Like", pattern).(field.Expr); ok {
-			w.addExpr(expr, condAnd)
-		}
+	if pattern == "" {
+		return
 	}
+	// 直接拼 SQL,值走 ? 占位符,避免反射调用 field 类型方法的类型严格匹配问题。
+	colName := fmt.Sprint(col.ColumnName())
+	w.addExpr(RawField(colName+" LIKE ?", pattern), condAnd)
 }
 
 func (w *GenWrapper[T]) As(alias string) IGenWrapper[T] {
@@ -383,11 +479,20 @@ func (w *GenWrapper[T]) RLike(col field.Expr, val string) IGenWrapper[T] {
 }
 
 func (w *GenWrapper[T]) BetweenIfNotZero(col field.Expr, min, max any) IGenWrapper[T] {
-	if !isZeroVal(min) && !isZeroVal(max) {
-		if expr, ok := callFieldMethod(col, "Between", min, max).(field.Expr); ok {
-			w.addExpr(expr, condAnd)
-		}
+	if isZeroVal(min) || isZeroVal(max) {
+		return w
 	}
+	// 通过反射调用 gorm-gen 的 Between 方法存在类型严格匹配问题:
+	// 不同 field 类型(field.Int / field.Int64 / field.Float64 / field.String 等)
+	// 的 Between 方法形参类型不同,业务方传 int 时若字段是 Int64 会 panic 或静默失败。
+	//
+	// 直接用 RawField 拼 SQL,值走 ? 占位符,gorm 内部按 reflect 转换值类型,
+	// 业务方完全不需要关心字段的具体 field 子类型。
+	//
+	// 注意:field.Expr 的 ColumnName() 返回未导出类型 field.sql(本质是 string),
+	// 通过 fmt.Sprint 转换为通用 string,效果等同 string(x) 但避免类型导出限制。
+	colName := fmt.Sprint(col.ColumnName())
+	w.addExpr(RawField(colName+" BETWEEN ? AND ?", min, max), condAnd)
 	return w
 }
 
@@ -450,6 +555,85 @@ func (w *GenWrapper[T]) Select(columns ...any) IGenWrapper[T] {
 	return w
 }
 
+// ── Where 系列新命名(推荐) ────────────────────────────────────────────
+
+func (w *GenWrapper[T]) WhereRaw(sql string, args ...any) IGenWrapper[T] {
+	w.addRaw(sql, args, condAnd)
+	return w
+}
+
+func (w *GenWrapper[T]) WhereRawIf(condition bool, sql string, args ...any) IGenWrapper[T] {
+	if condition {
+		w.addRaw(sql, args, condAnd)
+	}
+	return w
+}
+
+func (w *GenWrapper[T]) OrWhereRaw(sql string, args ...any) IGenWrapper[T] {
+	w.addRaw(sql, args, condOr)
+	return w
+}
+
+// ── Order 系列 ────────────────────────────────────────────────────────
+
+func (w *GenWrapper[T]) Order(fields ...field.Expr) IGenWrapper[T] {
+	for _, f := range fields {
+		if f != nil {
+			w.orders = append(w.orders, f)
+		}
+	}
+	return w
+}
+
+func (w *GenWrapper[T]) OrderRaw(sql string, vars ...interface{}) IGenWrapper[T] {
+	if sql == "" {
+		return w
+	}
+	w.orders = append(w.orders, RawField(sql, vars...))
+	return w
+}
+
+func (w *GenWrapper[T]) OrderIf(cond bool, truthy field.Expr, falsy ...field.Expr) IGenWrapper[T] {
+	if cond {
+		if truthy != nil {
+			w.orders = append(w.orders, truthy)
+		}
+	} else {
+		for _, f := range falsy {
+			if f != nil {
+				w.orders = append(w.orders, f)
+			}
+		}
+	}
+	return w
+}
+
+func (w *GenWrapper[T]) OrderTriState(state any, asc, desc field.Expr) IGenWrapper[T] {
+	switch normalizeSortState(state) {
+	case 1:
+		if asc != nil {
+			w.orders = append(w.orders, asc)
+		}
+	case 2:
+		if desc != nil {
+			w.orders = append(w.orders, desc)
+		}
+	}
+	return w
+}
+
+func (w *GenWrapper[T]) OrderDefault(fields ...field.Expr) IGenWrapper[T] {
+	if len(w.orders) > 0 {
+		return w
+	}
+	for _, f := range fields {
+		if f != nil {
+			w.orders = append(w.orders, f)
+		}
+	}
+	return w
+}
+
 func (w *GenWrapper[T]) Apply() T {
 	db := w.do.UnderlyingDB()
 	// 注入表别名：gorm 支持 "table_name alias" 格式
@@ -461,6 +645,11 @@ func (w *GenWrapper[T]) Apply() T {
 	}
 	if len(w.selectCols) > 0 {
 		db = db.Select(w.selectCols[0], w.selectCols[1:]...)
+	}
+	// 排序:Order/OrderRaw/OrderIf/OrderTriState/OrderDefault 累积的所有字段
+	// 按调用顺序写入 db,gorm 内部会拼成 ORDER BY a, b, c
+	for _, o := range w.orders {
+		db = db.Order(o)
 	}
 	if w.limit != nil {
 		db = db.Limit(*w.limit)
@@ -512,26 +701,9 @@ func applyCondGroup(db *gorm.DB, group *condGroup) *gorm.DB {
 	return db
 }
 
-// ================== 工具函数 ==================
-
-// callFieldMethod 通过反射调用 gorm-gen 生成的列字段方法（如 Like / Between）。
-// gorm-gen 为每个列生成了对应的类型安全方法，但 field.Expr 接口层面无法静态调用，只能反射。
-func callFieldMethod(col field.Expr, method string, args ...any) any {
-	v := reflect.ValueOf(col)
-	m := v.MethodByName(method)
-	if !m.IsValid() {
-		return nil
-	}
-	in := make([]reflect.Value, len(args))
-	for i, arg := range args {
-		in[i] = reflect.ValueOf(arg)
-	}
-	res := m.Call(in)
-	if len(res) == 0 {
-		return nil
-	}
-	return res[0].Interface()
-}
+// ════════════════════════════════════════════════════════════════════════════
+//  工具函数
+// ════════════════════════════════════════════════════════════════════════════
 
 // RawField 创建一个原始 SQL 表达式,既可用作 Select / Order 字段,
 // 也可作为 Where 条件(因为 field.Expr 已实现 gen.Condition 接口)。
