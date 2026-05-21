@@ -76,7 +76,6 @@ package query
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 
 	"gorm.io/gen/field"
@@ -534,9 +533,40 @@ func callFieldMethod(col field.Expr, method string, args ...any) any {
 	return res[0].Interface()
 }
 
-// RawField 创建一个原始字段，用于构造 SQL。
+// RawField 创建一个原始 SQL 表达式,既可用作 Select / Order 字段,
+// 也可作为 Where 条件(因为 field.Expr 已实现 gen.Condition 接口)。
+//
+// vars 走 gorm 的标准 ? 占位符机制,会被参数化,安全防 SQL 注入。
+//
+// 示例:
+//
+//	// 1) 作为 Order 字段
+//	query.Query().Order(query.RawField("created_at DESC")).Build()
+//
+//	// 2) 作为 Where 条件(纯字符串)
+//	query.Query().Where(query.RawField(
+//	    "(discount_amount IS NOT NULL AND discount_amount != '') " +
+//	    "OR (discount_label IS NOT NULL AND discount_label != '')",
+//	)).Build()
+//
+//	// 3) 带参数化占位符的 Where 条件
+//	query.Query().Where(query.RawField(
+//	    "created_at BETWEEN ? AND ?", startTime, endTime,
+//	)).Build()
+//
+//	// 4) Select 字段(SQL 函数 / 子查询)
+//	query.Query().Select(query.RawField("COUNT(DISTINCT user_id) AS uv")).Build()
+//
+// ⚠️ 安全提示:sql 参数本身严禁拼接用户输入——只允许传"固定的 SQL 片段",
+// 用户输入应该通过 vars 参数传入并由 ? 占位符消费,gorm 会自动转义。
+//
+// 反例(SQL 注入):
+//
+//	query.RawField("user_name LIKE '%" + userInput + "%'")   // ❌ 危险
+//
+// 正例:
+//
+//	query.RawField("user_name LIKE ?", "%"+userInput+"%")    // ✅ 安全
 func RawField(sql string, vars ...interface{}) field.Expr {
-	// 内部常量直接 fmt.Sprintf
-	formatted := fmt.Sprintf(sql, vars...)
-	return field.NewUnsafeFieldRaw(formatted)
+	return field.NewUnsafeFieldRaw(sql, vars...)
 }
