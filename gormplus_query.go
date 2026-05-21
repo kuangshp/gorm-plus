@@ -84,8 +84,3 @@ func ScanByPage[T any](q *gorm.DB, pageNum, pageSize int) ([]T, int64, error) {
 // ================== GenWrap gorm-gen 类型安全链式构造器 ==================
 
 // IGenWrapper gorm-gen 扩展条件构建器接口。
-
-// DbPage 处理分页
-func DbPage(pageNumber, pageSize int64) (offset int, limit int) {
-	return query.DbPage(pageNumber, pageSize)
-}
