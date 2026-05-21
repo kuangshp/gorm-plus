@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/kuangshp/gorm-plus/sf"
 )
@@ -169,6 +170,61 @@ func BuildArgs(kv ...any) map[string]any {
 		m[key] = kv[i+1]
 	}
 	return m
+}
+
+// BuildArgsFromStruct 把结构体字段自动展开为 cache args。
+//
+// 适用场景:手动调 SF / SFWithTTL / SFNoCache 时,不想手写
+// BuildArgs("a", x.A, "b", x.B, ...) 一长串,直接把整个请求 DTO 喂进来。
+//
+// 字段名规则(与 QueryBuilder.WithCacheArgsFromStruct 完全一致):
+//  1. 优先用 json tag 的第一段(去掉 omitempty 等)
+//  2. json tag 为 "-" 的字段跳过
+//  3. 没有 tag 则用结构体字段名本身
+//  4. 嵌入字段递归平铺到顶层
+//  5. nil 指针字段跳过(自动解引用)
+//
+// 使用示例:
+//
+//	type LoginQueryReq struct {
+//	    Days    int    `json:"days"`
+//	    UserId  int64  `json:"user_id,omitempty"`
+//	    Source  string `json:"source,omitempty"`
+//	}
+//
+//	func (r *customerAccountRepository) FindLogins(
+//	    ctx context.Context, req LoginQueryReq,
+//	) ([]*LoginRow, error) {
+//	    return gormplus.SF(func() ([]*LoginRow, error) {
+//	        return gormplus.DALQuery[*LoginRow](ctx, "login.sql",
+//	            req.Days, req.UserId, req.Source)
+//	    },
+//	        "account.FindLogins",
+//	        query.BuildArgsFromStruct(req),   // ← 一行展开所有字段
+//	        5*time.Minute,
+//	    )
+//	}
+//
+// 传入 nil / 非结构体 / nil 指针时返回空 map(不会 panic)。
+func BuildArgsFromStruct(v any) map[string]any {
+	if v == nil {
+		return map[string]any{}
+	}
+
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return map[string]any{}
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return map[string]any{}
+	}
+
+	out := make(map[string]any, rv.NumField())
+	FlattenStructToArgs(rv, out)
+	return out
 }
 
 // mergeCacheArgs 把模板默认 args 与业务方提供的 cache args 合并。

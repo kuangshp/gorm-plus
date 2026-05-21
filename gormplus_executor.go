@@ -62,6 +62,42 @@ func BuildArgs(kv ...any) map[string]any {
 	return query.BuildArgs(kv...)
 }
 
+// BuildArgsFromStruct 把结构体字段自动展开为 cache args,适合手动调
+// SF / SFWithTTL / SFNoCache 时不想手写一长串 BuildArgs 的场景。
+//
+// 字段名规则:
+//  1. 优先用 json tag 第一段(去掉 omitempty 等修饰符)
+//  2. json tag 为 "-" 的字段跳过
+//  3. 没有 tag 用结构体字段名本身
+//  4. 嵌入字段递归平铺到顶层
+//  5. nil 指针字段跳过
+//
+// 使用示例(DAL + SF 包装):
+//
+//	type LoginQueryReq struct {
+//	    Days   int    `json:"days"`
+//	    UserId int64  `json:"user_id,omitempty"`
+//	    Source string `json:"source,omitempty"`
+//	}
+//
+//	func (r *customerAccountRepository) FindLogins(
+//	    ctx context.Context, req LoginQueryReq,
+//	) ([]*LoginRow, error) {
+//	    return gormplus.SF(func() ([]*LoginRow, error) {
+//	        return gormplus.DALQuery[*LoginRow](ctx, "login.sql",
+//	            req.Days, req.UserId, req.Source)
+//	    },
+//	        "account.FindLogins",
+//	        gormplus.BuildArgsFromStruct(req),   // ← 一行替代手写
+//	        5*time.Minute,
+//	    )
+//	}
+//
+// 传入 nil / 非结构体 / nil 指针时返回空 map(不会 panic)。
+func BuildArgsFromStruct(v any) map[string]any {
+	return query.BuildArgsFromStruct(v)
+}
+
 // FirstQueryOption 从可变参数中取第一个 QueryOption。
 // 当只取首个 opt 即可（不需要合并多个）时使用，比 MergeQueryOptions 省一次循环。
 func FirstQueryOption(opts []query.QueryOption) query.QueryOption {

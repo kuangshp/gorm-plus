@@ -2,9 +2,12 @@ package query
 
 import (
 	"fmt"
+	"reflect"
+	"strings"
+	"time"
+
 	"gorm.io/gen"
 	"gorm.io/gen/field"
-	"time"
 )
 
 type SingleFlightOption struct {
@@ -198,6 +201,135 @@ func (q *QueryBuilder) WithCacheArgsMap(m map[string]any) *QueryBuilder {
 	return q
 }
 
+// WithCacheArgsFromStruct 把结构体字段自动展开为 cache args，方便 POST 分页 DTO 直接灌入。
+//
+// 使用场景：分页查询的 POST 请求里通常会绑定一个查询 DTO，业务方不希望手写一长串
+// WithCacheArgs("page", req.Page, "size", req.Size, "status", req.Status, ...)
+// 用本方法直接传 DTO 指针/值即可。
+//
+// 字段名取值规则：
+//  1. 优先用 json tag 的第一段（如 `json:"user_name,omitempty"` → "user_name"）
+//  2. json tag 为 "-" 的字段跳过
+//  3. 没有 json tag 的字段用结构体字段名本身（如 "UserName"）
+//
+// 跳过规则：
+//   - nil 指针字段跳过（避免污染 key）
+//   - 字段值为零值时仍会进入 args（业务方需要语义一致性，所以保留）
+//   - 嵌入字段会递归展开
+//
+// 示例（POST 分页查询）：
+//
+//	type UserListReq struct {
+//	    Page    int    `json:"page"`
+//	    Size    int    `json:"size"`
+//	    Status  int    `json:"status,omitempty"`
+//	    Keyword string `json:"keyword,omitempty"`
+//	    UserId  int64  `json:"user_id,omitempty"`
+//	}
+//
+//	func (h *UserHandler) List(c *gin.Context) {
+//	    var req UserListReq
+//	    c.ShouldBindJSON(&req)
+//
+//	    list, total, _ := h.repo.FindPage(c, req.Page, req.Size, query.Query().
+//	        Where(buildConditions(req)...).
+//	        WithCache(30*time.Second).
+//	        WithCacheArgsFromStruct(req).    // ← 一行灌入,无需手动展开
+//	        Build())
+//	}
+//
+// 注意：传入结构体的字段顺序、值类型必须稳定，跨版本改字段名会导致 cache key 漂移。
+func (q *QueryBuilder) WithCacheArgsFromStruct(v any) *QueryBuilder {
+	if v == nil {
+		return q
+	}
+
+	rv := reflect.ValueOf(v)
+	// 解指针
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return q
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return q
+	}
+
+	if q.option.Cache == nil {
+		q.option.Cache = &CacheOption{}
+	}
+	if q.option.Cache.Args == nil {
+		q.option.Cache.Args = make(map[string]any, rv.NumField())
+	}
+
+	FlattenStructToArgs(rv, q.option.Cache.Args)
+	return q
+}
+
+// FlattenStructToArgs 递归把结构体字段写入 args map(导出供 BuildArgsFromStruct 复用)。
+// 嵌入字段会平铺到顶层(避免出现 args["EmbeddedStruct"] 这种不稳定的 key)。
+//
+// 一般业务方不直接调用此函数,而是用更高层的:
+//   - QueryBuilder.WithCacheArgsFromStruct(req)        链式查询场景
+//   - BuildArgsFromStruct(req)                          手动 SF 调用场景
+func FlattenStructToArgs(rv reflect.Value, out map[string]any) {
+	rt := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		sf := rt.Field(i)
+		// 跳过未导出字段
+		if !sf.IsExported() {
+			continue
+		}
+		fv := rv.Field(i)
+
+		// 嵌入字段递归展开
+		if sf.Anonymous {
+			fk := fv.Kind()
+			if fk == reflect.Ptr {
+				if fv.IsNil() {
+					continue
+				}
+				fv = fv.Elem()
+				fk = fv.Kind()
+			}
+			if fk == reflect.Struct {
+				FlattenStructToArgs(fv, out)
+				continue
+			}
+		}
+
+		// 解析 json tag
+		tag := sf.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name := sf.Name
+		if tag != "" {
+			if idx := strings.Index(tag, ","); idx >= 0 {
+				tag = tag[:idx]
+			}
+			if tag != "" {
+				name = tag
+			}
+		}
+
+		// 解指针；nil 指针跳过避免污染 key
+		for fv.Kind() == reflect.Ptr {
+			if fv.IsNil() {
+				fv = reflect.Value{}
+				break
+			}
+			fv = fv.Elem()
+		}
+		if !fv.IsValid() {
+			continue
+		}
+
+		out[name] = fv.Interface()
+	}
+}
+
 // Build 构建QueryOption
 func (q *QueryBuilder) Build() QueryOption {
 	return q.option
@@ -267,17 +399,4 @@ func MergeQueryOptions(opts ...QueryOption) QueryOption {
 		}
 	}
 	return result
-}
-
-func DbPage(pageNumber, pageSize int64) (offset int, limit int) {
-	if pageNumber == 0 {
-		pageNumber = 1
-	}
-	switch {
-	case pageSize > 500:
-		pageSize = 500
-	case pageSize <= 0:
-		pageSize = 10
-	}
-	return int((pageNumber - 1) * pageSize), int(pageSize)
 }
