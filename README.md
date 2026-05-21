@@ -18,26 +18,69 @@ go get github.com/kuangshp/gorm-plus
 
 ```
 gorm-plus/
-├── gormplus.go           # 统一入口，所有功能的顶层导出
+├── gormplus.go                  # 包文档 + ctx 解析器（顶层入口）
+├── gormplus_datasource.go       # 多数据源管理转发
+├── gormplus_query.go            # 原生 gorm 链式查询转发（IQueryBuilder/Query）
+├── gormplus_genwrap.go          # gorm-gen 类型安全链式转发（IGenWrapper/GenWrap）
+├── gormplus_sf.go               # SingleFlight + 缓存转发（含 RawValue、批量失效等）
+├── gormplus_executor.go         # 查询执行器（ExecuteQuery/ExecutePage/BuildArgs）
+├── gormplus_tenant.go           # 多租户插件转发
+├── gormplus_permission.go       # 数据权限插件转发
+├── gormplus_autofill.go         # 自动填充插件转发
+├── gormplus_slowquery.go        # 慢查询监控转发
+├── gormplus_generator.go        # 代码生成器入口转发
+├── gormplus_dal.go              # DAL（SQL 文件化）转发
 ├── version.go
-├── query/
-│   ├── query_builder.go  # IQueryBuilder：原生 gorm 链式条件构造器
-│   ├── gen_wrapper.go    # IGenWrapper：gorm-gen 类型安全链式构造器
-│   ├── slow_query.go     # 慢查询监控 gorm 插件
+│
+├── query/                       # 原生 gorm 与 gorm-gen 链式构造器
+│   ├── query_builder.go         # IQueryBuilder：原生 gorm 链式条件
+│   ├── gen_wrapper.go           # IGenWrapper：gorm-gen 类型安全链式
+│   ├── query_option.go          # QueryOption / WithCache / WithCacheArgs 等
+│   ├── query_executor.go        # ExecuteQuery / ExecutePage（sf+cache 装饰器）
+│   ├── slow_query.go            # 慢查询监控 gorm 插件
 │   └── utils.go
-├── dal/
-│   └── dal.go            # SQL 文件化查询（embed + 泛型，复杂 SQL 首选）
-├── plugin/
-│   ├── ctx.go            # ctx 解析器（屏蔽 gin / go-zero / fiber 框架差异）
-│   ├── tenant.go         # 多租户插件
-│   ├── dataPermission.go # 数据权限插件
-│   └── autoOperator.go   # 自动填充插件
-├── datasource/
-│   └── manager.go        # 多数据源管理（任意 gorm 驱动 / 主从分离 / 读写分离）
-├── sf/
-│   └── sf.go             # SingleFlight + 可插拔缓存（防缓存击穿）
-└── generator/            # 代码生成器
+│
+├── sf/                          # SingleFlight + 可插拔缓存
+│   ├── sf.go                    # 核心：SFCache 接口、RawValue 协议、内存缓存
+│   └── sf_test.go               # 34 个测试用例（含 Redis 路径回归）
+│
+├── dal/                         # SQL 文件化查询（embed + 泛型）
+│   ├── dal.go                   # 包文档
+│   ├── instance.go              # DAL / NewDal / 全局 defaultDAL
+│   ├── provider.go              # DBProvider
+│   ├── loader.go                # SQLLoader / EmbedLoader
+│   ├── options.go               # Option / WithDebug 等
+│   ├── hook.go                  # Hook 接口
+│   ├── query.go                 # Query / QueryOne / Count / Page
+│   ├── tx.go                    # WithTx / TxQuery / TxExec
+│   ├── must.go                  # MustExec / MustQueryOne
+│   ├── debug.go                 # debug 日志
+│   └── dal_test.go              # 47 个测试用例
+│
+├── plugin/                      # GORM 插件集合
+│   ├── ctx.go                   # ctx 解析器（屏蔽 gin / go-zero / fiber 差异）
+│   ├── tenant.go                # 多租户插件（多字段、多表、JOIN 别名识别）
+│   ├── dataPermission.go        # 数据权限插件
+│   └── autoOperator.go          # 自动填充插件（创建人、更新时间等）
+│
+├── datasource/                  # 多数据源管理
+│   └── manager.go               # 任意 gorm 驱动 / 主从 / 读写分离
+│
+└── generator/                   # 代码生成器
+    ├── generator.go             # 主逻辑
+    ├── config.go                # YAML 配置
+    ├── generator.example.yaml
+    └── template/                # 代码模板
+        ├── repository_gen_template.txt   # 自动生成（含缓存失效）
+        ├── repository_template.txt       # 用户可改
+        ├── api_template.txt
+        ├── base_api_template.txt
+        ├── dto_template.txt
+        ├── vo_template.txt
+        └── mapper_template.txt
 ```
+
+> **顶层 `gormplus_*.go` 文件**只做类型别名 + 函数转发，把分包的 API 聚合到 `gormplus` 命名空间，业务方一律用 `gormplus.XXX` 调用，不需要直接 import 子包（`sf` / `query` / `plugin` / `dal` 等）。
 
 ---
 
@@ -566,79 +609,379 @@ db.WithContext(ctx).Model(&account).Updates(data) // UpdatedBy / UpdatedName 自
 
 ## 八、SingleFlight + 可插拔缓存（SF）
 
+### 它解决什么问题
+
+业务里经常遇到这几个场景：
+
+- **缓存击穿**：热 key 失效瞬间大量请求同时打 DB
+- **重复查询**：同一秒内同样的查询打了 100 次 DB
+- **缓存一致性**：写完数据库后旧缓存还在
+
+SF（SingleFlight + Cache）一次解决：同一瞬间并发请求合并成一次、结果按 TTL 缓存、写操作支持精确/前缀失效。
+
+### 查询流程图
+
+#### 整体链路:从前端请求到数据库
+
+业务方最常关心的是:**一个请求进来,sf+cache 在哪里、命中和未命中时分别走什么路径**。
+
+执行顺序遵循 go-zero `sqlc.CachedConn` 模式:**先查缓存(外层),未命中才进 singleflight(内层)**——命中场景零开销,未命中场景由 sf 合并并发请求保护数据库。
+
+```mermaid
+flowchart LR
+    Client([客户端<br/>浏览器/APP])
+
+    subgraph App[业务服务进程]
+        direction TB
+        Handler[Handler<br/>HTTP 路由层]
+        Service[Service<br/>业务逻辑层]
+        Repo[Repository<br/>generator 自动生成]
+
+        Handler --> Service
+        Service --> Repo
+    end
+
+    subgraph SFLayer[gormplus.SF + Cache 层]
+        direction TB
+        CacheRead[(① 缓存<br/>内存 / Redis)]
+        SFExec{② sf 合并并发<br/>同 key 只跑一次}
+
+        CacheRead -. 未命中才进 .-> SFExec
+    end
+
+    DB[(MySQL / PG<br/>真实数据库)]
+
+    Client -- HTTP 请求 --> Handler
+    Repo -- FindById / FindList<br/>带 WithCache --> CacheRead
+
+    CacheRead == 命中 ==> Repo
+    SFExec -- 未命中<br/>打 DB --> DB
+    DB -- 返回 + 回填 --> CacheRead
+    CacheRead -. 回填后返回 .-> Repo
+
+    Repo --> Service --> Handler
+    Handler -- HTTP 响应 --> Client
+
+    classDef hit fill:#d4edda,stroke:#28a745
+    classDef miss fill:#fff3cd,stroke:#ffc107
+    class CacheRead hit
+    class DB miss
+```
+
+阅读要点:
+
+- **缓存命中(粗实线)**:请求进来直接命中缓存返回,**根本不进 singleflight、不打 DB**。同一秒来 100 个相同请求都走这条路
+- **缓存未命中**:才进入 singleflight,把 N 个并发请求合并成 1 次去打 DB,其余 N-1 个等待并共享结果(防缓存击穿)
+- **回填**:DB 查回的数据 `cache.Set` 后,下一次同 key 请求直接命中缓存
+- **写操作(Create/Update/Delete)**:模板自动调 `invalidateWriteCaches` 把缓存前缀清掉,下次读会重新打 DB → 回填缓存
+
+#### sf 内部细节：cache.Get → singleflight → DB
+
+放大上图的 "sf 合并并发" 节点——`gormplus.SF` / `SFWithTTL` 在一次查询里实际干了什么：
+
+```mermaid
+flowchart TD
+    Start([业务调用 SF / SFWithTTL]) --> BuildKey[构建确定性 key<br/>sf:fnName:md5 sorted_json args]
+    BuildKey --> CheckTTL{ttl &gt; 0 ?}
+
+    CheckTTL -- 否 ttl=0 --> SF[singleflight.Do<br/>合并并发后立即 Forget]
+    CheckTTL -- 是 --> Cache1[cache.Get key]
+
+    Cache1 -- 命中 --> Unwrap1[unwrapCached T]
+    Cache1 -- 未命中 --> SF
+
+    Unwrap1 -- 成功 --> Return([返回 T])
+    Unwrap1 -- 失败 --> Hook[触发 OnUnwrapError 钩子<br/>上报 metric/log]
+    Hook --> SF
+
+    SF --> Cache2[Do 内部二次查缓存<br/>防止等待期间已写入]
+    Cache2 -- 命中 --> Unwrap2[unwrapCached T]
+    Cache2 -- 未命中 --> DB[fn 真正打 DB]
+
+    Unwrap2 -- 成功 --> Return
+    Unwrap2 -- 失败 --> Hook2[触发 OnUnwrapError]
+    Hook2 --> DB
+
+    DB -- 成功 --> SetCache{ttl &gt; 0 ?}
+    DB -- 失败 --> ReturnErr([返回 error])
+
+    SetCache -- 是 --> Store[cache.Set key val ttl] --> Return
+    SetCache -- 否 --> Return
+```
+
+关键设计点：
+
+- **装饰器顺序**：cache 在外、sf 在内（同 go-zero 的 `sqlc.CachedConn`）。并发请求先被 sf 合并，再由这一次去查 cache，避免缓存击穿
+- **key 顺序无关**：args 用 `marshalSorted` 按 key 字典序排序后 md5，传入顺序不影响最终 key
+- **TTL=0 等价于 SFNoCache**：纯合并并发，不缓存，立即 Forget（适合实时数据）
+- **类型还原 unwrapCached**：内存缓存走 `raw.(T)`，Redis 走 `json.Unmarshal(RawValue, &t)`，业务代码完全无感
+
 ### 方式一：内存缓存（默认，零配置）
 
 ```go
-// 无需任何配置，直接使用
-defer gormplus.StopSFCache() // 退出时停止后台清理 goroutine
+// 无需任何配置，懒加载内存缓存
+defer gormplus.StopSFCache() // 退出时停掉后台清理 goroutine
 
-// 带缓存（30 秒）
+// ① 带缓存（30 秒）
 list, err := gormplus.SF(func() ([]*model.Account, error) {
-var result []*model.Account
-err := gormplus.Query[*model.Account](db, ctx).
-WhereIf(status != 0, "status = ?", status).
-Build().Find(&result)
-return result, err
+    var result []*model.Account
+    err := gormplus.Query[*model.Account](db, ctx).
+        WhereIf(status != 0, "status = ?", status).
+        Build().Find(&result)
+    return result, err
 }, "Account.List", map[string]any{"status": status, "page": pageNum}, 30*time.Second)
 
-// 纯 singleflight（不缓存，只合并并发）
+// ② 纯 singleflight（不缓存，只合并并发，适合余额、详情等实时数据）
 account, err := gormplus.SFNoCache(func() (*model.Account, error) {
-var a model.Account
-err := db.WithContext(ctx).Where("id = ?", id).First(&a).Error
-return &a, err
+    var a model.Account
+    err := db.WithContext(ctx).Where("id = ?", id).First(&a).Error
+    return &a, err
 }, "Account.Detail", map[string]any{"id": id})
 
-// 写操作后主动失效缓存
-gormplus.SFInvalidate("Account.List", map[string]any{"status": status})
+// ③ 写后失效（精确失效，args 必须和查询时一致）
+gormplus.SFInvalidate("Account.FindById", map[string]any{"id": id})
 ```
 
 ### 方式二：Redis 缓存（多实例部署推荐）
 
+⚠️ **重要**：Redis 缓存的 `Get` 必须返回 `gormplus.RawValue(b)` 而不是反序列化后的 `any`，否则 sf 包内部的类型断言会失败，导致缓存命中率永远为 0（业务无感知，但每次都打 DB）。
+
 ```go
-// 实现 SFCache 接口
+import (
+    "context"
+    "encoding/json"
+    "time"
+
+    "github.com/redis/go-redis/v9"
+    gormplus "github.com/kuangshp/gorm-plus"
+)
+
+// 实现 SFCache 接口（Get / Set / Del 必选）+ 三个可选接口
 type RedisSFCache struct {
-rdb    *redis.Client
-prefix string
+    rdb    *redis.Client
+    prefix string
 }
 
+// 必选：Get 返回 RawValue 让框架自动反序列化到业务期望的类型 T
 func (c *RedisSFCache) Get(key string) (any, bool) {
-val, err := c.rdb.Get(context.Background(), c.prefix+key).Bytes()
-if err != nil { return nil, false }
-var result any
-if err := json.Unmarshal(val, &result); err != nil { return nil, false }
-return result, true
+    b, err := c.rdb.Get(context.Background(), c.prefix+key).Bytes()
+    if err != nil {
+        return nil, false
+    }
+    return gormplus.RawValue(b), true   // ← 关键：用 RawValue 包装字节流
 }
+
+// 必选：Set 把任意 T 序列化为 []byte 写入 Redis
 func (c *RedisSFCache) Set(key string, val any, ttl time.Duration) {
-b, _ := json.Marshal(val)
-c.rdb.Set(context.Background(), c.prefix+key, b, ttl)
+    b, err := json.Marshal(val)
+    if err != nil {
+        return
+    }
+    c.rdb.Set(context.Background(), c.prefix+key, b, ttl)
 }
+
+// 必选：精确删除
 func (c *RedisSFCache) Del(key string) {
-c.rdb.Del(context.Background(), c.prefix+key)
+    c.rdb.Del(context.Background(), c.prefix+key)
 }
 
-// 启动时注册（必须在第一次调用 SF 之前）
-gormplus.RegisterCache(&RedisSFCache{rdb: rdb, prefix: "myapp:sf:"})
+// 可选 ①：实现 SFCachePrefixDeleter 支持前缀失效（SFInvalidatePrefix 需要）
+//        用 SCAN 而非 KEYS，避免阻塞 Redis 集群
+func (c *RedisSFCache) DelByPrefix(prefix string) {
+    ctx := context.Background()
+    var cursor uint64
+    for {
+        keys, next, err := c.rdb.Scan(ctx, cursor, c.prefix+prefix+"*", 500).Result()
+        if err != nil {
+            return
+        }
+        if len(keys) > 0 {
+            c.rdb.Del(ctx, keys...)
+        }
+        cursor = next
+        if cursor == 0 {
+            break
+        }
+    }
+}
 
-// 业务代码与内存缓存完全一致，无需任何改动
-list, err := gormplus.SF(fn, "Account.List", args, 30*time.Second)
+// 可选 ②：实现 SFCachePrefixBatchDeleter 支持批量前缀失效（性能优化，强烈推荐）
+//        一次 pipeline 处理多个前缀，比循环调用 DelByPrefix 快 N 倍
+//        generator 模板里的 invalidateWriteCaches 会一次清 11 个前缀
+func (c *RedisSFCache) DelByPrefixes(prefixes []string) {
+    ctx := context.Background()
+    pipe := c.rdb.Pipeline()
+    for _, prefix := range prefixes {
+        var cursor uint64
+        for {
+            keys, next, err := c.rdb.Scan(ctx, cursor, c.prefix+prefix+"*", 500).Result()
+            if err != nil {
+                break
+            }
+            if len(keys) > 0 {
+                pipe.Del(ctx, keys...)
+            }
+            cursor = next
+            if cursor == 0 {
+                break
+            }
+        }
+    }
+    _, _ = pipe.Exec(ctx)
+}
+
+// 可选 ③：实现 SFCacheCloser，让 StopSFCache 自动关闭 Redis 客户端
+func (c *RedisSFCache) Close() error {
+    return c.rdb.Close()
+}
+
+// ===== 启动时注册（强制只能调用一次，重复会 panic）=====
+func main() {
+    rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+    gormplus.RegisterCache(&RedisSFCache{rdb: rdb, prefix: "myapp:sf:"})
+    defer gormplus.StopSFCache() // 自动调用 Close 关闭 Redis 客户端
+
+    // 业务代码与内存缓存完全一致，无需任何改动
+    list, err := gormplus.SF(fn, "Account.List", args, 30*time.Second)
+}
 ```
 
-| | 内存缓存（默认） | Redis 缓存 |
+| 维度 | 内存缓存（默认） | Redis 缓存 |
 |---|---|---|
-| 配置 | 零配置 | 启动时 `RegisterCache` 一次 |
+| 配置 | 零配置 | 启动期 `RegisterCache` 一次 |
 | 适用 | 单机、开发测试 | 多实例部署、缓存共享 |
-| 退出清理 | `defer StopSFCache()` | 用户自行管理 Redis 连接 |
+| 退出清理 | `defer StopSFCache()` | 同左（自动调用 Close） |
 | 业务代码 | 完全一样 | 完全一样 |
+| 前缀失效 | 内置支持 | 需实现 `DelByPrefix` |
+| 批量失效 | 内置支持 | 推荐实现 `DelByPrefixes` |
+
+### 主动失效：精确 vs 前缀
+
+| API | 何时用 | 示例 |
+|---|---|---|
+| `SFInvalidate(fnName, args)` | args 完全可预知（如 FindById） | `gormplus.SFInvalidate("user.FindById", gormplus.BuildArgs("id", 1))` |
+| `SFInvalidatePrefix(fnName)` | args 不可穷举（如 FindList、Count，Where 条件千变万化） | `gormplus.SFInvalidatePrefix("user.FindList")` |
+| `SFInvalidatePrefixes(fnNames)` | 一次清多个方法（generator 模板用） | 见下文 |
+
+**前缀失效安全保护**：`fnName` 为空字符串或不含点号且短于 3 字符的可疑前缀会被静默拒绝，避免误清全部缓存。
+
+```go
+// ① 精确失效：FindById 更新后
+repo.UpdateById(ctx, id, ...)
+gormplus.SFInvalidate("user.FindById", gormplus.BuildArgs("id", id))
+
+// ② 前缀失效：删一条记录后，列表/统计缓存全清
+repo.DeleteById(ctx, id)
+gormplus.SFInvalidatePrefix("user.FindList")
+gormplus.SFInvalidatePrefix("user.FindPage")
+gormplus.SFInvalidatePrefix("user.Count")
+
+// ③ 批量前缀失效（推荐，Redis 场景下一次 pipeline 处理）
+gormplus.SFInvalidatePrefixes([]string{
+    "user.FindList",
+    "user.FindPage",
+    "user.Count",
+    "user.Exists",
+})
+
+// ④ 一把清整张表（注意尾部要带点号，避免误伤 user_role 等前缀相同的表）
+gormplus.SFInvalidatePrefix("user.")
+```
+
+### generator 模板自动失效
+
+代码生成器产出的 Repository 在写操作后**自动失效缓存**，业务方无需手动调用：
+
+| 写操作 | 自动失效范围 |
+|---|---|
+| `Create` / `CreateBatch` | List / Page / Count / Exists 等 11 个前缀（一次批量） |
+| `UpdateById` / `UpdateMapById` | 同上 + 该 ID 的 FindById 精确失效 |
+| `DeleteById` / `DeleteByIdList` | 同上 + 该 ID 的 FindById 精确失效 |
+| 条件 `Update/Delete`（不知道影响哪些 ID） | 整张表所有缓存按前缀失效（保守策略） |
+
+生成的代码里有两个辅助方法：
+
+```go
+// invalidateWriteCaches 失效所有受写操作影响的缓存（List/Page/Count/Exists 全部前缀）。
+// 用 SFInvalidatePrefixes 批量接口，Redis 场景下一次 pipeline 完成。
+func (r *defaultUserRepository) invalidateWriteCaches() {
+    gormplus.SFInvalidatePrefixes([]string{
+        "user.FindList", "user.FindListByWrapper",
+        "user.FindPage", "user.FindPageByWrapper",
+        "user.FindByIdList",
+        "user.FindOne", "user.FindOneWrapper",
+        "user.Count", "user.CountByWrapper",
+        "user.Exists", "user.ExistsByWrapper",
+    })
+}
+
+// invalidateAllTableCaches 失效整张表所有缓存（条件 Update/Delete 用）。
+func (r *defaultUserRepository) invalidateAllTableCaches() {
+    gormplus.SFInvalidatePrefix("user.")
+}
+```
+
+### 列表/分页查询：必须显式声明 cache args
+
+主键查询（`FindById`、`FindByIdList`）框架自动把主键写进 args，cache key 全局唯一。但 **`FindList` / `FindPage` / `FindOne` / `Count` / `Exists` 这些方法的 Where 条件是 `gen.Condition` 接口类型，无法稳定序列化**——必须用 `WithCacheArgs` 把影响查询的参数显式声明出来，否则会出现 **不同 Where 命中同一 cache key 串数据** 的脏读问题。
+
+```go
+// ❌ 危险：两次查询条件不同但 cache key 相同 → 串数据
+repo.FindList(ctx, query.Query().Where(...).WithCache(5*time.Minute).Build())
+
+// ✅ 正确：显式声明所有影响查询的参数
+repo.FindList(ctx, query.Query().
+    Where(dao.User.Status.Eq(status), dao.User.UserID.Eq(userId)).
+    WithCache(5*time.Minute).
+    WithCacheArgs("status", status, "user_id", userId).   // ← 关键
+    Build())
+
+// ✅ 从 HTTP DTO 灌入（多个 Args 会自动合并）
+repo.FindPage(ctx, page, size, query.Query().
+    Where(buildConditions(req)...).
+    WithCache(30*time.Second).
+    WithCacheArgs("user_id", userId).         // service 层贡献
+    WithCacheArgsMap(req.ToMap()).            // handler 层贡献
+    Build())
+```
+
+### 缓存反序列化失败的观测
+
+Redis 数据被外部改坏、跨版本结构变更等场景下，缓存反序列化会失败。框架默认**降级到 DB**，对业务透明——但这意味着缓存悄悄失效却没人知道。注入观测钩子可监控：
+
+```go
+gormplus.SetCacheUnwrapErrorHandler(func(key string, err error) {
+    zap.L().Warn("cache unwrap failed",
+        zap.String("key", key),
+        zap.Error(err),
+    )
+    metrics.CacheUnwrapErrors.Inc()
+})
+```
+
+钩子会在高频路径执行，要尽量快、不阻塞。钩子内 panic 会被框架吞掉，不影响主流程。
 
 ### 缓存 TTL 建议
 
-| 场景 | 推荐 TTL |
-|------|---------|
-| 列表 / 统计查询 | 3s ~ 30s |
-| 配置 / 字典数据 | 1min ~ 5min |
-| 详情 / 实时数据 | 0（SFNoCache）|
+| 场景 | 推荐 TTL | API |
+|---|---|---|
+| 列表 / 统计查询 | 3s ~ 30s | `WithCache(30*time.Second)` |
+| 配置 / 字典数据（几乎不变） | 1min ~ 5min | `WithCache(5*time.Minute)` |
+| 详情 / 实时数据（用户余额等） | 0 | `WithSingleFlight(0)` 或 `SFNoCache` |
 
----
+### 注册期 vs 运行期：RegisterCache / ForceReplaceCache
+
+```go
+// 启动期注册一次（强制幂等保护，重复调用会 panic）
+gormplus.RegisterCache(redisCache)
+
+// 测试隔离 / 运维灰度切换缓存层（带数据丢失风险，慎用）
+func TestXxx(t *testing.T) {
+    gormplus.ForceReplaceCache(gormplus.NewMemoryCache())
+    defer gormplus.StopSFCache()
+    // ... 测试逻辑
+}
+```
 
 ## 九、慢查询监控
 
@@ -722,28 +1065,28 @@ your-project/
 package yourpkg
 
 import (
-    "embed"
-    "io/fs"
-    "log"
-    "time"
-    gormplus "github.com/kuangshp/gorm-plus"
+	"embed"
+	"io/fs"
+	"log"
+	"time"
+	gormplus "github.com/kuangshp/gorm-plus"
 )
 
 //go:embed rawsql
 var SQLFS embed.FS
 
 func InitDAL(db *gorm.DB) {
-    sub, _ := fs.Sub(SQLFS, "rawsql") // 可选,写上这个在下面的时候"account/find_by_id.sql"不需要加rawsql
-    d, err := gormplus.NewDal(
-        db,
-        gormplus.NewEmbedLoader(sub),
-        gormplus.WithDALDebug(true),                  // 开发环境开启
-        gormplus.WithDALCacheCleanup(30*time.Minute), // 可选
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer d.Close() // 程序退出时停止后台 goroutine
+	sub, _ := fs.Sub(SQLFS, "rawsql") // 可选,写上这个在下面的时候"account/find_by_id.sql"不需要加rawsql
+	d, err := gormplus.NewDal(
+		db,
+		gormplus.NewEmbedLoader(sub),
+		gormplus.WithDALDebug(true),                  // 开发环境开启
+		gormplus.WithDALCacheCleanup(30*time.Minute), // 可选
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer d.Close() // 程序退出时停止后台 goroutine
 }
 ```
 
@@ -760,20 +1103,20 @@ if account == nil { return errors.New("账号不存在") }
 
 // 命名参数查询（@name）
 rows, err := gormplus.DALQueryNamed[AccountVO](ctx, "account/search.sql", map[string]any{
-    "username": "张", "status": 1, "limit": 10, "offset": 0,
+"username": "张", "status": 1, "limit": 10, "offset": 0,
 })
 
 // 分页查询（count SQL 自动推导：page.sql → count_page.sql）
 result, err := gormplus.DALQueryPage[AccountVO](
-    ctx, "account/page.sql",
-    []any{1},      // 业务过滤参数，同时传给 count SQL
-    []any{10, 0},  // 分页参数（LIMIT, OFFSET），仅传给数据 SQL
+ctx, "account/page.sql",
+[]any{1},      // 业务过滤参数，同时传给 count SQL
+[]any{10, 0},  // 分页参数（LIMIT, OFFSET），仅传给数据 SQL
 )
 // result.List — 当页数据  result.Total — 总条数
 
 // 命名参数分页
 result, err := gormplus.DALQueryPageNamed[OrderVO](ctx, "order/page.sql", map[string]any{
-    "account_id": 123, "status": 1, "limit": 10, "offset": 0,
+"account_id": 123, "status": 1, "limit": 10, "offset": 0,
 })
 
 // 执行（INSERT / UPDATE / DELETE）
@@ -811,17 +1154,17 @@ ORDER BY created_at DESC LIMIT @limit OFFSET @offset
 
 ```go
 err := gormplus.DALWithTx(ctx, func(tx *gorm.DB) error {
-    // 加锁查库存（FOR UPDATE）
-    stock, err := gormplus.DALTxQueryOne[StockVO](ctx, tx, "stock/find_for_update.sql", productID)
-    if err != nil { return err }
-    if stock == nil || stock.Quantity < qty { return errors.New("库存不足") }
+// 加锁查库存（FOR UPDATE）
+stock, err := gormplus.DALTxQueryOne[StockVO](ctx, tx, "stock/find_for_update.sql", productID)
+if err != nil { return err }
+if stock == nil || stock.Quantity < qty { return errors.New("库存不足") }
 
-    // 扣库存
-    if err := gormplus.DALTxExec(ctx, tx, "stock/deduct.sql", qty, productID, qty); err != nil {
-        return err
-    }
-    // 创建订单
-    return gormplus.DALTxExec(ctx, tx, "order/insert.sql", accountID, productID, qty, amount, orderNo)
+// 扣库存
+if err := gormplus.DALTxExec(ctx, tx, "stock/deduct.sql", qty, productID, qty); err != nil {
+return err
+}
+// 创建订单
+return gormplus.DALTxExec(ctx, tx, "order/insert.sql", accountID, productID, qty, amount, orderNo)
 })
 ```
 
@@ -844,14 +1187,14 @@ type SlowDALHook struct{ Threshold time.Duration }
 
 func (h *SlowDALHook) Before(ctx context.Context, sqlFile string, args []any) {}
 func (h *SlowDALHook) After(ctx context.Context, sqlFile string, args []any, cost time.Duration, err error) {
-    if cost > h.Threshold {
-        log.Printf("[慢SQL] file=%s cost=%s", sqlFile, cost)
-    }
+if cost > h.Threshold {
+log.Printf("[慢SQL] file=%s cost=%s", sqlFile, cost)
+}
 }
 
 d, err := gormplus.NewDal(db, gormplus.NewEmbedLoader(sub),
-    gormplus.WithDALDebug(true),
-    gormplus.WithDALHook(&SlowDALHook{Threshold: 200 * time.Millisecond}),
+gormplus.WithDALDebug(true),
+gormplus.WithDALHook(&SlowDALHook{Threshold: 200 * time.Millisecond}),
 )
 ```
 
