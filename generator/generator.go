@@ -62,6 +62,28 @@ func resolveConfigPaths(cfg *Config) error {
 	return nil
 }
 
+// Title 将字符串中每个单词的首字母转为大写,其余字母保持不变。
+// 单词以 Unicode 空白字符分隔。是 strings.Title 的替代实现。
+func Title(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevIsSep := true // 字符串开头视为分隔后
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			b.WriteRune(r)
+			prevIsSep = true
+			continue
+		}
+		if prevIsSep {
+			b.WriteRune(unicode.ToUpper(r))
+		} else {
+			b.WriteRune(r)
+		}
+		prevIsSep = false
+	}
+	return b.String()
+}
+
 // ═══════════════════════════════════════════════════════════
 //  嵌入模板
 // ═══════════════════════════════════════════════════════════
@@ -203,12 +225,21 @@ func getGoctlPath() string {
 	return goDir + "/goctl"
 }
 
+var acronymRe = regexp.MustCompile(`([A-Z])([A-Z]+)([a-z]|$)`)
+
+func normalizeAcronyms(s string) string {
+	return acronymRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := acronymRe.FindStringSubmatch(m)
+		// sub[1]=首大写, sub[2]=中间连续大写, sub[3]=后面的小写或空
+		return sub[1] + strings.ToLower(sub[2]) + sub[3]
+	})
+}
 func Case2Camel(name string) string {
 	name = strings.Replace(name, "_", " ", -1)
-	name = strings.Title(name)
+	name = Title(name)
 	acronyms := []string{"IP", "ID", "URL", "API", "IOS", "XML", "JSON", "JWT", "SQL", "ORM"}
 	for _, acronym := range acronyms {
-		name = strings.ReplaceAll(name, strings.Title(strings.ToLower(acronym)), acronym)
+		name = strings.ReplaceAll(name, Title(strings.ToLower(acronym)), acronym)
 	}
 	return strings.Replace(name, " ", "", -1)
 }
@@ -844,7 +875,10 @@ func Generate(cfg *Config) error {
 			if col == "deleted_at" {
 				return "-"
 			}
-			return LowerCamelCase(Case2Camel(col))
+			//return LowerCamelCase(Case2Camel(col))
+			s := Case2Camel(col)
+			s = normalizeAcronyms(s)
+			return strings.ToLower(s[:1]) + s[1:]
 		}),
 		gen.FieldGORMTag("updated_at", func(_ field.GormTag) field.GormTag {
 			return map[string][]string{"column": {"updated_at"}, "comment": {"更新时间"}}
