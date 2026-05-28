@@ -4,7 +4,7 @@
 //
 // 本包只封装 gorm-gen 原生 DO 不支持的能力：
 //   - 模糊查询自动拼 %（Like / LLike / RLike）
-//   - 可选条件（WhereIf / BetweenIfNotZero）
+//   - 可选条件（Where / WhereIf / OrWhereIf / BetweenIfNotZero）
 //   - 简单分组（WhereGroup / OrGroup）：传入多个 field.Expr，组内 AND 连接，自动加括号
 //   - 函数分组（WhereGroupFn / OrGroupFn）：传入函数，组内可使用完整 wrapper 能力（WhereIf / Like 等）
 //   - 原生 SQL 条件（RawWhere / RawOrWhere / RawWhereIf）
@@ -36,7 +36,7 @@
 //
 //	// OR 分组：WHERE status = 1 OR (role = 2 AND dept_id = 10)
 //	db.Wrap(dao.AccountEntity.WithContext(ctx)).
-//	    WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+//	    Where(dao.AccountEntity.Status.Eq(1)).
 //	    OrGroup(
 //	        dao.AccountEntity.Role.Eq(2),
 //	        dao.AccountEntity.DeptID.Eq(10),
@@ -54,7 +54,7 @@
 //
 //	// OR 函数分组：WHERE org_id = 1 OR (username LIKE '%admin' AND role = 99)
 //	db.Wrap(dao.AccountEntity.WithContext(ctx)).
-//	    WhereIf(true, dao.AccountEntity.OrgID.Eq(orgID)).
+//	    Where(dao.AccountEntity.OrgID.Eq(orgID)).
 //	    OrGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
 //	        w.LLike(dao.AccountEntity.Username, username).
 //	          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
@@ -205,6 +205,19 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   => WHERE created_at BETWEEN '2024-01-01' AND '2024-12-31'
 	BetweenIfNotZero(col field.Expr, min, max any) IGenWrapper[T]
 
+	// Where 追加一个或多个 AND 条件。
+	//
+	//   .Where(dao.AccountEntity.Status.Eq(1))
+	//   => WHERE status = 1
+	//
+	//   // 同时追加多个条件（全部 AND 连接）
+	//   .Where(
+	//       dao.AccountEntity.Role.Eq(role),
+	//       dao.AccountEntity.IsActive.Eq(true),
+	//   )
+	//   => WHERE role = 2 AND is_active = true
+	Where(exprs ...field.Expr) IGenWrapper[T]
+
 	// WhereIf condition 为 true 时追加一个或多个 AND 条件，否则整体跳过。
 	//
 	//   .WhereIf(status != 0, dao.AccountEntity.Status.Eq(status))
@@ -218,6 +231,14 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   => WHERE role = 2 AND is_active = true
 	WhereIf(condition bool, exprs ...field.Expr) IGenWrapper[T]
 
+	// OrWhereIf condition 为 true 时追加一个或多个 OR 条件，否则整体跳过。
+	//
+	//   .Where(dao.AccountEntity.Username.Eq(req.Username)).
+	//    OrWhereIf(req.Mobile != "", dao.AccountEntity.Mobile.Eq(req.Mobile)).
+	//    OrWhereIf(req.Email != "", dao.AccountEntity.Email.Eq(req.Email))
+	//   => WHERE username = ? OR mobile = ? OR email = ?
+	OrWhereIf(condition bool, exprs ...field.Expr) IGenWrapper[T]
+
 	// WhereGroup 将多个 field.Expr 用括号包裹后以 AND 连接到主查询，组内条件以 AND 连接。
 	// 适合组内条件固定、无需条件控制的简单场景。
 	// 需要组内 WhereIf / Like 等能力时请使用 WhereGroupFn。
@@ -229,16 +250,37 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   => WHERE (role = 1 AND status = 1)
 	WhereGroup(exprs ...field.Expr) IGenWrapper[T]
 
+	// WhereGroupIf condition 为 true 时才追加 AND 分组，否则整体跳过。
+	// 适合前端可选参数为空时跳过整组条件。
+	//
+	//   .WhereGroupIf(req.Keyword != "",
+	//       dao.AccountEntity.Username.Like("%"+req.Keyword+"%"),
+	//       dao.AccountEntity.Mobile.Like("%"+req.Keyword+"%"),
+	//   )
+	//   => WHERE (username LIKE ? AND mobile LIKE ?)
+	WhereGroupIf(condition bool, exprs ...field.Expr) IGenWrapper[T]
+
 	// OrGroup 将多个 field.Expr 用括号包裹后以 OR 连接到主查询，组内条件以 AND 连接。
 	// 需要组内 WhereIf / Like 等能力时请使用 OrGroupFn。
 	//
-	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+	//   .Where(dao.AccountEntity.Status.Eq(1)).
 	//    OrGroup(
 	//        dao.AccountEntity.Role.Eq(99),
 	//        dao.AccountEntity.DeptID.Eq(10),
 	//    )
 	//   => WHERE status = 1 OR (role = 99 AND dept_id = 10)
 	OrGroup(exprs ...field.Expr) IGenWrapper[T]
+
+	// OrGroupIf condition 为 true 时才追加 OR 分组，否则整体跳过。
+	// 适合前端可选参数为空时跳过整组 OR 条件。
+	//
+	//   .Where(dao.AccountEntity.Status.Eq(1)).
+	//    OrGroupIf(req.Keyword != "",
+	//        dao.AccountEntity.Username.Like("%"+req.Keyword+"%"),
+	//        dao.AccountEntity.Mobile.Like("%"+req.Keyword+"%"),
+	//    )
+	//   => WHERE status = 1 OR (username LIKE ? AND mobile LIKE ?)
+	OrGroupIf(condition bool, exprs ...field.Expr) IGenWrapper[T]
 
 	// WhereGroupFn 将 fn 内构建的条件用括号包裹后以 AND 连接到主查询。
 	// 组内可使用完整 wrapper 能力：WhereIf / Like / LLike / BetweenIfNotZero / RawWhere 等。
@@ -254,7 +296,7 @@ type IGenWrapper[T GenDo[T]] interface {
 	// 组内可使用完整 wrapper 能力：WhereIf / Like / LLike / BetweenIfNotZero / RawWhere 等。
 	//
 	//   // WHERE status = 1 OR (username LIKE '%admin' AND role = 99)
-	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+	//   .Where(dao.AccountEntity.Status.Eq(1)).
 	//    OrGroupFn(func(w db.IGenWrapper[dao.IAccountEntityDo]) {
 	//        w.LLike(dao.AccountEntity.Username, username).
 	//          WhereIf(role != 0, dao.AccountEntity.Role.Eq(role))
@@ -274,7 +316,7 @@ type IGenWrapper[T GenDo[T]] interface {
 
 	// RawOrWhere 追加一段原生 SQL 作为 OR 条件。
 	//
-	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+	//   .Where(dao.AccountEntity.Status.Eq(1)).
 	//    RawOrWhere("role = ? AND dept_id = ?", 99, 10)
 	//   => WHERE status = 1 OR (role = 99 AND dept_id = 10)
 	//
@@ -293,7 +335,7 @@ type IGenWrapper[T GenDo[T]] interface {
 	//
 	//   // Repository 外部无法拿到 DO，通过 fn 在内部限制行数
 	//   repo.FindList(ctx, func(g IGenWrapper[dao.IProductBrandEntityDo]) {
-	//       g.WhereIf(true, dao.ProductBrandEntity.Status.Eq(1)).
+	//       g.Where(dao.ProductBrandEntity.Status.Eq(1)).
 	//         Limit(5)
 	//   })
 	Limit(limit int) IGenWrapper[T]
@@ -332,7 +374,7 @@ type IGenWrapper[T GenDo[T]] interface {
 
 	// OrWhereRaw 追加一段原生 SQL 作为 OR 条件,功能等同 RawOrWhere。
 	//
-	//   .WhereIf(true, dao.AccountEntity.Status.Eq(1)).
+	//   .Where(dao.AccountEntity.Status.Eq(1)).
 	//    OrWhereRaw("role = ? AND dept_id = ?", 99, 10)
 	//   => WHERE status = 1 OR (role = 99 AND dept_id = 10)
 	OrWhereRaw(sql string, args ...any) IGenWrapper[T]
@@ -470,10 +512,16 @@ func (w *GenWrapper[T]) addRaw(sql string, args []any, typ condType) {
 }
 
 func (w *GenWrapper[T]) addGroup(exprs []field.Expr, typ condType) {
-	if len(exprs) == 0 {
+	filtered := make([]field.Expr, 0, len(exprs))
+	for _, expr := range exprs {
+		if expr != nil {
+			filtered = append(filtered, expr)
+		}
+	}
+	if len(filtered) == 0 {
 		return
 	}
-	w.group.add(&condItem{exprs: exprs, typ: typ, isGroup: true})
+	w.group.add(&condItem{exprs: filtered, typ: typ, isGroup: true})
 }
 
 func (w *GenWrapper[T]) addFnGroup(fn func(IGenWrapper[T]), typ condType) {
@@ -529,10 +577,28 @@ func (w *GenWrapper[T]) BetweenIfNotZero(col field.Expr, min, max any) IGenWrapp
 	return w
 }
 
+func (w *GenWrapper[T]) Where(exprs ...field.Expr) IGenWrapper[T] {
+	for _, expr := range exprs {
+		if expr != nil {
+			w.addExpr(expr, condAnd)
+		}
+	}
+	return w
+}
+
 func (w *GenWrapper[T]) WhereIf(condition bool, exprs ...field.Expr) IGenWrapper[T] {
 	if condition {
+		return w.Where(exprs...)
+	}
+	return w
+}
+
+func (w *GenWrapper[T]) OrWhereIf(condition bool, exprs ...field.Expr) IGenWrapper[T] {
+	if condition {
 		for _, expr := range exprs {
-			w.addExpr(expr, condAnd)
+			if expr != nil {
+				w.addExpr(expr, condOr)
+			}
 		}
 	}
 	return w
@@ -543,8 +609,22 @@ func (w *GenWrapper[T]) WhereGroup(exprs ...field.Expr) IGenWrapper[T] {
 	return w
 }
 
+func (w *GenWrapper[T]) WhereGroupIf(condition bool, exprs ...field.Expr) IGenWrapper[T] {
+	if condition {
+		w.addGroup(exprs, condAnd)
+	}
+	return w
+}
+
 func (w *GenWrapper[T]) OrGroup(exprs ...field.Expr) IGenWrapper[T] {
 	w.addGroup(exprs, condOr)
+	return w
+}
+
+func (w *GenWrapper[T]) OrGroupIf(condition bool, exprs ...field.Expr) IGenWrapper[T] {
+	if condition {
+		w.addGroup(exprs, condOr)
+	}
 	return w
 }
 
