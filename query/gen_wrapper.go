@@ -489,15 +489,16 @@ type IGenWrapper[T GenDo[T]] interface {
 // ================== GenWrapper 实现 ==================
 
 type GenWrapper[T GenDo[T]] struct {
-	do         T
-	ctx        context.Context // 保存原始 ctx，Apply 时复用
-	alias      string          // 表别名，As() 设置后在 Apply 时注入到底层 DB
-	limit      *int            // 限制行数，nil 表示不限制
-	offset     *int            // 偏移量，nil 表示不设置
-	selectCols []any           // 指定查询字段，nil 表示查询全部
-	orders     []field.Expr    // 排序字段(Order/OrderRaw/OrderIf/OrderTriState/OrderDefault 累积),Apply 时注入
-	group      *condGroup
-	replaceDB  func(*gorm.DB) T
+	do            T
+	ctx           context.Context // 保存原始 ctx，Apply 时复用
+	alias         string          // 表别名，As() 设置后在 Apply 时注入到底层 DB
+	limit         *int            // 限制行数，nil 表示不限制
+	offset        *int            // 偏移量，nil 表示不设置
+	selectCols    []any           // 指定查询字段，nil 表示查询全部
+	orders        []field.Expr    // 显式排序字段(Order/OrderRaw/OrderIf/OrderTriState 累积),Apply 时注入
+	defaultOrders []field.Expr    // 默认排序字段,仅在没有显式排序时注入
+	group         *condGroup
+	replaceDB     func(*gorm.DB) T
 }
 
 func (w *GenWrapper[T]) addExpr(expr field.Expr, typ condType) {
@@ -736,12 +737,12 @@ func (w *GenWrapper[T]) OrderTriState(state any, asc, desc field.Expr) IGenWrapp
 }
 
 func (w *GenWrapper[T]) OrderDefault(fields ...field.Expr) IGenWrapper[T] {
-	if len(w.orders) > 0 {
+	if len(w.orders) > 0 || len(w.defaultOrders) > 0 {
 		return w
 	}
 	for _, f := range fields {
 		if f != nil {
-			w.orders = append(w.orders, f)
+			w.defaultOrders = append(w.defaultOrders, f)
 		}
 	}
 	return w
@@ -760,9 +761,9 @@ func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
 	if len(w.selectCols) > 0 {
 		db = db.Select(w.selectCols[0], w.selectCols[1:]...)
 	}
-	// 排序:Order/OrderRaw/OrderIf/OrderTriState/OrderDefault 累积的所有字段
+	// 排序:显式排序优先;没有显式排序时才使用 OrderDefault 的默认排序。
 	// 按调用顺序写入 db,gorm 内部会拼成 ORDER BY a, b, c
-	for _, o := range w.orders {
+	for _, o := range w.effectiveOrders() {
 		db = db.Order(o)
 	}
 	if w.limit != nil {
@@ -772,6 +773,13 @@ func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
 		db = db.Offset(*w.offset)
 	}
 	return db
+}
+
+func (w *GenWrapper[T]) effectiveOrders() []field.Expr {
+	if len(w.orders) > 0 {
+		return w.orders
+	}
+	return w.defaultOrders
 }
 
 func (w *GenWrapper[T]) Apply() T {
