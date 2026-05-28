@@ -69,3 +69,18 @@ func TestGenWrapperOrderDefaultIgnoredWhenExplicitOrderComesBefore(t *testing.T)
 		t.Fatalf("expected explicit orders to be effective, got %d", len(w.effectiveOrders()))
 	}
 }
+
+func TestGenWrapperNilInputsAreSkipped(t *testing.T) {
+	w := &GenWrapper[*wrapperTestDO]{group: newCondGroup()}
+
+	w.Like(nil, "admin").
+		LLike(nil, "admin").
+		RLike(nil, "admin").
+		BetweenIfNotZero(nil, 1, 2).
+		WhereGroupFn(nil).
+		OrGroupFn(nil)
+
+	if !w.group.isEmpty() {
+		t.Fatalf("expected nil inputs to be skipped, got %d conditions", len(w.group.conds))
+	}
+}

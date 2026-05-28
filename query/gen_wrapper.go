@@ -526,6 +526,9 @@ func (w *GenWrapper[T]) addGroup(exprs []field.Expr, typ condType) {
 }
 
 func (w *GenWrapper[T]) addFnGroup(fn func(IGenWrapper[T]), typ condType) {
+	if fn == nil {
+		return
+	}
 	sub := &GenWrapper[T]{do: w.do, ctx: w.ctx, group: newCondGroup(), replaceDB: w.replaceDB}
 	fn(sub)
 	if !sub.group.isEmpty() {
@@ -534,7 +537,7 @@ func (w *GenWrapper[T]) addFnGroup(fn func(IGenWrapper[T]), typ condType) {
 }
 
 func (w *GenWrapper[T]) like(col field.Expr, pattern string) {
-	if pattern == "" {
+	if col == nil || pattern == "" {
 		return
 	}
 	// 直接拼 SQL,值走 ? 占位符,避免反射调用 field 类型方法的类型严格匹配问题。
@@ -561,7 +564,7 @@ func (w *GenWrapper[T]) RLike(col field.Expr, val string) IGenWrapper[T] {
 }
 
 func (w *GenWrapper[T]) BetweenIfNotZero(col field.Expr, min, max any) IGenWrapper[T] {
-	if isZeroVal(min) || isZeroVal(max) {
+	if col == nil || isZeroVal(min) || isZeroVal(max) {
 		return w
 	}
 	// 通过反射调用 gorm-gen 的 Between 方法存在类型严格匹配问题:
