@@ -77,6 +77,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
@@ -767,7 +768,10 @@ func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
 	// 排序:显式排序优先;没有显式排序时才使用 OrderDefault 的默认排序。
 	// 按调用顺序写入 db,gorm 内部会拼成 ORDER BY a, b, c
 	for _, o := range w.effectiveOrders() {
-		db = db.Order(o)
+		orderSQL := strings.TrimSpace(buildOrderSQL(db, o))
+		if orderSQL != "" {
+			db = db.Order(orderSQL)
+		}
 	}
 	if w.limit != nil {
 		db = db.Limit(*w.limit)
@@ -776,6 +780,16 @@ func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
 		db = db.Offset(*w.offset)
 	}
 	return db
+}
+
+func buildOrderSQL(db *gorm.DB, order field.Expr) string {
+	stmt := &gorm.Statement{
+		DB:     db.Statement.DB,
+		Table:  db.Statement.Table,
+		Schema: db.Statement.Schema,
+	}
+	order.Build(stmt)
+	return db.Dialector.Explain(stmt.SQL.String(), stmt.Vars...)
 }
 
 func (w *GenWrapper[T]) effectiveOrders() []field.Expr {
