@@ -12,15 +12,36 @@ import (
 // TenantConfig 多租户插件配置。
 // T 为租户 ID 类型，支持 string、int64 等任意可比较类型。
 // 字段优先级：TableFields > TenantFields > TenantField。
-type TenantConfig[T comparable] = plugin.TenantConfig[T]
+type TenantConfig[T comparable] struct {
+	TenantField           string
+	TenantFields          []TenantFieldConfig[T]
+	TableFields           map[string][]TenantFieldConfig[T]
+	AutoInjectJoinTables  *bool
+	ExcludeJoinTables     []string
+	JoinTableOverrides    []JoinTenantConfig[T]
+	AllowGlobalUpdate     bool
+	AllowGlobalDelete     bool
+	AllowOverrideTenantID bool
+	DuplicatePolicy       DuplicateTenantPolicy
+	InjectMode            InjectMode
+	ExcludeTables         []string
+	GetTenantID           func(ctx context.Context) (T, bool)
+}
 
 // TenantFieldConfig 单个租户字段的注入配置，支持独立指定字段名和取值函数。
-type TenantFieldConfig[T comparable] = plugin.TenantFieldConfig[T]
+type TenantFieldConfig[T comparable] struct {
+	Field       string
+	GetTenantID func(ctx context.Context) (T, bool)
+}
 
 // JoinTenantConfig 联表中特定关联表的租户字段覆盖配置。
 // 默认所有 JOIN 关联表自动注入租户条件、别名自动识别；
 // 仅当关联表的租户字段名或取值函数与主表不同时才需要配置。
-type JoinTenantConfig[T comparable] = plugin.JoinTenantConfig[T]
+type JoinTenantConfig[T comparable] struct {
+	Table       string
+	Field       string
+	GetTenantID func(ctx context.Context) (T, bool)
+}
 
 // InjectMode 租户条件注入方式。ModeScopes 和 ModeWhere 底层效果相同，保留兼容旧配置。
 type InjectMode = plugin.InjectMode
@@ -102,8 +123,8 @@ var (
 //	        {Table: "sys_contract_detail", Field: "company_id"},
 //	    },
 //	})
-func RegisterTenant[T comparable](db *gorm.DB, cfg plugin.TenantConfig[T]) error {
-	return plugin.RegisterTenant[T](db, cfg)
+func RegisterTenant[T comparable](db *gorm.DB, cfg TenantConfig[T]) error {
+	return plugin.RegisterTenant[T](db, toPluginTenantConfig(cfg))
 }
 
 // NewTenantPlugin 工厂函数，返回多租户插件实例供手动 db.Use() 注册。
@@ -111,8 +132,66 @@ func RegisterTenant[T comparable](db *gorm.DB, cfg plugin.TenantConfig[T]) error
 //	p, err := gormplus.NewTenantPlugin(gormplus.TenantConfig[int64]{TenantField: "tenant_id"})
 //	if err != nil { log.Fatal(err) }
 //	db.Use(p)
-func NewTenantPlugin[T comparable](cfg plugin.TenantConfig[T]) (gorm.Plugin, error) {
-	return plugin.NewTenantPlugin[T](cfg)
+func NewTenantPlugin[T comparable](cfg TenantConfig[T]) (gorm.Plugin, error) {
+	return plugin.NewTenantPlugin[T](toPluginTenantConfig(cfg))
+}
+
+func toPluginTenantConfig[T comparable](cfg TenantConfig[T]) plugin.TenantConfig[T] {
+	return plugin.TenantConfig[T]{
+		TenantField:           cfg.TenantField,
+		TenantFields:          toPluginTenantFields(cfg.TenantFields),
+		TableFields:           toPluginTableFields(cfg.TableFields),
+		AutoInjectJoinTables:  cfg.AutoInjectJoinTables,
+		ExcludeJoinTables:     cfg.ExcludeJoinTables,
+		JoinTableOverrides:    toPluginJoinTenantConfigs(cfg.JoinTableOverrides),
+		AllowGlobalUpdate:     cfg.AllowGlobalUpdate,
+		AllowGlobalDelete:     cfg.AllowGlobalDelete,
+		AllowOverrideTenantID: cfg.AllowOverrideTenantID,
+		DuplicatePolicy:       cfg.DuplicatePolicy,
+		InjectMode:            cfg.InjectMode,
+		ExcludeTables:         cfg.ExcludeTables,
+		GetTenantID:           cfg.GetTenantID,
+	}
+}
+
+func toPluginTenantFields[T comparable](fields []TenantFieldConfig[T]) []plugin.TenantFieldConfig[T] {
+	if fields == nil {
+		return nil
+	}
+	out := make([]plugin.TenantFieldConfig[T], len(fields))
+	for i, field := range fields {
+		out[i] = plugin.TenantFieldConfig[T]{
+			Field:       field.Field,
+			GetTenantID: field.GetTenantID,
+		}
+	}
+	return out
+}
+
+func toPluginTableFields[T comparable](tableFields map[string][]TenantFieldConfig[T]) map[string][]plugin.TenantFieldConfig[T] {
+	if tableFields == nil {
+		return nil
+	}
+	out := make(map[string][]plugin.TenantFieldConfig[T], len(tableFields))
+	for table, fields := range tableFields {
+		out[table] = toPluginTenantFields(fields)
+	}
+	return out
+}
+
+func toPluginJoinTenantConfigs[T comparable](configs []JoinTenantConfig[T]) []plugin.JoinTenantConfig[T] {
+	if configs == nil {
+		return nil
+	}
+	out := make([]plugin.JoinTenantConfig[T], len(configs))
+	for i, config := range configs {
+		out[i] = plugin.JoinTenantConfig[T]{
+			Table:       config.Table,
+			Field:       config.Field,
+			GetTenantID: config.GetTenantID,
+		}
+	}
+	return out
 }
 
 // WithTenantID 将租户 ID 写入 context，通常在中间件中调用。

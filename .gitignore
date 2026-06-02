@@ -9,6 +9,7 @@
 *.exe
 .qoder/
 .qoder
+.gocache
 # Go workspace
 go.work
 

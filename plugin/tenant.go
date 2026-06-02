@@ -545,6 +545,10 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 	prefix := p.fieldPrefix(db)
 
 	for _, f := range fields {
+		if !statementHasField(db.Statement, f.Field) {
+			continue
+		}
+
 		// 根据 DuplicatePolicy 决定如何处理已有租户条件
 		switch p.cfg.DuplicatePolicy {
 		case PolicyAppend:
@@ -766,7 +770,7 @@ func (p *tenantPlugin[T]) injectCreate(db *gorm.DB) {
 	}
 
 	for _, f := range fields {
-		sf := db.Statement.Schema.LookUpField(f.Field)
+		sf := statementField(db.Statement, f.Field)
 		if sf == nil {
 			continue
 		}
@@ -873,6 +877,20 @@ func (p *tenantPlugin[T]) fieldsFor(tableName string) ([]TenantFieldConfig[T], b
 		}
 	}
 	return p.defaultField, false
+}
+
+func statementHasField(stmt *gorm.Statement, field string) bool {
+	if stmt == nil || stmt.Schema == nil {
+		return true
+	}
+	return statementField(stmt, field) != nil
+}
+
+func statementField(stmt *gorm.Statement, field string) *schema.Field {
+	if stmt == nil || stmt.Schema == nil {
+		return nil
+	}
+	return stmt.Schema.LookUpField(field)
 }
 
 func (p *tenantPlugin[T]) shouldSkip(ctx context.Context, db *gorm.DB) bool {
