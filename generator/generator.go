@@ -440,6 +440,48 @@ func isDecimalSQLType(sqlType string) bool {
 	return strings.Contains(strings.ToLower(sqlType), "decimal")
 }
 
+func isIntegerSQLType(sqlType string) bool {
+	return strings.Contains(strings.ToLower(sqlType), "int")
+}
+
+func isUnsignedSQLType(sqlType string) bool {
+	return strings.Contains(strings.ToLower(sqlType), "unsigned")
+}
+
+func parseSQLTypeLength(sqlType string) (int, bool) {
+	re := regexp.MustCompile(`\((\d+)`)
+	m := re.FindStringSubmatch(sqlType)
+	if len(m) < 2 {
+		return 0, false
+	}
+	var n int
+	if _, err := fmt.Sscanf(m[1], "%d", &n); err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func hasRulePrefix(rules []string, prefix string) bool {
+	for _, rule := range rules {
+		if rule == prefix || strings.HasPrefix(rule, prefix+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func appendRule(rules []string, rule string) []string {
+	if rule == "" {
+		return rules
+	}
+	for _, item := range rules {
+		if item == rule {
+			return rules
+		}
+	}
+	return append(rules, rule)
+}
+
 // ═══════════════════════════════════════════════════════════
 //  路径工具
 // ═══════════════════════════════════════════════════════════
@@ -529,28 +571,76 @@ func generateValidateRule(col ColumnInfo) string {
 	if fieldType == "" {
 		fieldType = getGoTypeForApiDto(col.Type)
 	}
+	colName := strings.ToLower(col.Name)
+	sqlType := strings.ToLower(col.Type)
 	if !col.CanNull {
-		rules = append(rules, "required")
+		rules = appendRule(rules, "required")
 	}
-	if col.IsKey {
-		rules = append(rules, "uuid")
+	if fieldType == "string" {
+		switch {
+		case strings.Contains(colName, "email"):
+			rules = appendRule(rules, "email")
+		case strings.Contains(colName, "mobile"):
+			rules = appendRule(rules, "mobile")
+		case strings.Contains(colName, "phone"):
+			rules = appendRule(rules, "e164")
+		case strings.Contains(colName, "uuid"):
+			rules = appendRule(rules, "uuid")
+		case strings.Contains(colName, "url"):
+			rules = appendRule(rules, "url")
+		case strings.Contains(colName, "uri"):
+			rules = appendRule(rules, "uri")
+		case strings.Contains(colName, "ipv4"):
+			rules = appendRule(rules, "ipv4")
+		case strings.Contains(colName, "ipv6"):
+			rules = appendRule(rules, "ipv6")
+		case colName == "ip" || strings.HasSuffix(colName, "_ip"):
+			rules = appendRule(rules, "ip")
+		case strings.Contains(colName, "latitude") || colName == "lat" || strings.HasSuffix(colName, "_lat"):
+			rules = appendRule(rules, "latitude")
+		case strings.Contains(colName, "longitude") || colName == "lng" || colName == "lon" ||
+			strings.HasSuffix(colName, "_lng") || strings.HasSuffix(colName, "_lon"):
+			rules = appendRule(rules, "longitude")
+		}
 	}
-	if fieldType == "string" && strings.Contains(col.Name, "email") {
-		rules = append(rules, "email")
+	if strings.HasPrefix(sqlType, "varchar(") {
+		if length, ok := parseSQLTypeLength(sqlType); ok {
+			rules = appendRule(rules, fmt.Sprintf("max=%d", length))
+		}
 	}
-	if fieldType == "string" && strings.Contains(col.Name, "mobile") {
-		rules = append(rules, "mobile")
+	if strings.HasPrefix(sqlType, "char(") {
+		if length, ok := parseSQLTypeLength(sqlType); ok {
+			rules = appendRule(rules, fmt.Sprintf("len=%d", length))
+		}
 	}
 	if isDecimalSQLType(col.Type) {
-		rules = append(rules, "decimal")
+		rules = appendRule(rules, "decimal")
+	}
+	if strings.Contains(sqlType, "json") {
+		rules = appendRule(rules, "json")
 	}
 	enumVals := extractEnumValuesFromComment(col.Comment)
 	if len(enumVals) > 0 {
-		rules = append(rules, "oneof="+strings.Join(enumVals, " "))
+		rules = appendRule(rules, "oneof="+strings.Join(enumVals, " "))
+	}
+	if isIntegerSQLType(col.Type) {
+		if colName == "id" || strings.HasSuffix(colName, "_id") {
+			rules = appendRule(rules, "number")
+			if !hasRulePrefix(rules, "gte") {
+				rules = appendRule(rules, "gte=1")
+			}
+		}
+		if isUnsignedSQLType(col.Type) && !hasRulePrefix(rules, "gte") {
+			rules = appendRule(rules, "gte=0")
+		}
 	}
 	if len(enumVals) == 0 && !col.CanNull && fieldType == "int64" &&
-		(strings.Contains(col.Name, "status") || strings.Contains(col.Name, "type") || strings.Contains(col.Name, "is_")) {
-		rules = append(rules, "gte=1")
+		(strings.Contains(colName, "status") || strings.Contains(colName, "type") || strings.Contains(colName, "is_")) &&
+		!hasRulePrefix(rules, "gte") {
+		rules = appendRule(rules, "gte=1")
+	}
+	if col.CanNull && len(rules) > 0 {
+		rules = append([]string{"omitempty"}, rules...)
 	}
 	return strings.Join(rules, ",")
 }
@@ -590,7 +680,7 @@ func generateRepositoryExtFile(columns []ColumnInfo, modelName, pkg, daoPath, mo
 	return renderTemplate(tmplPath, buildRepoData(columns, modelName, pkg, daoPath, modelPath, tableName))
 }
 
-func generateApiFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
+func buildApiColumns(columns []ColumnInfo) []ColumnInfo {
 	columnData := make([]ColumnInfo, len(columns))
 	for i, col := range columns {
 		jsonTagOpt := ""
@@ -604,10 +694,16 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 			CanNull: col.CanNull, IsKey: col.IsKey, Extra: col.Extra, Comment: col.Comment,
 			Validate: generateValidateRule(ColumnInfo{
 				CanNull: col.CanNull, IsKey: col.IsKey,
-				FieldType: getGoTypeForApiDto(col.Type), Name: col.Name, Comment: col.Comment,
+				Type: col.Type, FieldType: getGoTypeForApiDto(col.Type),
+				Name: col.Name, Extra: col.Extra, Comment: col.Comment,
 			}),
 		}
 	}
+	return columnData
+}
+
+func generateApiFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
+	columnData := buildApiColumns(columns)
 	tableComment := getTableComment(db, tableName)
 	if tableComment == "" {
 		tableComment = modelName
