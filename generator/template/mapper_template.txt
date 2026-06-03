@@ -22,8 +22,8 @@ import (
 type I{{.ModelName}}Mapper interface {
 	// DtoToEntity 将请求结构体映射到数据库实体
 	DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
-	// EntityToVo 将数据库实体映射到响应结构体
-	EntityToVo(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types{{else}}{{.VoPkgName}}{{end}}.{{.VoStructName}}
+	// EntityToVO 将数据库实体映射到响应结构体
+	EntityToVO(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types.{{.VoStructName}}{{else}}{{.VoPkgName}}.{{.ModelName}}VO{{end}}
 }
 
 // {{.ModelNameLower}}Mapper mapper 实现
@@ -57,12 +57,12 @@ func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d *{{if .IsGoZero}}types{{else}}
 	return e
 }
 
-// EntityToVo 将 {{.ModelName}}Entity 映射到 {{.VoStructName}}
-func (m *{{.ModelNameLower}}Mapper) EntityToVo(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types{{else}}{{.VoPkgName}}{{end}}.{{.VoStructName}} {
+// EntityToVO 将 {{.ModelName}}Entity 映射到 {{if .IsGoZero}}{{.VoStructName}}{{else}}{{.ModelName}}VO{{end}}
+func (m *{{.ModelNameLower}}Mapper) EntityToVO(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types.{{.VoStructName}}{{else}}{{.VoPkgName}}.{{.ModelName}}VO{{end}} {
 	if e == nil {
 		return nil
 	}
-	return &{{if .IsGoZero}}types{{else}}{{.VoPkgName}}{{end}}.{{.VoStructName}}{
+	return &{{if .IsGoZero}}types.{{.VoStructName}}{{else}}{{.VoPkgName}}.{{.ModelName}}VO{{end}}{
 {{- range .Columns}}
 {{- if not (or (eq .Name "deleted_at") .IsTimeType .IsDecimalType)}}
 		{{.FieldName}}: e.{{.FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
