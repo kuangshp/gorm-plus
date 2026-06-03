@@ -52,6 +52,15 @@ type IGenWrapper[D query.GenDo[D]] = query.IGenWrapper[D]
 //	    ).
 //	    Apply().Find()
 //
+//	// AND 接入的 OR 可选分组：WHERE status = 1 AND (username LIKE ? OR mobile LIKE ?)
+//	gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
+//	    Where(dao.AccountEntity.Status.Eq(1)).
+//	    WhereOrGroupIf(req.Keyword != "",
+//	        dao.AccountEntity.Username.Like("%"+req.Keyword+"%"),
+//	        dao.AccountEntity.Mobile.Like("%"+req.Keyword+"%"),
+//	    ).
+//	    Apply().Find()
+//
 //	// OR 可选分组：keyword 为空时整组跳过
 //	gormplus.GenWrap(dao.AccountEntity.WithContext(ctx)).
 //	    Where(dao.AccountEntity.Status.Eq(1)).

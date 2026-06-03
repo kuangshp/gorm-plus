@@ -5,7 +5,7 @@
 // 本包只封装 gorm-gen 原生 DO 不支持的能力：
 //   - 模糊查询自动拼 %（Like / LLike / RLike）
 //   - 可选条件（Where / WhereIf / OrWhereIf / BetweenIfNotZero）
-//   - 简单分组（WhereGroup / OrGroup）：传入多个 field.Expr，组内 AND 连接，自动加括号
+//   - 简单分组（WhereGroup / OrGroup / WhereOrGroup）：传入多个 field.Expr，自动加括号
 //   - 函数分组（WhereGroupFn / OrGroupFn）：传入函数，组内可使用完整 wrapper 能力（WhereIf / Like 等）
 //   - 原生 SQL 条件（RawWhere / RawOrWhere / RawWhereIf）
 //   - 表别名（As）：联表查询时为当前模型设置别名
@@ -25,7 +25,7 @@
 //	    Limit(20).Offset(0).
 //	    Find()
 //
-// # 简单分组（WhereGroup / OrGroup）
+// # 简单分组（WhereGroup / OrGroup / WhereOrGroup）
 //
 //	// AND 分组：WHERE (username LIKE '%kw%' AND status = 1)
 //	db.Wrap(dao.AccountEntity.WithContext(ctx)).
@@ -40,6 +40,14 @@
 //	    OrGroup(
 //	        dao.AccountEntity.Role.Eq(2),
 //	        dao.AccountEntity.DeptID.Eq(10),
+//	    ).Apply().Find()
+//
+//	// AND 接入 OR 分组：WHERE status = 1 AND (username LIKE '%kw%' OR mobile LIKE '%kw%')
+//	db.Wrap(dao.AccountEntity.WithContext(ctx)).
+//	    Where(dao.AccountEntity.Status.Eq(1)).
+//	    WhereOrGroup(
+//	        dao.AccountEntity.Username.Like("%kw%"),
+//	        dao.AccountEntity.Mobile.Like("%kw%"),
 //	    ).Apply().Find()
 //
 // # 函数分组（WhereGroupFn / OrGroupFn）
@@ -104,6 +112,7 @@ type condItem struct {
 	rawSQL    string       // 原生 SQL 模板
 	rawArgs   []any        // 原生 SQL 参数
 	typ       condType     // condAnd 或 condOr
+	groupTyp  condType     // 简单分组内条件连接符,默认 condAnd
 	isGroup   bool         // 简单分组节点
 	isFnGroup bool         // 函数分组节点
 	isRaw     bool         // 原生 SQL 节点
@@ -199,6 +208,15 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   => WHERE username LIKE 'admin%'
 	RLike(col field.Expr, val string) IGenWrapper[T]
 
+	// OrLike 双侧模糊，以 OR 追加；val 为空时跳过。
+	OrLike(col field.Expr, val string) IGenWrapper[T]
+
+	// OrLLike 左侧模糊，以 OR 追加；val 为空时跳过。
+	OrLLike(col field.Expr, val string) IGenWrapper[T]
+
+	// OrRLike 右侧模糊，以 OR 追加；val 为空时跳过。
+	OrRLike(col field.Expr, val string) IGenWrapper[T]
+
 	// BetweenIfNotZero 范围查询：WHERE col BETWEEN min AND max。
 	// min 或 max 任一为零值时整体跳过。
 	//
@@ -260,6 +278,26 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   )
 	//   => WHERE (username LIKE ? AND mobile LIKE ?)
 	WhereGroupIf(condition bool, exprs ...field.Expr) IGenWrapper[T]
+
+	// WhereOrGroup 将多个 field.Expr 用括号包裹后以 AND 连接到主查询，组内条件以 OR 连接。
+	// 适合“多个可选搜索字段命中任一即可”的场景。
+	//
+	//   .Where(dao.AccountEntity.Status.Eq(1)).
+	//    WhereOrGroup(
+	//        dao.AccountEntity.Username.Like("%"+req.Keyword+"%"),
+	//        dao.AccountEntity.Mobile.Like("%"+req.Keyword+"%"),
+	//    )
+	//   => WHERE status = 1 AND (username LIKE ? OR mobile LIKE ?)
+	WhereOrGroup(exprs ...field.Expr) IGenWrapper[T]
+
+	// WhereOrGroupIf condition 为 true 时才追加 AND 接入的 OR 分组，否则整体跳过。
+	//
+	//   .WhereOrGroupIf(req.Keyword != "",
+	//       dao.AccountEntity.Username.Like("%"+req.Keyword+"%"),
+	//       dao.AccountEntity.Mobile.Like("%"+req.Keyword+"%"),
+	//   )
+	//   => WHERE (username LIKE ? OR mobile LIKE ?)
+	WhereOrGroupIf(condition bool, exprs ...field.Expr) IGenWrapper[T]
 
 	// OrGroup 将多个 field.Expr 用括号包裹后以 OR 连接到主查询，组内条件以 AND 连接。
 	// 需要组内 WhereIf / Like 等能力时请使用 OrGroupFn。
@@ -514,6 +552,10 @@ func (w *GenWrapper[T]) addRaw(sql string, args []any, typ condType) {
 }
 
 func (w *GenWrapper[T]) addGroup(exprs []field.Expr, typ condType) {
+	w.addGroupWithJoin(exprs, typ, condAnd)
+}
+
+func (w *GenWrapper[T]) addGroupWithJoin(exprs []field.Expr, typ, groupTyp condType) {
 	filtered := make([]field.Expr, 0, len(exprs))
 	for _, expr := range exprs {
 		if expr != nil {
@@ -523,7 +565,7 @@ func (w *GenWrapper[T]) addGroup(exprs []field.Expr, typ condType) {
 	if len(filtered) == 0 {
 		return
 	}
-	w.group.add(&condItem{exprs: filtered, typ: typ, isGroup: true})
+	w.group.add(&condItem{exprs: filtered, typ: typ, groupTyp: groupTyp, isGroup: true})
 }
 
 func (w *GenWrapper[T]) addFnGroup(fn func(IGenWrapper[T]), typ condType) {
@@ -537,13 +579,13 @@ func (w *GenWrapper[T]) addFnGroup(fn func(IGenWrapper[T]), typ condType) {
 	}
 }
 
-func (w *GenWrapper[T]) like(col field.Expr, pattern string) {
+func (w *GenWrapper[T]) like(col field.Expr, pattern string, typ condType) {
 	if col == nil || pattern == "" {
 		return
 	}
 	// 直接拼 SQL,值走 ? 占位符,避免反射调用 field 类型方法的类型严格匹配问题。
 	colName := fmt.Sprint(col.ColumnName())
-	w.addExpr(RawField(colName+" LIKE ?", pattern), condAnd)
+	w.addExpr(RawField(colName+" LIKE ?", pattern), typ)
 }
 
 func (w *GenWrapper[T]) As(alias string) IGenWrapper[T] {
@@ -552,15 +594,39 @@ func (w *GenWrapper[T]) As(alias string) IGenWrapper[T] {
 }
 
 func (w *GenWrapper[T]) Like(col field.Expr, val string) IGenWrapper[T] {
-	w.like(col, "%"+val+"%")
+	if val != "" {
+		w.like(col, "%"+val+"%", condAnd)
+	}
 	return w
 }
 func (w *GenWrapper[T]) LLike(col field.Expr, val string) IGenWrapper[T] {
-	w.like(col, "%"+val)
+	if val != "" {
+		w.like(col, "%"+val, condAnd)
+	}
 	return w
 }
 func (w *GenWrapper[T]) RLike(col field.Expr, val string) IGenWrapper[T] {
-	w.like(col, val+"%")
+	if val != "" {
+		w.like(col, val+"%", condAnd)
+	}
+	return w
+}
+func (w *GenWrapper[T]) OrLike(col field.Expr, val string) IGenWrapper[T] {
+	if val != "" {
+		w.like(col, "%"+val+"%", condOr)
+	}
+	return w
+}
+func (w *GenWrapper[T]) OrLLike(col field.Expr, val string) IGenWrapper[T] {
+	if val != "" {
+		w.like(col, "%"+val, condOr)
+	}
+	return w
+}
+func (w *GenWrapper[T]) OrRLike(col field.Expr, val string) IGenWrapper[T] {
+	if val != "" {
+		w.like(col, val+"%", condOr)
+	}
 	return w
 }
 
@@ -617,6 +683,18 @@ func (w *GenWrapper[T]) WhereGroup(exprs ...field.Expr) IGenWrapper[T] {
 func (w *GenWrapper[T]) WhereGroupIf(condition bool, exprs ...field.Expr) IGenWrapper[T] {
 	if condition {
 		w.addGroup(exprs, condAnd)
+	}
+	return w
+}
+
+func (w *GenWrapper[T]) WhereOrGroup(exprs ...field.Expr) IGenWrapper[T] {
+	w.addGroupWithJoin(exprs, condAnd, condOr)
+	return w
+}
+
+func (w *GenWrapper[T]) WhereOrGroupIf(condition bool, exprs ...field.Expr) IGenWrapper[T] {
+	if condition {
+		w.addGroupWithJoin(exprs, condAnd, condOr)
 	}
 	return w
 }
@@ -844,7 +922,11 @@ func applyCondGroup(db *gorm.DB, group *condGroup) *gorm.DB {
 		case item.isGroup:
 			subDB := db.Session(&gorm.Session{NewDB: true})
 			for _, expr := range item.exprs {
-				subDB = subDB.Where(expr)
+				if item.groupTyp == condOr {
+					subDB = subDB.Or(expr)
+				} else {
+					subDB = subDB.Where(expr)
+				}
 			}
 			if item.typ == condOr {
 				db = db.Or(subDB)

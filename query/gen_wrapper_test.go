@@ -2,8 +2,11 @@ package query
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"gorm.io/driver/sqlite"
+	"gorm.io/gen/field"
 	"gorm.io/gorm"
 )
 
@@ -76,11 +79,73 @@ func TestGenWrapperNilInputsAreSkipped(t *testing.T) {
 	w.Like(nil, "admin").
 		LLike(nil, "admin").
 		RLike(nil, "admin").
+		Like(RawField("name"), "").
+		LLike(RawField("name"), "").
+		RLike(RawField("name"), "").
+		OrLike(RawField("name"), "").
+		OrLLike(RawField("name"), "").
+		OrRLike(RawField("name"), "").
 		BetweenIfNotZero(nil, 1, 2).
+		WhereOrGroup(nil).
+		WhereOrGroupIf(true, nil).
 		WhereGroupFn(nil).
 		OrGroupFn(nil)
 
 	if !w.group.isEmpty() {
 		t.Fatalf("expected nil inputs to be skipped, got %d conditions", len(w.group.conds))
+	}
+}
+
+func TestGenWrapperWhereOrGroupUsesAndOutsideOrInside(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+
+	sql := w.Where(RawField("status = ?", 1)).
+		WhereOrGroup(
+			RawField("name LIKE ?", "%acme%"),
+			RawField("code LIKE ?", "%AC%"),
+		).
+		ToSQL()
+
+	if !strings.Contains(sql, "WHERE status = 1 AND (name LIKE \"%acme%\" OR code LIKE \"%AC%\")") {
+		t.Fatalf("expected AND outside OR group, got SQL: %s", sql)
+	}
+}
+
+func TestGenWrapperWhereGroupFnCanBuildOptionalOrLikes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+
+	name := field.NewString("", "name")
+	code := field.NewString("", "code")
+
+	sql := w.Where(RawField("status = ?", 1)).
+		WhereGroupFn(func(g IGenWrapper[*wrapperTestDO]) {
+			g.Like(name, "").
+				OrLike(code, "AC")
+		}).
+		ToSQL()
+
+	if !strings.Contains(sql, "WHERE status = 1 AND code LIKE \"%AC%\"") {
+		t.Fatalf("expected empty LIKE to be skipped and non-empty OR LIKE to remain, got SQL: %s", sql)
+	}
+	if strings.Contains(sql, "name LIKE") || strings.Contains(sql, "%%") {
+		t.Fatalf("expected empty LIKE to be skipped, got SQL: %s", sql)
 	}
 }
