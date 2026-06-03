@@ -499,33 +499,49 @@ func getTableComment(db *gorm.DB, tableName string) string {
 	return comment
 }
 
+func extractEnumValuesFromComment(comment string) []string {
+	re := regexp.MustCompile(`(?:^|[\s,，;；:：、])(\d+)\s*(?:是|[、.．:：=\-])`)
+	seen := make(map[string]struct{})
+	var vals []string
+	for _, m := range re.FindAllStringSubmatch(comment, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		if _, ok := seen[m[1]]; ok {
+			continue
+		}
+		seen[m[1]] = struct{}{}
+		vals = append(vals, m[1])
+	}
+	if len(vals) < 2 {
+		return nil
+	}
+	return vals
+}
+
 func generateValidateRule(col ColumnInfo) string {
 	var rules []string
+	fieldType := col.FieldType
+	if fieldType == "" {
+		fieldType = getGoTypeForApiDto(col.Type)
+	}
 	if !col.CanNull {
 		rules = append(rules, "required")
 	}
 	if col.IsKey {
 		rules = append(rules, "uuid")
 	}
-	if col.FieldType == "string" && strings.Contains(col.Name, "email") {
+	if fieldType == "string" && strings.Contains(col.Name, "email") {
 		rules = append(rules, "email")
 	}
-	if col.FieldType == "string" && strings.Contains(col.Name, "mobile") {
+	if fieldType == "string" && strings.Contains(col.Name, "mobile") {
 		rules = append(rules, "mobile")
 	}
-	if strings.Contains(strings.ToLower(col.Comment), "1是") && strings.Contains(strings.ToLower(col.Comment), "2是") {
-		re := regexp.MustCompile(`(\d+)是([^，,]+)[,，]?`)
-		var vals []string
-		for _, m := range re.FindAllStringSubmatch(col.Comment, -1) {
-			if len(m) >= 3 {
-				vals = append(vals, m[1])
-			}
-		}
-		if len(vals) > 0 {
-			rules = append(rules, "oneof="+strings.Join(vals, " "))
-		}
+	enumVals := extractEnumValuesFromComment(col.Comment)
+	if len(enumVals) > 0 {
+		rules = append(rules, "oneof="+strings.Join(enumVals, " "))
 	}
-	if !col.CanNull && col.FieldType == "int64" &&
+	if len(enumVals) == 0 && !col.CanNull && fieldType == "int64" &&
 		(strings.Contains(col.Name, "status") || strings.Contains(col.Name, "type") || strings.Contains(col.Name, "is_")) {
 		rules = append(rules, "gte=1")
 	}
@@ -535,6 +551,7 @@ func generateValidateRule(col ColumnInfo) string {
 func buildRepoData(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tableName string) RepositoryTemplateData {
 	columnData := make([]ColumnInfo, len(columns))
 	primaryKeyField, primaryKeyColumn := "ID", "id"
+	primaryKeySelected := false
 	for i, col := range columns {
 		fn := Case2Camel(col.Name)
 		columnData[i] = ColumnInfo{
@@ -542,9 +559,10 @@ func buildRepoData(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tab
 			FieldName: fn, FieldType: getGoType(col.Type),
 			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 		}
-		if col.IsKey {
+		if col.IsKey && (!primaryKeySelected || strings.Contains(strings.ToLower(col.Extra), "auto_increment")) {
 			primaryKeyField = fn
 			primaryKeyColumn = col.Name
+			primaryKeySelected = true
 		}
 	}
 	return RepositoryTemplateData{
