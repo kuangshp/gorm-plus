@@ -436,6 +436,10 @@ func getGoTypeForApiDto(sqlType string) string {
 
 func getGoTypeForVo(sqlType string) string { return getGoTypeForApiDto(sqlType) }
 
+func isDecimalSQLType(sqlType string) bool {
+	return strings.Contains(strings.ToLower(sqlType), "decimal")
+}
+
 // ═══════════════════════════════════════════════════════════
 //  路径工具
 // ═══════════════════════════════════════════════════════════
@@ -536,6 +540,9 @@ func generateValidateRule(col ColumnInfo) string {
 	}
 	if fieldType == "string" && strings.Contains(col.Name, "mobile") {
 		rules = append(rules, "mobile")
+	}
+	if isDecimalSQLType(col.Type) {
+		rules = append(rules, "decimal")
 	}
 	enumVals := extractEnumValuesFromComment(col.Comment)
 	if len(enumVals) > 0 {

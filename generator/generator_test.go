@@ -30,6 +30,32 @@ func TestGenerateValidateRuleBuildsOneofFromLegacyEnumComment(t *testing.T) {
 	}
 }
 
+func TestGenerateValidateRuleAddsDecimalForDecimalSQLType(t *testing.T) {
+	rule := generateValidateRule(ColumnInfo{
+		Name:    "amount",
+		Type:    "decimal(10,2)",
+		CanNull: false,
+	})
+
+	want := "required,decimal"
+	if rule != want {
+		t.Fatalf("generateValidateRule() = %q, want %q", rule, want)
+	}
+}
+
+func TestGenerateValidateRuleAddsDecimalForNullableDecimalSQLType(t *testing.T) {
+	rule := generateValidateRule(ColumnInfo{
+		Name:    "amount",
+		Type:    "decimal(10,2)",
+		CanNull: true,
+	})
+
+	want := "decimal"
+	if rule != want {
+		t.Fatalf("generateValidateRule() = %q, want %q", rule, want)
+	}
+}
+
 func TestBuildRepoDataPrefersAutoIncrementPrimaryKey(t *testing.T) {
 	data := buildRepoData([]ColumnInfo{
 		{Name: "id", Type: "int", IsKey: true, Extra: "auto_increment"},
