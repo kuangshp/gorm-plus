@@ -84,6 +84,15 @@ type IQueryBuilder interface {
 	//   .RLike("order_no", "ORD2024") => WHERE order_no LIKE 'ORD2024%'
 	RLike(col string, val string) IQueryBuilder
 
+	// OrLike 双侧模糊，以 OR 追加；val 为空时跳过。
+	OrLike(col string, val string) IQueryBuilder
+
+	// OrLLike 左侧模糊，以 OR 追加；val 为空时跳过。
+	OrLLike(col string, val string) IQueryBuilder
+
+	// OrRLike 右侧模糊，以 OR 追加；val 为空时跳过。
+	OrRLike(col string, val string) IQueryBuilder
+
 	// -------- 范围查询 --------
 
 	// BetweenIfNotZero 闭区间 [min, max]，min 和 max 同时非零才生效。
@@ -106,6 +115,9 @@ type IQueryBuilder interface {
 	//   .WhereIf(onlyVip, "id IN (SELECT account_id FROM vip WHERE level > ?)", 2)
 	WhereIf(condition bool, query string, args ...any) IQueryBuilder
 
+	// OrWhereIf condition 为 true 时追加 OR 条件，false 时整体跳过。
+	OrWhereIf(condition bool, query string, args ...any) IQueryBuilder
+
 	// -------- 条件分组（保证括号语义正确） --------
 
 	// WhereGroup 将 fn 内的条件用括号包裹后以 AND 连接到主查询。
@@ -119,6 +131,23 @@ type IQueryBuilder interface {
 	//    })
 	WhereGroup(fn func(IQueryBuilder)) IQueryBuilder
 
+	// WhereGroupIf condition 为 true 时追加 AND 函数分组，否则整体跳过。
+	WhereGroupIf(condition bool, fn func(IQueryBuilder)) IQueryBuilder
+
+	// WhereOrGroup 将 fn 内条件用括号包裹后以 AND 连接到主查询，组内默认以 OR 连接。
+	// 适合“多个可选搜索字段命中任一即可”的场景。
+	//
+	//   // WHERE status = 1 AND (username LIKE '%kw%' OR mobile LIKE '%kw%')
+	//   .WhereIf(true, "status = ?", 1).
+	//    WhereOrGroup(func(q db.IQueryBuilder) {
+	//        q.Like("username", keyword).
+	//          Like("mobile", keyword)
+	//    })
+	WhereOrGroup(fn func(IQueryBuilder)) IQueryBuilder
+
+	// WhereOrGroupIf condition 为 true 时追加 AND 接入的 OR 分组，否则整体跳过。
+	WhereOrGroupIf(condition bool, fn func(IQueryBuilder)) IQueryBuilder
+
 	// OrGroup 将 fn 内的条件用括号包裹后以 OR 连接到主查询。
 	// 组内可使用完整 IQueryBuilder 能力。
 	//
@@ -129,6 +158,9 @@ type IQueryBuilder interface {
 	//          WhereIf(orgID != 0, "org_id = ?", orgID)
 	//    })
 	OrGroup(fn func(IQueryBuilder)) IQueryBuilder
+
+	// OrGroupIf condition 为 true 时追加 OR 函数分组，否则整体跳过。
+	OrGroupIf(condition bool, fn func(IQueryBuilder)) IQueryBuilder
 
 	// -------- 出口 --------
 
@@ -205,8 +237,9 @@ const (
 // ================== Builder 实现 ==================
 
 type Builder struct {
-	db      *gorm.DB
-	clauses []*clause
+	db         *gorm.DB
+	clauses    []*clause
+	defaultTyp clauseType
 }
 
 func (b *Builder) add(c *clause) IQueryBuilder {
@@ -223,6 +256,15 @@ func (b *Builder) LLike(col string, val string) IQueryBuilder {
 func (b *Builder) RLike(col string, val string) IQueryBuilder {
 	return b.WhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), val+"%")
 }
+func (b *Builder) OrLike(col string, val string) IQueryBuilder {
+	return b.OrWhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), "%"+val+"%")
+}
+func (b *Builder) OrLLike(col string, val string) IQueryBuilder {
+	return b.OrWhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), "%"+val)
+}
+func (b *Builder) OrRLike(col string, val string) IQueryBuilder {
+	return b.OrWhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), val+"%")
+}
 
 func (b *Builder) BetweenIfNotZero(col string, min, max any) IQueryBuilder {
 	return b.WhereIf(!isZeroVal(min) && !isZeroVal(max), fmt.Sprintf("`%s` BETWEEN ? AND ?", col), min, max)
@@ -232,25 +274,66 @@ func (b *Builder) WhereIf(condition bool, query string, args ...any) IQueryBuild
 	if !condition {
 		return b
 	}
-	return b.add(&clause{sql: query, args: args, typ: clauseAnd})
+	return b.add(&clause{sql: query, args: args, typ: b.defaultClauseType()})
+}
+
+func (b *Builder) OrWhereIf(condition bool, query string, args ...any) IQueryBuilder {
+	if !condition {
+		return b
+	}
+	return b.add(&clause{sql: query, args: args, typ: clauseOr})
+}
+
+func (b *Builder) defaultClauseType() clauseType {
+	if b.defaultTyp == clauseOr {
+		return clauseOr
+	}
+	return clauseAnd
+}
+
+func (b *Builder) addGroup(fn func(IQueryBuilder), outerTyp, innerTyp clauseType) IQueryBuilder {
+	if fn == nil {
+		return b
+	}
+	child := &Builder{db: b.db, defaultTyp: innerTyp}
+	fn(child)
+	if len(child.clauses) == 0 {
+		return b
+	}
+	return b.add(&clause{children: child.clauses, typ: outerTyp, isGroup: true})
 }
 
 func (b *Builder) WhereGroup(fn func(IQueryBuilder)) IQueryBuilder {
-	child := &Builder{db: b.db}
-	fn(child)
-	if len(child.clauses) == 0 {
-		return b
+	return b.addGroup(fn, clauseAnd, clauseAnd)
+}
+
+func (b *Builder) WhereGroupIf(condition bool, fn func(IQueryBuilder)) IQueryBuilder {
+	if condition {
+		return b.WhereGroup(fn)
 	}
-	return b.add(&clause{children: child.clauses, typ: clauseAnd, isGroup: true})
+	return b
+}
+
+func (b *Builder) WhereOrGroup(fn func(IQueryBuilder)) IQueryBuilder {
+	return b.addGroup(fn, clauseAnd, clauseOr)
+}
+
+func (b *Builder) WhereOrGroupIf(condition bool, fn func(IQueryBuilder)) IQueryBuilder {
+	if condition {
+		return b.WhereOrGroup(fn)
+	}
+	return b
 }
 
 func (b *Builder) OrGroup(fn func(IQueryBuilder)) IQueryBuilder {
-	child := &Builder{db: b.db}
-	fn(child)
-	if len(child.clauses) == 0 {
-		return b
+	return b.addGroup(fn, clauseOr, clauseAnd)
+}
+
+func (b *Builder) OrGroupIf(condition bool, fn func(IQueryBuilder)) IQueryBuilder {
+	if condition {
+		return b.OrGroup(fn)
 	}
-	return b.add(&clause{children: child.clauses, typ: clauseOr, isGroup: true})
+	return b
 }
 
 func (b *Builder) Build() *gorm.DB {
@@ -294,16 +377,14 @@ func (b *Builder) Explain(target any) error {
 
 func applyClause(db *gorm.DB, c *clause) *gorm.DB {
 	if c.isGroup {
-		scope := func(tx *gorm.DB) *gorm.DB {
-			for _, child := range c.children {
-				tx = applyClause(tx, child)
-			}
-			return tx
+		subDB := db.Session(&gorm.Session{NewDB: true})
+		for _, child := range c.children {
+			subDB = applyClause(subDB, child)
 		}
 		if c.typ == clauseOr {
-			return db.Or(scope)
+			return db.Or(subDB)
 		}
-		return db.Where(scope)
+		return db.Where(subDB)
 	}
 	if c.typ == clauseOr {
 		return db.Or(c.sql, c.args...)
