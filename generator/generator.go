@@ -337,6 +337,7 @@ func getTableColumns(db *gorm.DB, tableName string) ([]ColumnInfo, error) {
 
 type ColumnInfo struct {
 	Name, Type, FieldName, FieldType string
+	ParamName                        string
 	JsonTag, JsonTagOpt              string
 	CanNull, IsKey                   bool
 	Extra, Comment, Validate         string
@@ -361,6 +362,10 @@ type RepositoryTemplateData struct {
 	ModelPkgName, RawsqlPkgPath       string
 	Columns                           []ColumnInfo
 	PrimaryKeyField, PrimaryKeyColumn string
+	PrimaryKeyType                    string
+	PrimaryKeys                       []ColumnInfo
+	HasCompositePrimaryKey            bool
+	PrimaryKeyParamList               string
 	TableName                         string // 用于 SF / Cache 的 key 前缀（如 "sys_user.FindById"）
 }
 
@@ -647,19 +652,40 @@ func generateValidateRule(col ColumnInfo) string {
 
 func buildRepoData(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tableName string) RepositoryTemplateData {
 	columnData := make([]ColumnInfo, len(columns))
-	primaryKeyField, primaryKeyColumn := "ID", "id"
+	primaryKeyField, primaryKeyColumn, primaryKeyType := "ID", "id", "int64"
 	primaryKeySelected := false
+	primaryKeys := make([]ColumnInfo, 0, len(columns))
 	for i, col := range columns {
 		fn := Case2Camel(col.Name)
+		fieldType := getGoType(col.Type)
 		columnData[i] = ColumnInfo{
 			Name: col.Name, Type: col.Type,
-			FieldName: fn, FieldType: getGoType(col.Type),
+			FieldName: fn, FieldType: fieldType,
 			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 		}
 		if col.IsKey && (!primaryKeySelected || strings.Contains(strings.ToLower(col.Extra), "auto_increment")) {
 			primaryKeyField = fn
 			primaryKeyColumn = col.Name
+			primaryKeyType = fieldType
 			primaryKeySelected = true
+		}
+		if col.IsKey {
+			primaryKeys = append(primaryKeys, columnData[i])
+		}
+	}
+	if len(primaryKeys) == 0 {
+		primaryKeys = []ColumnInfo{{
+			Name:      primaryKeyColumn,
+			FieldName: primaryKeyField,
+			FieldType: primaryKeyType,
+			IsKey:     true,
+		}}
+	}
+	for i := range primaryKeys {
+		if len(primaryKeys) == 1 {
+			primaryKeys[i].ParamName = LowerCamelCase(modelName) + "Id"
+		} else {
+			primaryKeys[i].ParamName = LowerCamelCase(primaryKeys[i].FieldName)
 		}
 	}
 	return RepositoryTemplateData{
@@ -667,9 +693,20 @@ func buildRepoData(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tab
 		EntityName: modelName + "Entity", EntityNameLower: LowerCamelCase(modelName + "Entity"),
 		Package: pkg, DaoPath: pkg + "/" + daoPath, ModelPath: pkg + "/" + modelPath,
 		ModelPkgName: getLastPathSegment(modelPath), Columns: columnData,
-		PrimaryKeyField: primaryKeyField, PrimaryKeyColumn: primaryKeyColumn,
-		TableName: tableName,
+		PrimaryKeyField: primaryKeyField, PrimaryKeyColumn: primaryKeyColumn, PrimaryKeyType: primaryKeyType,
+		PrimaryKeys:            primaryKeys,
+		HasCompositePrimaryKey: len(primaryKeys) > 1,
+		PrimaryKeyParamList:    buildPrimaryKeyParamList(primaryKeys),
+		TableName:              tableName,
 	}
+}
+
+func buildPrimaryKeyParamList(primaryKeys []ColumnInfo) string {
+	params := make([]string, 0, len(primaryKeys))
+	for _, key := range primaryKeys {
+		params = append(params, fmt.Sprintf("%s %s", key.ParamName, key.FieldType))
+	}
+	return strings.Join(params, ", ")
 }
 
 func generateRepositoryFile(columns []ColumnInfo, modelName, pkg, daoPath, modelPath, tmplPath, tableName string) (string, error) {

@@ -1,6 +1,10 @@
 package generator
 
-import "testing"
+import (
+	"go/format"
+	"strings"
+	"testing"
+)
 
 func TestGenerateValidateRuleBuildsOneofFromChineseEnumComment(t *testing.T) {
 	rule := generateValidateRule(ColumnInfo{
@@ -201,6 +205,9 @@ func TestBuildRepoDataPrefersAutoIncrementPrimaryKey(t *testing.T) {
 	if data.PrimaryKeyColumn != "id" {
 		t.Fatalf("PrimaryKeyColumn = %q, want %q", data.PrimaryKeyColumn, "id")
 	}
+	if data.PrimaryKeyType != "int64" {
+		t.Fatalf("PrimaryKeyType = %q, want %q", data.PrimaryKeyType, "int64")
+	}
 }
 
 func TestBuildRepoDataUsesFirstPrimaryKeyWhenNoAutoIncrement(t *testing.T) {
@@ -214,5 +221,104 @@ func TestBuildRepoDataUsesFirstPrimaryKeyWhenNoAutoIncrement(t *testing.T) {
 	}
 	if data.PrimaryKeyColumn != "tenant_id" {
 		t.Fatalf("PrimaryKeyColumn = %q, want %q", data.PrimaryKeyColumn, "tenant_id")
+	}
+	if data.PrimaryKeyType != "int64" {
+		t.Fatalf("PrimaryKeyType = %q, want %q", data.PrimaryKeyType, "int64")
+	}
+}
+
+func TestBuildRepoDataUsesStringPrimaryKeyType(t *testing.T) {
+	data := buildRepoData([]ColumnInfo{
+		{Name: "biz_type", Type: "varchar(64)", IsKey: true},
+		{Name: "counter", Type: "bigint"},
+	}, "Sequence", "github.com/example/app", "dal/dao", "dal/model", "sequence")
+
+	if data.PrimaryKeyField != "BizType" {
+		t.Fatalf("PrimaryKeyField = %q, want %q", data.PrimaryKeyField, "BizType")
+	}
+	if data.PrimaryKeyColumn != "biz_type" {
+		t.Fatalf("PrimaryKeyColumn = %q, want %q", data.PrimaryKeyColumn, "biz_type")
+	}
+	if data.PrimaryKeyType != "string" {
+		t.Fatalf("PrimaryKeyType = %q, want %q", data.PrimaryKeyType, "string")
+	}
+}
+
+func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
+	got, err := generateRepositoryFile([]ColumnInfo{
+		{Name: "biz_type", Type: "varchar(64)", IsKey: true},
+		{Name: "counter", Type: "bigint"},
+	}, "Sequence", "github.com/example/app", "dal/dao", "dal/model", "template/repository_gen_template.txt", "sequence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGeneratedGoFormats(t, got)
+
+	mustContain := []string{
+		"DeleteById(ctx context.Context, sequenceId string) error",
+		"FindById(ctx context.Context, sequenceId string, query ...gormplus.QueryOption)",
+		"dao.SequenceEntity.BizType.Eq(sequenceId)",
+		`gormplus.BuildArgs("biz_type", sequenceId)`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Fatalf("generated repository missing %q", want)
+		}
+	}
+
+	mustNotContain := []string{
+		"DeleteById(ctx context.Context, sequenceId int64) error",
+		`gormplus.BuildArgs("id", sequenceId)`,
+	}
+	for _, unwanted := range mustNotContain {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("generated repository contains %q", unwanted)
+		}
+	}
+}
+
+func TestGenerateRepositoryFileUsesCompositePrimaryKeys(t *testing.T) {
+	got, err := generateRepositoryFile([]ColumnInfo{
+		{Name: "id", Type: "int", IsKey: true, Extra: "auto_increment"},
+		{Name: "biz_type", Type: "varchar(64)", IsKey: true},
+		{Name: "counter", Type: "bigint"},
+	}, "Sequence", "github.com/example/app", "dal/dao", "dal/model", "template/repository_gen_template.txt", "sequence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGeneratedGoFormats(t, got)
+
+	mustContain := []string{
+		"type SequencePrimaryKey struct",
+		"ID int64 `json:\"id\"`",
+		"BizType string `json:\"biz_type\"`",
+		"DeleteById(ctx context.Context, id int64, bizType string) error",
+		"DeleteByIdList(ctx context.Context, sequenceIds []SequencePrimaryKey) error",
+		"FindById(ctx context.Context, id int64, bizType string, query ...gormplus.QueryOption)",
+		"dao.SequenceEntity.ID.Eq(id)",
+		"dao.SequenceEntity.BizType.Eq(bizType)",
+		`gormplus.BuildArgs("id", id, "biz_type", bizType)`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Fatalf("generated repository missing %q", want)
+		}
+	}
+
+	mustNotContain := []string{
+		"Where(dao.SequenceEntity.ID.Eq(sequenceId))",
+		`gormplus.BuildArgs("id", sequenceId)`,
+	}
+	for _, unwanted := range mustNotContain {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("generated repository contains %q", unwanted)
+		}
+	}
+}
+
+func assertGeneratedGoFormats(t *testing.T, src string) {
+	t.Helper()
+	if _, err := format.Source([]byte(src)); err != nil {
+		t.Fatalf("generated Go code is not formattable: %v\n%s", err, src)
 	}
 }
