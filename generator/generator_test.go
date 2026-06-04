@@ -255,10 +255,15 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 	assertGeneratedGoFormats(t, got)
 
 	mustContain := []string{
-		"DeleteById(ctx context.Context, sequenceId string) error",
+		"DeleteById(ctx context.Context, sequenceId string, opts ...gormplus.DeleteOption) error",
 		"FindById(ctx context.Context, sequenceId string, query ...gormplus.QueryOption)",
 		"dao.SequenceEntity.BizType.Eq(sequenceId)",
 		`gormplus.BuildArgs("biz_type", sequenceId)`,
+		"deleteOpts := gormplus.ResolveDeleteOptions(opts)",
+		"if deleteOpts.Physical",
+		"tx = tx.Unscoped()",
+		"if q.Unscoped",
+		"if opt.Unscoped",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(got, want) {
@@ -269,6 +274,7 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 	mustNotContain := []string{
 		"DeleteById(ctx context.Context, sequenceId int64) error",
 		`gormplus.BuildArgs("id", sequenceId)`,
+		"PhysicalDeleteById(",
 	}
 	for _, unwanted := range mustNotContain {
 		if strings.Contains(got, unwanted) {
@@ -292,12 +298,17 @@ func TestGenerateRepositoryFileUsesCompositePrimaryKeys(t *testing.T) {
 		"type SequencePrimaryKey struct",
 		"ID int64 `json:\"id\"`",
 		"BizType string `json:\"biz_type\"`",
-		"DeleteById(ctx context.Context, id int64, bizType string) error",
-		"DeleteByIdList(ctx context.Context, sequenceIds []SequencePrimaryKey) error",
+		"DeleteById(ctx context.Context, id int64, bizType string, opts ...gormplus.DeleteOption) error",
+		"DeleteByIdList(ctx context.Context, sequenceIds []SequencePrimaryKey, opts ...gormplus.DeleteOption) error",
 		"FindById(ctx context.Context, id int64, bizType string, query ...gormplus.QueryOption)",
 		"dao.SequenceEntity.ID.Eq(id)",
 		"dao.SequenceEntity.BizType.Eq(bizType)",
 		`gormplus.BuildArgs("id", id, "biz_type", bizType)`,
+		"deleteOpts := gormplus.ResolveDeleteOptions(opts)",
+		"if deleteOpts.Physical",
+		"tx = tx.Unscoped()",
+		"if q.Unscoped",
+		"if opt.Unscoped",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(got, want) {
@@ -308,6 +319,7 @@ func TestGenerateRepositoryFileUsesCompositePrimaryKeys(t *testing.T) {
 	mustNotContain := []string{
 		"Where(dao.SequenceEntity.ID.Eq(sequenceId))",
 		`gormplus.BuildArgs("id", sequenceId)`,
+		"PhysicalDeleteById(",
 	}
 	for _, unwanted := range mustNotContain {
 		if strings.Contains(got, unwanted) {

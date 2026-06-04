@@ -39,6 +39,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -117,6 +118,18 @@ type IQueryBuilder interface {
 
 	// OrWhereIf condition 为 true 时追加 OR 条件，false 时整体跳过。
 	OrWhereIf(condition bool, query string, args ...any) IQueryBuilder
+
+	// WithDeleted 查询时包含主表逻辑删除数据。
+	WithDeleted() IQueryBuilder
+
+	// WithUnscoped 是 WithDeleted 的 GORM 语义别名。
+	WithUnscoped() IQueryBuilder
+
+	// WhereNotDeleted 追加指定表/别名的未删除条件，适合手写 JOIN 的从表过滤。
+	WhereNotDeleted(tableOrAlias string) IQueryBuilder
+
+	// WhereDeleted 追加指定表/别名的已删除条件，适合查询 JOIN 从表的逻辑删除数据。
+	WhereDeleted(tableOrAlias string) IQueryBuilder
 
 	// -------- 条件分组（保证括号语义正确） --------
 
@@ -282,6 +295,31 @@ func (b *Builder) OrWhereIf(condition bool, query string, args ...any) IQueryBui
 		return b
 	}
 	return b.add(&clause{sql: query, args: args, typ: clauseOr})
+}
+
+func (b *Builder) WithDeleted() IQueryBuilder {
+	b.db = b.db.Unscoped()
+	return b
+}
+
+func (b *Builder) WithUnscoped() IQueryBuilder {
+	return b.WithDeleted()
+}
+
+func (b *Builder) WhereNotDeleted(tableOrAlias string) IQueryBuilder {
+	tableOrAlias = strings.TrimSpace(tableOrAlias)
+	if tableOrAlias == "" {
+		return b
+	}
+	return b.WhereIf(true, fmt.Sprintf("%s.deleted_at IS NULL", tableOrAlias))
+}
+
+func (b *Builder) WhereDeleted(tableOrAlias string) IQueryBuilder {
+	tableOrAlias = strings.TrimSpace(tableOrAlias)
+	if tableOrAlias == "" {
+		return b
+	}
+	return b.WhereIf(true, fmt.Sprintf("%s.deleted_at IS NOT NULL", tableOrAlias))
 }
 
 func (b *Builder) defaultClauseType() clauseType {

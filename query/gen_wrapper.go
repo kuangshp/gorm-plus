@@ -418,6 +418,16 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   => WHERE status = 1 OR (role = 99 AND dept_id = 10)
 	OrWhereRaw(sql string, args ...any) IGenWrapper[T]
 
+	// WhereNotDeleted 追加指定表/别名的未删除条件，适合手写 JOIN 的从表过滤。
+	//
+	//   .WhereNotDeleted("d") => d.deleted_at IS NULL
+	WhereNotDeleted(tableOrAlias string) IGenWrapper[T]
+
+	// WhereDeleted 追加指定表/别名的已删除条件，适合查询 JOIN 从表的逻辑删除数据。
+	//
+	//   .WhereDeleted("d") => d.deleted_at IS NOT NULL
+	WhereDeleted(tableOrAlias string) IGenWrapper[T]
+
 	// Order 追加排序字段(链式顺序生效,先调先排)。
 	//
 	// 既支持 gorm-gen 类型安全字段(dao.X.Y.Desc()),也支持 RawField 包装的原生 SQL。
@@ -768,6 +778,22 @@ func (w *GenWrapper[T]) WhereRawIf(condition bool, sql string, args ...any) IGen
 func (w *GenWrapper[T]) OrWhereRaw(sql string, args ...any) IGenWrapper[T] {
 	w.addRaw(sql, args, condOr)
 	return w
+}
+
+func (w *GenWrapper[T]) WhereNotDeleted(tableOrAlias string) IGenWrapper[T] {
+	tableOrAlias = strings.TrimSpace(tableOrAlias)
+	if tableOrAlias == "" {
+		return w
+	}
+	return w.WhereRaw(fmt.Sprintf("%s.deleted_at IS NULL", tableOrAlias))
+}
+
+func (w *GenWrapper[T]) WhereDeleted(tableOrAlias string) IGenWrapper[T] {
+	tableOrAlias = strings.TrimSpace(tableOrAlias)
+	if tableOrAlias == "" {
+		return w
+	}
+	return w.WhereRaw(fmt.Sprintf("%s.deleted_at IS NOT NULL", tableOrAlias))
 }
 
 // ── Order 系列 ────────────────────────────────────────────────────────

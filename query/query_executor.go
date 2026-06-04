@@ -78,6 +78,7 @@ func ExecuteQuery[T any](
 	args map[string]any,
 	fn func() (T, error),
 ) (T, error) {
+	args = withQueryOptionArgs(args, opt)
 	// 走缓存（自动包 sf 防击穿）
 	if opt.Cache != nil && opt.Cache.Enable {
 		// 合并模板默认 args 与业务方通过 WithCacheArgs/WithCacheArgsMap 提供的 args
@@ -94,6 +95,13 @@ func ExecuteQuery[T any](
 	}
 	// 直接执行
 	return fn()
+}
+
+func withQueryOptionArgs(args map[string]any, opt QueryOption) map[string]any {
+	if !opt.Unscoped {
+		return args
+	}
+	return mergeCacheArgs(args, map[string]any{"__unscoped": true})
 }
 
 // pageResult 是 ExecutePage 内部用于包装分页结果的中间类型，

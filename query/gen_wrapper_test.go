@@ -149,3 +149,27 @@ func TestGenWrapperWhereGroupFnCanBuildOptionalOrLikes(t *testing.T) {
 		t.Fatalf("expected empty LIKE to be skipped, got SQL: %s", sql)
 	}
 }
+
+func TestGenWrapperJoinSoftDeleteHelpers(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+
+	sql := w.WhereNotDeleted("d").
+		WhereDeleted("u").
+		ToSQL()
+
+	if !strings.Contains(sql, "d.deleted_at IS NULL") {
+		t.Fatalf("expected joined table not-deleted condition, got SQL: %s", sql)
+	}
+	if !strings.Contains(sql, "u.deleted_at IS NOT NULL") {
+		t.Fatalf("expected joined table deleted condition, got SQL: %s", sql)
+	}
+}

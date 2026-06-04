@@ -32,6 +32,7 @@ type QueryOption struct {
 	Select     []field.Expr        // 指定查询字段
 	OmitFields []field.Expr        // 排除字段
 	Limit      *int                // 查询条数
+	Unscoped   bool                // 包含主表逻辑删除数据
 	SF         *SingleFlightOption // 使用sf并发处理
 	Cache      *CacheOption        // 使用缓存
 }
@@ -145,6 +146,39 @@ func (q *QueryBuilder) WhereRawIf(cond bool, sql string, vars ...interface{}) *Q
 	}
 	q.option.Cond = append(q.option.Cond, RawField(sql, vars...))
 	return q
+}
+
+// WithDeleted 查询时包含主表逻辑删除数据。
+func (q *QueryBuilder) WithDeleted() *QueryBuilder {
+	q.option.Unscoped = true
+	return q
+}
+
+// WithUnscoped 是 WithDeleted 的 GORM 语义别名。
+func (q *QueryBuilder) WithUnscoped() *QueryBuilder {
+	return q.WithDeleted()
+}
+
+// WhereNotDeleted 追加指定表/别名的未删除条件，适合手写 JOIN 的从表过滤。
+//
+// 示例：WhereNotDeleted("d") => d.deleted_at IS NULL。
+func (q *QueryBuilder) WhereNotDeleted(tableOrAlias string) *QueryBuilder {
+	tableOrAlias = strings.TrimSpace(tableOrAlias)
+	if tableOrAlias == "" {
+		return q
+	}
+	return q.WhereRaw(fmt.Sprintf("%s.deleted_at IS NULL", tableOrAlias))
+}
+
+// WhereDeleted 追加指定表/别名的已删除条件，适合查询 JOIN 从表的逻辑删除数据。
+//
+// 示例：WhereDeleted("d") => d.deleted_at IS NOT NULL。
+func (q *QueryBuilder) WhereDeleted(tableOrAlias string) *QueryBuilder {
+	tableOrAlias = strings.TrimSpace(tableOrAlias)
+	if tableOrAlias == "" {
+		return q
+	}
+	return q.WhereRaw(fmt.Sprintf("%s.deleted_at IS NOT NULL", tableOrAlias))
 }
 
 // Order 追加排序字段(链式顺序生效,先调先排)。
@@ -751,6 +785,10 @@ func MergeQueryOptions(opts ...QueryOption) QueryOption {
 		// Limit
 		if opt.Limit != nil {
 			result.Limit = opt.Limit
+		}
+
+		if opt.Unscoped {
+			result.Unscoped = true
 		}
 
 		// SF

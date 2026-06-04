@@ -77,3 +77,40 @@ func TestQueryBuilderOrLikeAndSkippedGroups(t *testing.T) {
 		t.Fatalf("expected skipped groups not to affect SQL, got SQL: %s", sql)
 	}
 }
+
+func TestQueryBuilderJoinSoftDeleteHelpers(t *testing.T) {
+	sql := newDryRunBuilder(t).
+		WhereIf(true, "status = ?", 1).
+		WhereNotDeleted("d").
+		WhereDeleted("u").
+		ToSQL()
+
+	if !strings.Contains(sql, "d.deleted_at IS NULL") {
+		t.Fatalf("expected joined table not-deleted condition, got SQL: %s", sql)
+	}
+	if !strings.Contains(sql, "u.deleted_at IS NOT NULL") {
+		t.Fatalf("expected joined table deleted condition, got SQL: %s", sql)
+	}
+}
+
+func TestQueryOptionWithDeleted(t *testing.T) {
+	opt := MergeQueryOptions(Query().WithDeleted().Build())
+	if !opt.Unscoped {
+		t.Fatal("expected WithDeleted to enable unscoped query")
+	}
+
+	opt = MergeQueryOptions(Query().WithUnscoped().Build())
+	if !opt.Unscoped {
+		t.Fatal("expected WithUnscoped to enable unscoped query")
+	}
+}
+
+func TestWithQueryOptionArgsIncludesUnscoped(t *testing.T) {
+	args := withQueryOptionArgs(map[string]any{"id": int64(1)}, Query().WithDeleted().Build())
+	if args["id"] != int64(1) {
+		t.Fatalf("id arg = %v, want 1", args["id"])
+	}
+	if args["__unscoped"] != true {
+		t.Fatalf("__unscoped arg = %v, want true", args["__unscoped"])
+	}
+}
