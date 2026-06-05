@@ -339,12 +339,14 @@ type TenantConfig[T comparable] struct {
 
 type tenantPlugin[T comparable] struct {
 	cfg             TenantConfig[T]
+	db              *gorm.DB
 	defaultField    []TenantFieldConfig[T]
 	tableFields     map[string][]TenantFieldConfig[T]
 	autoInjectJoin  bool
 	excludeJoinSet  map[string]struct{}
 	joinOverrideMap map[string]JoinTenantConfig[T]
 	excludeSet      map[string]struct{}
+	columnCache     map[string]map[string]bool
 	mu              sync.RWMutex
 }
 
@@ -353,6 +355,7 @@ func (p *tenantPlugin[T]) Name() string {
 }
 
 func (p *tenantPlugin[T]) Initialize(db *gorm.DB) error {
+	p.db = db
 	if err := db.Callback().Query().Before("gorm:query").
 		Register(p.Name()+":query", p.injectWhere); err != nil {
 		return fmt.Errorf("RegisterTenant: 注册 query 钩子失败: %w", err)
@@ -393,6 +396,10 @@ func (p *tenantPlugin[T]) Initialize(db *gorm.DB) error {
 //   - skip=false, err=nil：未发现该字段，插件正常注入
 //   - skip=false, err!=nil：发现危险的 OR 条件，拒绝执行
 func (p *tenantPlugin[T]) checkTenantFieldSafety(db *gorm.DB, field string) (skip bool, err error) {
+	return p.checkTenantFieldSafetyForPrefix(db, field, "")
+}
+
+func (p *tenantPlugin[T]) checkTenantFieldSafetyForPrefix(db *gorm.DB, field, prefix string) (skip bool, err error) {
 	if db.Statement == nil {
 		return false, nil
 	}
@@ -405,7 +412,7 @@ func (p *tenantPlugin[T]) checkTenantFieldSafety(db *gorm.DB, field string) (ski
 	switch expr := whereClause.Expression.(type) {
 	case clause.Where:
 		for _, cond := range expr.Exprs {
-			s, e := checkExprForTenantField(cond, field)
+			s, e := checkExprForTenantField(cond, field, prefix)
 			if e != nil {
 				return false, e
 			}
@@ -423,21 +430,21 @@ func (p *tenantPlugin[T]) checkTenantFieldSafety(db *gorm.DB, field string) (ski
 //   - (true, nil)：在 AND 条件中找到租户字段 → 插件跳过注入
 //   - (false, error)：在 OR 条件中发现租户字段 → 危险，拒绝执行
 //   - (false, nil)：未发现租户字段 → 正常注入
-func checkExprForTenantField(expr clause.Expression, field string) (skip bool, err error) {
+func checkExprForTenantField(expr clause.Expression, field, prefix string) (skip bool, err error) {
 	switch e := expr.(type) {
 	case clause.Eq:
 		// 普通 AND 等值条件：col = ?
-		if colStr, ok := e.Column.(string); ok && colMatchesField(colStr, field) {
+		if colStr, ok := e.Column.(string); ok && colMatchesFieldWithPrefix(colStr, field, prefix) {
 			return true, nil // 已有该字段的 AND 条件，跳过注入
 		}
-		if col, ok := e.Column.(clause.Column); ok && colMatchesField(col.Name, field) {
+		if col, ok := e.Column.(clause.Column); ok && columnMatchesFieldWithPrefix(col, field, prefix) {
 			return true, nil
 		}
 
 	case clause.AndConditions:
 		// AND 分组，递归检查每个子条件
 		for _, sub := range e.Exprs {
-			s, e := checkExprForTenantField(sub, field)
+			s, e := checkExprForTenantField(sub, field, prefix)
 			if e != nil {
 				return false, e
 			}
@@ -475,7 +482,7 @@ func checkExprForTenantField(expr clause.Expression, field string) (skip bool, e
 				)
 			}
 			// 纯 AND 的原生 SQL，视为用户已主动指定，跳过注入
-			return true, nil
+			return prefix == "" || sqlContainsFieldWithPrefix(sql, field, prefix), nil
 		}
 	}
 	return false, nil
@@ -515,13 +522,54 @@ func containsTenantField(expr clause.Expression, field string) bool {
 //	colMatchesField("`tenant_id`", "tenant_id") → true
 //	colMatchesField("tenant_id", "tenant_id")   → true
 func colMatchesField(col, field string) bool {
+	return colMatchesFieldWithPrefix(col, field, "")
+}
+
+func colMatchesFieldWithPrefix(col, field, prefix string) bool {
 	col = strings.ToLower(strings.Trim(col, "`"))
 	field = strings.ToLower(field)
+	prefix = strings.ToLower(strings.Trim(prefix, "`"))
+	if prefix != "" {
+		parts := strings.Split(col, ".")
+		if len(parts) < 2 {
+			return false
+		}
+		colPrefix := strings.Trim(parts[len(parts)-2], "`")
+		colName := strings.Trim(parts[len(parts)-1], "`")
+		return colPrefix == prefix && colName == field
+	}
 	// 去掉表前缀（如 "a.tenant_id" → "tenant_id"）
 	if idx := strings.LastIndex(col, "."); idx >= 0 {
 		col = col[idx+1:]
 	}
 	return col == field
+}
+
+func columnMatchesFieldWithPrefix(col clause.Column, field, prefix string) bool {
+	field = strings.ToLower(field)
+	prefix = strings.ToLower(strings.Trim(prefix, "`"))
+	name := strings.ToLower(strings.Trim(col.Name, "`"))
+	if name != field {
+		return false
+	}
+	if prefix == "" {
+		return true
+	}
+	table := strings.ToLower(strings.Trim(col.Table, "`"))
+	return table == prefix
+}
+
+func sqlContainsFieldWithPrefix(sql, field, prefix string) bool {
+	sql = strings.ToLower(sql)
+	field = strings.ToLower(strings.Trim(field, "`"))
+	prefix = strings.ToLower(strings.Trim(prefix, "`"))
+	if prefix == "" {
+		return strings.Contains(sql, field)
+	}
+	return strings.Contains(sql, prefix+"."+field) ||
+		strings.Contains(sql, "`"+prefix+"`.`"+field+"`") ||
+		strings.Contains(sql, prefix+"`.`"+field) ||
+		strings.Contains(sql, "`"+prefix+"`."+field)
 }
 
 // ================== 核心注入 ==================
@@ -559,7 +607,7 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 			// 先移除业务代码写的租户字段条件，再由插件注入正确值
 			// 适合需要强制隔离、不信任业务代码的严格模式
 			// ⚠️ 仍会检测 OR 危险条件，发现则拒绝执行
-			_, err := p.checkTenantFieldSafety(db, f.Field)
+			_, err := p.checkTenantFieldSafetyForPrefix(db, f.Field, prefix)
 			if err != nil {
 				_ = db.AddError(err)
 				return
@@ -571,7 +619,7 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 			//   - 发现 AND 条件中已有该字段 → 跳过注入（以业务代码为准）
 			//   - 发现 OR 条件中有该字段 → 危险，拒绝执行
 			//   - 未发现 → 正常注入
-			skip, err := p.checkTenantFieldSafety(db, f.Field)
+			skip, err := p.checkTenantFieldSafetyForPrefix(db, f.Field, prefix)
 			if err != nil {
 				_ = db.AddError(err)
 				return
@@ -661,20 +709,17 @@ func exprContainsField(expr clause.Expression, field string) bool {
 //	"JOIN sys_user AS u ON u.id = a.user_id"           → alias=u
 //	"LEFT JOIN sys_dept ON sys_dept.id = a.dept_id"    → 无别名，用表名
 func (p *tenantPlugin[T]) injectJoinWhere(db *gorm.DB, ctx context.Context) {
-	if !p.autoInjectJoin || db.Statement == nil || len(db.Statement.Joins) == 0 {
+	if !p.autoInjectJoin || db.Statement == nil {
 		return
 	}
 
-	defaultField := ""
-	if len(p.defaultField) > 0 {
-		defaultField = p.defaultField[0].Field
-	}
-	if defaultField == "" {
+	joins := p.joinTables(db)
+	if len(joins) == 0 {
 		return
 	}
 
-	for _, join := range db.Statement.Joins {
-		tableName, alias := parseJoinTable(join.Name)
+	for _, join := range joins {
+		tableName, alias := join.table, join.alias
 		if tableName == "" {
 			continue
 		}
@@ -684,36 +729,88 @@ func (p *tenantPlugin[T]) injectJoinWhere(db *gorm.DB, ctx context.Context) {
 			continue
 		}
 
-		field := defaultField
-		var overrideGetter func(context.Context) (T, bool)
-		if override, ok := p.joinOverrideMap[lowerTable]; ok {
-			if override.Field != "" {
-				field = override.Field
-			}
-			overrideGetter = override.GetTenantID
-		}
-
-		// 安全检查
-		skip, err := p.checkTenantFieldSafety(db, field)
-		if err != nil {
-			_ = db.AddError(err)
-			return
-		}
-		if skip {
+		fields, hitTable := p.fieldsFor(lowerTable)
+		if hitTable && len(fields) == 0 {
 			continue
 		}
-
-		tenantID, ok := p.resolveTenantID(ctx, overrideGetter)
-		if !ok {
-			continue
-		}
-
 		prefix := alias
 		if prefix == "" {
 			prefix = tableName
 		}
-		db.Statement.Where(fmt.Sprintf("`%s`.`%s` = ?", prefix, field), tenantID)
+
+		for _, f := range fields {
+			overrideGetter := f.GetTenantID
+			if override, ok := p.joinOverrideMap[lowerTable]; ok {
+				if override.Field != "" {
+					f.Field = override.Field
+				}
+				if override.GetTenantID != nil {
+					overrideGetter = override.GetTenantID
+				}
+			}
+
+			if !p.joinTableHasField(db, lowerTable, f.Field, hitTable) {
+				continue
+			}
+
+			// 安全检查
+			skip, err := p.checkTenantFieldSafetyForPrefix(db, f.Field, prefix)
+			if err != nil {
+				_ = db.AddError(err)
+				return
+			}
+			if skip {
+				continue
+			}
+
+			tenantID, ok := p.resolveTenantID(ctx, overrideGetter)
+			if !ok {
+				continue
+			}
+
+			db.Statement.Where(fmt.Sprintf("`%s`.`%s` = ?", prefix, f.Field), tenantID)
+		}
 	}
+}
+
+type joinTableRef struct {
+	table string
+	alias string
+}
+
+func (p *tenantPlugin[T]) joinTables(db *gorm.DB) []joinTableRef {
+	if db.Statement == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []joinTableRef
+	add := func(table, alias string) {
+		table = strings.ToLower(strings.Trim(strings.TrimSpace(table), "`"))
+		alias = strings.Trim(strings.TrimSpace(alias), "`")
+		if table == "" {
+			return
+		}
+		key := table + "|" + strings.ToLower(alias)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, joinTableRef{table: table, alias: alias})
+	}
+
+	for _, join := range db.Statement.Joins {
+		tableName, alias := parseJoinTable(join.Name)
+		add(tableName, alias)
+	}
+
+	if fromClause, ok := db.Statement.Clauses["FROM"]; ok && fromClause.Expression != nil {
+		if from, ok := fromClause.Expression.(clause.From); ok {
+			for _, join := range from.Joins {
+				add(join.Table.Name, join.Table.Alias)
+			}
+		}
+	}
+	return out
 }
 
 // parseJoinTable 从 JOIN 子句字符串中解析出表名和别名。
@@ -893,6 +990,51 @@ func statementField(stmt *gorm.Statement, field string) *schema.Field {
 	return stmt.Schema.LookUpField(field)
 }
 
+func (p *tenantPlugin[T]) joinTableHasField(db *gorm.DB, table, field string, configured bool) bool {
+	if table == "" || field == "" {
+		return false
+	}
+	if configured {
+		return true
+	}
+
+	table = strings.ToLower(strings.Trim(table, "`"))
+	field = strings.ToLower(strings.Trim(field, "`"))
+
+	p.mu.RLock()
+	if fields, ok := p.columnCache[table]; ok {
+		if exists, ok := fields[field]; ok {
+			p.mu.RUnlock()
+			return exists
+		}
+	}
+	p.mu.RUnlock()
+
+	exists := false
+	if p.db != nil {
+		inspectDB := p.db
+		if columnTypes, err := inspectDB.Migrator().ColumnTypes(table); err == nil {
+			for _, columnType := range columnTypes {
+				if strings.EqualFold(columnType.Name(), field) {
+					exists = true
+					break
+				}
+			}
+		}
+	}
+
+	p.mu.Lock()
+	if p.columnCache == nil {
+		p.columnCache = make(map[string]map[string]bool)
+	}
+	if p.columnCache[table] == nil {
+		p.columnCache[table] = make(map[string]bool)
+	}
+	p.columnCache[table][field] = exists
+	p.mu.Unlock()
+	return exists
+}
+
 func (p *tenantPlugin[T]) shouldSkip(ctx context.Context, db *gorm.DB) bool {
 	if skip, ok := ctx.Value(skipTenantKey{}).(bool); ok && skip {
 		return true
@@ -942,7 +1084,25 @@ func (p *tenantPlugin[T]) fieldPrefix(db *gorm.DB) string {
 	if alias := p.tableAlias(db); alias != "" {
 		return alias
 	}
+	if p.hasJoins(db) {
+		return p.tableName(db)
+	}
 	return ""
+}
+
+func (p *tenantPlugin[T]) hasJoins(db *gorm.DB) bool {
+	if db == nil || db.Statement == nil {
+		return false
+	}
+	if len(db.Statement.Joins) > 0 {
+		return true
+	}
+	if fromClause, ok := db.Statement.Clauses["FROM"]; ok && fromClause.Expression != nil {
+		if from, ok := fromClause.Expression.(clause.From); ok {
+			return len(from.Joins) > 0
+		}
+	}
+	return false
 }
 
 func (p *tenantPlugin[T]) isExcluded(table string) bool {
@@ -1040,6 +1200,7 @@ func buildPlugin[T comparable](cfg TenantConfig[T]) (*tenantPlugin[T], error) {
 		excludeJoinSet:  excludeJoinSet,
 		joinOverrideMap: joinOverrideMap,
 		excludeSet:      excludeSet,
+		columnCache:     make(map[string]map[string]bool),
 	}, nil
 }
 
