@@ -255,12 +255,23 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 	assertGeneratedGoFormats(t, got)
 
 	mustContain := []string{
+		"Create(ctx context.Context, m *model.SequenceEntity, opts ...gormplus.CreateOption) error",
+		"CreateBatch(ctx context.Context, m []*model.SequenceEntity, opts ...gormplus.CreateOption) error",
+		"createOpts := gormplus.ResolveCreateOptions(opts)",
+		"tx = tx.Omit(createOpts.OmitFields...)",
+		"tx = tx.Clauses(createOpts.Clauses...)",
+		"if len(q.Clauses) > 0",
+		"tx = tx.Clauses(q.Clauses...)",
+		"if len(deleteOpts.Clauses) > 0",
+		"tx = tx.Clauses(deleteOpts.Clauses...)",
 		"DeleteById(ctx context.Context, sequenceId string, opts ...gormplus.DeleteOption) error",
 		"FindById(ctx context.Context, sequenceId string, query ...gormplus.QueryOption)",
 		"dao.SequenceEntity.BizType.Eq(sequenceId)",
 		`gormplus.BuildArgs("biz_type", sequenceId)`,
 		"deleteOpts := gormplus.ResolveDeleteOptions(opts)",
 		"if deleteOpts.Physical",
+		"baseTx = baseTx.Clauses(deleteOpts.Clauses...)",
+		"baseTx = baseTx.Clauses(opt.Clauses...)",
 		"tx = tx.Unscoped()",
 		"if q.Unscoped",
 		"if opt.Unscoped",
@@ -272,6 +283,7 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 	}
 
 	mustNotContain := []string{
+		"Create(ctx context.Context, m *model.SequenceEntity, omitFields ...field.Expr) error",
 		"DeleteById(ctx context.Context, sequenceId int64) error",
 		`gormplus.BuildArgs("id", sequenceId)`,
 		"PhysicalDeleteById(",
@@ -298,6 +310,8 @@ func TestGenerateRepositoryFileUsesCompositePrimaryKeys(t *testing.T) {
 		"type SequencePrimaryKey struct",
 		"ID int64 `json:\"id\"`",
 		"BizType string `json:\"biz_type\"`",
+		"CreateTx(ctx context.Context, tx *dao.Query, m *model.SequenceEntity, opts ...gormplus.CreateOption) error",
+		"CreateBatchTx(ctx context.Context, tx *dao.Query, m []*model.SequenceEntity, opts ...gormplus.CreateOption) error",
 		"DeleteById(ctx context.Context, id int64, bizType string, opts ...gormplus.DeleteOption) error",
 		"DeleteByIdList(ctx context.Context, sequenceIds []SequencePrimaryKey, opts ...gormplus.DeleteOption) error",
 		"FindById(ctx context.Context, id int64, bizType string, query ...gormplus.QueryOption)",

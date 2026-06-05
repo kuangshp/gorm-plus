@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"gorm.io/gen"
+	gormclause "gorm.io/gorm/clause"
 )
 
 func TestResolveDeleteOptions(t *testing.T) {
@@ -26,6 +27,14 @@ func TestDeleteBuilder(t *testing.T) {
 	})
 	if !opts.Physical {
 		t.Fatal("expected short builder alias to enable physical delete")
+	}
+
+	opts = ResolveDeleteOptions([]DeleteOption{
+		Delete().Clauses(gormclause.Locking{Strength: "UPDATE"}).Build(),
+		WithDeleteClauses(gormclause.Locking{Strength: "SHARE"}),
+	})
+	if len(opts.Clauses) != 2 {
+		t.Fatalf("clauses length = %d, want 2", len(opts.Clauses))
 	}
 }
 

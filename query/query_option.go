@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gen"
 	"gorm.io/gen/field"
+	gormclause "gorm.io/gorm/clause"
 )
 
 type SingleFlightOption struct {
@@ -27,14 +28,15 @@ type CacheOption struct {
 
 // QueryOption 查询参数结构体
 type QueryOption struct {
-	Cond       []gen.Condition     // 原生条件
-	Order      []field.Expr        // 排序字段
-	Select     []field.Expr        // 指定查询字段
-	OmitFields []field.Expr        // 排除字段
-	Limit      *int                // 查询条数
-	Unscoped   bool                // 包含主表逻辑删除数据
-	SF         *SingleFlightOption // 使用sf并发处理
-	Cache      *CacheOption        // 使用缓存
+	Cond       []gen.Condition         // 原生条件
+	Order      []field.Expr            // 排序字段
+	Select     []field.Expr            // 指定查询字段
+	OmitFields []field.Expr            // 排除字段
+	Clauses    []gormclause.Expression // GORM clauses，如 hints、locking、dbresolver
+	Limit      *int                    // 查询条数
+	Unscoped   bool                    // 包含主表逻辑删除数据
+	SF         *SingleFlightOption     // 使用sf并发处理
+	Cache      *CacheOption            // 使用缓存
 }
 
 // QueryBuilder 链式构建器
@@ -443,6 +445,19 @@ func (q *QueryBuilder) Omit(fields ...field.Expr) *QueryBuilder {
 	return q
 }
 
+// WithClauses 追加 GORM clause。
+//
+// 适合透传 gorm hints、locking、dbresolver 等 gorm-gen 原生 Clauses 能力。
+func (q *QueryBuilder) WithClauses(clauses ...gormclause.Expression) *QueryBuilder {
+	q.option.Clauses = append(q.option.Clauses, clauses...)
+	return q
+}
+
+// Clauses 是 WithClauses 的短别名。
+func (q *QueryBuilder) Clauses(clauses ...gormclause.Expression) *QueryBuilder {
+	return q.WithClauses(clauses...)
+}
+
 // Limit 查询条数
 func (q *QueryBuilder) Limit(limit int) *QueryBuilder {
 	q.option.Limit = &limit
@@ -779,6 +794,14 @@ func MergeQueryOptions(opts ...QueryOption) QueryOption {
 			result.OmitFields = append(
 				result.OmitFields,
 				opt.OmitFields...,
+			)
+		}
+
+		// Clauses
+		if len(opt.Clauses) > 0 {
+			result.Clauses = append(
+				result.Clauses,
+				opt.Clauses...,
 			)
 		}
 

@@ -42,6 +42,7 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+	gormclause "gorm.io/gorm/clause"
 )
 
 // NewQuery 创建扩展条件构造器。
@@ -130,6 +131,9 @@ type IQueryBuilder interface {
 
 	// WhereDeleted 追加指定表/别名的已删除条件，适合查询 JOIN 从表的逻辑删除数据。
 	WhereDeleted(tableOrAlias string) IQueryBuilder
+
+	// Clauses 追加 GORM clause。
+	Clauses(clauses ...gormclause.Expression) IQueryBuilder
 
 	// -------- 条件分组（保证括号语义正确） --------
 
@@ -320,6 +324,13 @@ func (b *Builder) WhereDeleted(tableOrAlias string) IQueryBuilder {
 		return b
 	}
 	return b.WhereIf(true, fmt.Sprintf("%s.deleted_at IS NOT NULL", tableOrAlias))
+}
+
+func (b *Builder) Clauses(clauses ...gormclause.Expression) IQueryBuilder {
+	if len(clauses) > 0 {
+		b.db = b.db.Clauses(clauses...)
+	}
+	return b
 }
 
 func (b *Builder) defaultClauseType() clauseType {

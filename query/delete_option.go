@@ -1,11 +1,16 @@
 package query
 
-import "gorm.io/gen"
+import (
+	"gorm.io/gen"
+	gormclause "gorm.io/gorm/clause"
+)
 
 // DeleteOptions 是 Repository 删除操作的可选行为集合。
 type DeleteOptions struct {
 	// Physical 为 true 时使用 GORM Unscoped 物理删除。
 	Physical bool
+	// Clauses 删除时附加 GORM clause。
+	Clauses []gormclause.Expression
 }
 
 // DeleteBuilder 删除操作链式构建器。
@@ -41,6 +46,17 @@ func (b *DeleteBuilder) Physical() *DeleteBuilder {
 	return b.WithPhysicalDelete()
 }
 
+// WithClauses 删除时附加 GORM clause。
+func (b *DeleteBuilder) WithClauses(clauses ...gormclause.Expression) *DeleteBuilder {
+	b.option.Clauses = append(b.option.Clauses, clauses...)
+	return b
+}
+
+// Clauses 是 WithClauses 的短别名。
+func (b *DeleteBuilder) Clauses(clauses ...gormclause.Expression) *DeleteBuilder {
+	return b.WithClauses(clauses...)
+}
+
 // Build 构建删除操作可选参数。
 func (b *DeleteBuilder) Build() DeleteOption {
 	opt := b.option
@@ -58,6 +74,11 @@ func WithPhysicalDelete() DeleteOption {
 	return Delete().WithPhysicalDelete().Build()
 }
 
+// WithDeleteClauses 删除时附加 GORM clause。
+func WithDeleteClauses(clauses ...gormclause.Expression) DeleteOption {
+	return Delete().WithClauses(clauses...).Build()
+}
+
 func (o deleteOption) BeCond() interface{} { return nil }
 
 func (o deleteOption) CondError() error { return nil }
@@ -72,6 +93,7 @@ func mergeDeleteOptions(dst *DeleteOptions, src DeleteOptions) {
 	if src.Physical {
 		dst.Physical = true
 	}
+	dst.Clauses = append(dst.Clauses, src.Clauses...)
 }
 
 // ResolveDeleteOptions 合并删除操作可选参数。

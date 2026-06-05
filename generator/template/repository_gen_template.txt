@@ -25,11 +25,11 @@ type {{.ModelName}}PrimaryKey struct {
 
 type iDefault{{.ModelName}}Repository interface {
 	// Create 创建记录（自动失效 FindList / FindPage / Count / Exists 前缀缓存）
-	Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
-	CreateTx(ctx context.Context, tx *dao.Query, m *{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
+	Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error
+	CreateTx(ctx context.Context, tx *dao.Query, m *{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error
 	// CreateBatch 批量创建（自动失效 FindList / FindPage / Count / Exists 前缀缓存）
-	CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
-	CreateBatchTx(ctx context.Context, tx *dao.Query, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error
+	CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error
+	CreateBatchTx(ctx context.Context, tx *dao.Query, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error
 	// DeleteById 根据ID删除（默认软删除；传 gormplus.Delete().WithPhysicalDelete().Build() 时物理删除。自动失效该 ID 的 FindById，以及 FindList/FindPage/Count/Exists 前缀缓存）
 	DeleteById(ctx context.Context, {{.PrimaryKeyParamList}}, opts ...gormplus.DeleteOption) error
 	DeleteByIdTx(ctx context.Context, tx *dao.Query, {{.PrimaryKeyParamList}}, opts ...gormplus.DeleteOption) error
@@ -137,6 +137,9 @@ func (r *default{{.ModelName}}Repository) buildTx(ctx context.Context, query []g
 	if q.Unscoped {
 		tx = tx.Unscoped()
 	}
+	if len(q.Clauses) > 0 {
+		tx = tx.Clauses(q.Clauses...)
+	}
 	if len(q.Cond) > 0 {
 		tx = tx.Where(q.Cond...)
 	}
@@ -163,6 +166,9 @@ func (r *default{{.ModelName}}Repository) buildWrapperTx(ctx context.Context, fn
 	if q.Unscoped {
 		baseTx = baseTx.Unscoped()
 	}
+	if len(q.Clauses) > 0 {
+		baseTx = baseTx.Clauses(q.Clauses...)
+	}
 	tx := gormplus.GenWrap(baseTx)
 	if q.Unscoped {
 		tx.WithDeleted()
@@ -173,7 +179,6 @@ func (r *default{{.ModelName}}Repository) buildWrapperTx(ctx context.Context, fn
     }
     entityDo := tx.Apply()
     if len(query) > 0 {
-        q := query[0]
         if len(q.Cond) > 0 {
             entityDo = entityDo.Where(q.Cond...)
         }
@@ -197,10 +202,14 @@ func (r *default{{.ModelName}}Repository) buildWrapperTx(ctx context.Context, fn
 
 // ==================== 实现 ====================
 
-func (r *default{{.ModelName}}Repository) Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error {
+func (r *default{{.ModelName}}Repository) Create(ctx context.Context, m *{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error {
+	createOpts := gormplus.ResolveCreateOptions(opts)
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
-	if len(omitFields) > 0 {
-		tx = tx.Omit(omitFields...)
+	if len(createOpts.OmitFields) > 0 {
+		tx = tx.Omit(createOpts.OmitFields...)
+	}
+	if len(createOpts.Clauses) > 0 {
+		tx = tx.Clauses(createOpts.Clauses...)
 	}
 	err := tx.Create(m)
 	if err == nil {
@@ -210,10 +219,14 @@ func (r *default{{.ModelName}}Repository) Create(ctx context.Context, m *{{.Mode
 	return err
 }
 
-func (r *default{{.ModelName}}Repository) CreateTx(ctx context.Context, daoTx *dao.Query, m *{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error {
+func (r *default{{.ModelName}}Repository) CreateTx(ctx context.Context, daoTx *dao.Query, m *{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error {
+	createOpts := gormplus.ResolveCreateOptions(opts)
 	tx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
-	if len(omitFields) > 0 {
-		tx = tx.Omit(omitFields...)
+	if len(createOpts.OmitFields) > 0 {
+		tx = tx.Omit(createOpts.OmitFields...)
+	}
+	if len(createOpts.Clauses) > 0 {
+		tx = tx.Clauses(createOpts.Clauses...)
 	}
 	err := tx.Create(m)
 	if err == nil {
@@ -222,10 +235,14 @@ func (r *default{{.ModelName}}Repository) CreateTx(ctx context.Context, daoTx *d
 	return err
 }
 
-func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error {
+func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error {
+	createOpts := gormplus.ResolveCreateOptions(opts)
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
-	if len(omitFields) > 0 {
-		tx = tx.Omit(omitFields...)
+	if len(createOpts.OmitFields) > 0 {
+		tx = tx.Omit(createOpts.OmitFields...)
+	}
+	if len(createOpts.Clauses) > 0 {
+		tx = tx.Clauses(createOpts.Clauses...)
 	}
 	err := tx.CreateInBatches(m, len(m))
 	if err == nil {
@@ -234,10 +251,14 @@ func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*
 	return err
 }
 
-func (r *default{{.ModelName}}Repository) CreateBatchTx(ctx context.Context, daoTx *dao.Query, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, omitFields ...field.Expr) error {
+func (r *default{{.ModelName}}Repository) CreateBatchTx(ctx context.Context, daoTx *dao.Query, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error {
+	createOpts := gormplus.ResolveCreateOptions(opts)
 	tx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
-	if len(omitFields) > 0 {
-		tx = tx.Omit(omitFields...)
+	if len(createOpts.OmitFields) > 0 {
+		tx = tx.Omit(createOpts.OmitFields...)
+	}
+	if len(createOpts.Clauses) > 0 {
+		tx = tx.Clauses(createOpts.Clauses...)
 	}
 	err := tx.CreateInBatches(m, len(m))
 	if err == nil {
@@ -251,6 +272,9 @@ func (r *default{{.ModelName}}Repository) DeleteById(ctx context.Context, {{.Pri
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if deleteOpts.Physical {
 		tx = tx.Unscoped()
+	}
+	if len(deleteOpts.Clauses) > 0 {
+		tx = tx.Clauses(deleteOpts.Clauses...)
 	}
 	_, err := tx.Where(
 {{- range .PrimaryKeys}}
@@ -271,6 +295,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdTx(ctx context.Context, daoT
 	if deleteOpts.Physical {
 		tx = tx.Unscoped()
 	}
+	if len(deleteOpts.Clauses) > 0 {
+		tx = tx.Clauses(deleteOpts.Clauses...)
+	}
 	_, err := tx.Where(
 {{- range .PrimaryKeys}}
 		dao.{{$.ModelName}}Entity.{{.FieldName}}.Eq({{.ParamName}}),
@@ -290,6 +317,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{
 		tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 		if deleteOpts.Physical {
 			tx = tx.Unscoped()
+		}
+		if len(deleteOpts.Clauses) > 0 {
+			tx = tx.Clauses(deleteOpts.Clauses...)
 		}
 		_, err := tx.Where(
 {{- range .PrimaryKeys}}
@@ -314,6 +344,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdListTx(ctx context.Context, 
 		if deleteOpts.Physical {
 			tx = tx.Unscoped()
 		}
+		if len(deleteOpts.Clauses) > 0 {
+			tx = tx.Clauses(deleteOpts.Clauses...)
+		}
 		_, err := tx.Where(
 {{- range .PrimaryKeys}}
 			dao.{{$.ModelName}}Entity.{{.FieldName}}.Eq(id.{{.FieldName}}),
@@ -336,6 +369,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{
 	if deleteOpts.Physical {
 		tx = tx.Unscoped()
 	}
+	if len(deleteOpts.Clauses) > 0 {
+		tx = tx.Clauses(deleteOpts.Clauses...)
+	}
 	_, err := tx.Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.In({{.ModelNameLower}}Ids...)).Delete()
 	if err == nil {
 		for _, id := range {{.ModelNameLower}}Ids {
@@ -351,6 +387,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdListTx(ctx context.Context, 
 	tx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
 	if deleteOpts.Physical {
 		tx = tx.Unscoped()
+	}
+	if len(deleteOpts.Clauses) > 0 {
+		tx = tx.Clauses(deleteOpts.Clauses...)
 	}
 	_, err := tx.Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.In({{.ModelNameLower}}Ids...)).Delete()
 	if err == nil {
@@ -372,6 +411,9 @@ func (r *default{{.ModelName}}Repository) DeleteByCondition(ctx context.Context,
 	if deleteOpts.Physical {
 		tx = tx.Unscoped()
 	}
+	if len(deleteOpts.Clauses) > 0 {
+		tx = tx.Clauses(deleteOpts.Clauses...)
+	}
 	_, err := tx.Where(cond...).Delete()
 	if err == nil {
 		// 条件删除无法预知影响哪些 ID，全表缓存清掉最安全
@@ -389,6 +431,9 @@ func (r *default{{.ModelName}}Repository) DeleteByConditionTx(ctx context.Contex
 	if deleteOpts.Physical {
 		tx = tx.Unscoped()
 	}
+	if len(deleteOpts.Clauses) > 0 {
+		tx = tx.Clauses(deleteOpts.Clauses...)
+	}
 	_, err := tx.Where(cond...).Delete()
 	if err == nil {
 		r.invalidateAllTableCaches()
@@ -404,6 +449,9 @@ func (r *default{{.ModelName}}Repository) DeleteByWrapper(ctx context.Context, f
 	baseTx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if deleteOpts.Physical {
 		baseTx = baseTx.Unscoped()
+	}
+	if len(deleteOpts.Clauses) > 0 {
+		baseTx = baseTx.Clauses(deleteOpts.Clauses...)
 	}
 	tx := gormplus.GenWrap(baseTx)
 	if deleteOpts.Physical {
@@ -425,6 +473,9 @@ func (r *default{{.ModelName}}Repository) DeleteByWrapperTx(ctx context.Context,
 	baseTx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
 	if deleteOpts.Physical {
 		baseTx = baseTx.Unscoped()
+	}
+	if len(deleteOpts.Clauses) > 0 {
+		baseTx = baseTx.Clauses(deleteOpts.Clauses...)
 	}
 	tx := gormplus.GenWrap(baseTx)
 	if deleteOpts.Physical {
@@ -573,6 +624,9 @@ func (r *default{{.ModelName}}Repository) FindById(ctx context.Context, {{.Prima
 			if opt.Unscoped {
 				tx = tx.Unscoped()
 			}
+			if len(opt.Clauses) > 0 {
+				tx = tx.Clauses(opt.Clauses...)
+			}
 			return tx.Where(
 {{- range .PrimaryKeys}}
 				dao.{{$.ModelName}}Entity.{{.FieldName}}.Eq({{.ParamName}}),
@@ -593,6 +647,9 @@ func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.M
 					tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 					if opt.Unscoped {
 						tx = tx.Unscoped()
+					}
+					if len(opt.Clauses) > 0 {
+						tx = tx.Clauses(opt.Clauses...)
 					}
 					tx = tx.Where(
 {{- range .PrimaryKeys}}
@@ -627,6 +684,9 @@ func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.M
 			tx := dao.{{.ModelName}}Entity.WithContext(ctx).Where(dao.{{.ModelName}}Entity.{{.PrimaryKeyField}}.In({{.ModelNameLower}}Ids...))
 			if opt.Unscoped {
 				tx = tx.Unscoped()
+			}
+			if len(opt.Clauses) > 0 {
+				tx = tx.Clauses(opt.Clauses...)
 			}
 			if len(opt.Cond) > 0 {
 				tx = tx.Where(opt.Cond...)
@@ -675,6 +735,9 @@ func (r *default{{.ModelName}}Repository) Exists(ctx context.Context, query ...g
 			if opt.Unscoped {
 				tx = tx.Unscoped()
 			}
+			if len(opt.Clauses) > 0 {
+				tx = tx.Clauses(opt.Clauses...)
+			}
 			if len(opt.Cond) > 0 {
 				tx = tx.Where(opt.Cond...)
 			}
@@ -694,6 +757,9 @@ func (r *default{{.ModelName}}Repository) ExistsByWrapper(ctx context.Context, f
 			baseTx := dao.{{.ModelName}}Entity.WithContext(ctx)
 			if opt.Unscoped {
 				baseTx = baseTx.Unscoped()
+			}
+			if len(opt.Clauses) > 0 {
+				baseTx = baseTx.Clauses(opt.Clauses...)
 			}
 			tx := gormplus.GenWrap(baseTx)
 			if opt.Unscoped {
@@ -719,6 +785,9 @@ func (r *default{{.ModelName}}Repository) Count(ctx context.Context, query ...go
 			if opt.Unscoped {
 				tx = tx.Unscoped()
 			}
+			if len(opt.Clauses) > 0 {
+				tx = tx.Clauses(opt.Clauses...)
+			}
 			if len(opt.Cond) > 0 {
 				tx = tx.Where(opt.Cond...)
 			}
@@ -734,6 +803,9 @@ func (r *default{{.ModelName}}Repository) CountByWrapper(ctx context.Context, fn
 			baseTx := dao.{{.ModelName}}Entity.WithContext(ctx)
 			if opt.Unscoped {
 				baseTx = baseTx.Unscoped()
+			}
+			if len(opt.Clauses) > 0 {
+				baseTx = baseTx.Clauses(opt.Clauses...)
 			}
 			tx := gormplus.GenWrap(baseTx)
 			if opt.Unscoped {

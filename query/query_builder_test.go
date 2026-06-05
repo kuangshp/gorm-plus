@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	gormclause "gorm.io/gorm/clause"
 )
 
 type builderTestModel struct {
@@ -102,6 +103,26 @@ func TestQueryOptionWithDeleted(t *testing.T) {
 	opt = MergeQueryOptions(Query().WithUnscoped().Build())
 	if !opt.Unscoped {
 		t.Fatal("expected WithUnscoped to enable unscoped query")
+	}
+}
+
+func TestQueryOptionClauses(t *testing.T) {
+	opt := MergeQueryOptions(
+		Query().Clauses(gormclause.Locking{Strength: "UPDATE"}).Build(),
+		Query().WithClauses(gormclause.Locking{Strength: "SHARE"}).Build(),
+	)
+	if len(opt.Clauses) != 2 {
+		t.Fatalf("clauses length = %d, want 2", len(opt.Clauses))
+	}
+}
+
+func TestQueryBuilderClauses(t *testing.T) {
+	db := newDryRunBuilder(t).
+		Clauses(gormclause.Locking{Strength: "UPDATE"}).
+		Build()
+
+	if _, ok := db.Statement.Clauses["FOR"]; !ok {
+		t.Fatalf("expected locking clause to be applied, clauses=%v", db.Statement.Clauses)
 	}
 }
 

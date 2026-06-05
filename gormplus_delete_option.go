@@ -3,6 +3,7 @@ package gormplus
 import (
 	"github.com/kuangshp/gorm-plus/query"
 	"gorm.io/gen"
+	gormclause "gorm.io/gorm/clause"
 )
 
 // DeleteOptions 是 Repository 删除操作的可选行为集合。
@@ -24,6 +25,11 @@ func Delete() *DeleteBuilder {
 // 保留函数式写法，等价于 Delete().WithPhysicalDelete().Build()。
 func WithPhysicalDelete() DeleteOption {
 	return query.WithPhysicalDelete()
+}
+
+// WithDeleteClauses 删除时附加 GORM clause。
+func WithDeleteClauses(clauses ...gormclause.Expression) DeleteOption {
+	return query.WithDeleteClauses(clauses...)
 }
 
 // ResolveDeleteOptions 合并删除操作可选参数。
