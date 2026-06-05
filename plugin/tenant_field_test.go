@@ -179,3 +179,213 @@ func TestTenantJoinSkipsJoinTableWithoutTenantField(t *testing.T) {
 		t.Fatalf("expected join table without tenant field to be skipped, sql=%s", sql)
 	}
 }
+
+func TestTenantJoinScanAlsoInjectsTenantFields(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&tenantJoinOrderModel{}, &tenantJoinSupplierModel{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{TenantField: "company_id"}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(3))
+	var rows []tenantJoinOrderModel
+	stmt := db.Session(&gorm.Session{DryRun: true}).
+		WithContext(ctx).
+		Model(&tenantJoinOrderModel{}).
+		Clauses(clause.From{Joins: []clause.Join{{
+			Type:  clause.LeftJoin,
+			Table: clause.Table{Name: "tenant_join_suppliers"},
+			ON: clause.Where{Exprs: []clause.Expression{
+				clause.Expr{SQL: "`tenant_join_suppliers`.`id` = `tenant_join_orders`.`supplier_id`"},
+			}},
+		}}}).
+		Scan(&rows).
+		Statement
+
+	sql := stmt.SQL.String()
+	if !strings.Contains(sql, "`tenant_join_orders`.`company_id` = ?") {
+		t.Fatalf("expected scan main tenant field to be prefixed, sql=%s", sql)
+	}
+	if !strings.Contains(sql, "`tenant_join_suppliers`.`company_id` = ?") {
+		t.Fatalf("expected scan join table tenant field to be injected, sql=%s", sql)
+	}
+	if strings.Contains(sql, " WHERE `company_id` = ?") || strings.Contains(sql, " AND `company_id` = ?") {
+		t.Fatalf("expected scan to have no unqualified tenant field, sql=%s", sql)
+	}
+}
+
+func TestTenantJoinQueryMethodsInjectTenantFields(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&tenantJoinOrderModel{}, &tenantJoinSupplierModel{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{TenantField: "company_id"}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(3))
+	tests := []struct {
+		name string
+		run  func(*gorm.DB) *gorm.Statement
+	}{
+		{
+			name: "first",
+			run: func(tx *gorm.DB) *gorm.Statement {
+				var row tenantJoinOrderModel
+				return tx.First(&row).Statement
+			},
+		},
+		{
+			name: "take",
+			run: func(tx *gorm.DB) *gorm.Statement {
+				var row tenantJoinOrderModel
+				return tx.Take(&row).Statement
+			},
+		},
+		{
+			name: "last",
+			run: func(tx *gorm.DB) *gorm.Statement {
+				var row tenantJoinOrderModel
+				return tx.Last(&row).Statement
+			},
+		},
+		{
+			name: "find",
+			run: func(tx *gorm.DB) *gorm.Statement {
+				var rows []tenantJoinOrderModel
+				return tx.Find(&rows).Statement
+			},
+		},
+		{
+			name: "pluck",
+			run: func(tx *gorm.DB) *gorm.Statement {
+				var ids []int64
+				return tx.Pluck("tenant_join_orders.id", &ids).Statement
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt := tt.run(newTenantJoinDryRunDB(db, ctx))
+			assertTenantJoinSQL(t, stmt.SQL.String(), tt.name)
+		})
+	}
+}
+
+func TestTenantJoinRowMethodsInjectTenantFields(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&tenantJoinOrderModel{}, &tenantJoinSupplierModel{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{TenantField: "company_id"}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(3))
+	tests := []struct {
+		name string
+		run  func(*gorm.DB) *gorm.Statement
+	}{
+		{
+			name: "scan",
+			run: func(tx *gorm.DB) *gorm.Statement {
+				var rows []tenantJoinOrderModel
+				return tx.Scan(&rows).Statement
+			},
+		},
+		{
+			name: "rows",
+			run: func(tx *gorm.DB) *gorm.Statement {
+				_, _ = tx.Rows()
+				return tx.Statement
+			},
+		},
+		{
+			name: "row",
+			run: func(tx *gorm.DB) *gorm.Statement {
+				_ = tx.Row()
+				return tx.Statement
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt := tt.run(newTenantJoinDryRunDB(db, ctx))
+			assertTenantJoinSQL(t, stmt.SQL.String(), tt.name)
+		})
+	}
+}
+
+func TestTenantJoinFindByPageQueryPathsInjectTenantFields(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&tenantJoinOrderModel{}, &tenantJoinSupplierModel{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{TenantField: "company_id"}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(3))
+	base := func() *gorm.DB {
+		return db.Session(&gorm.Session{DryRun: true}).
+			WithContext(ctx).
+			Model(&tenantJoinOrderModel{}).
+			Clauses(clause.From{Joins: []clause.Join{{
+				Type:  clause.LeftJoin,
+				Table: clause.Table{Name: "tenant_join_suppliers"},
+				ON: clause.Where{Exprs: []clause.Expression{
+					clause.Expr{SQL: "`tenant_join_suppliers`.`id` = `tenant_join_orders`.`supplier_id`"},
+				}},
+			}}})
+	}
+
+	var rows []tenantJoinOrderModel
+	findStmt := base().Offset(0).Limit(5).Find(&rows).Statement
+	assertTenantJoinSQL(t, findStmt.SQL.String(), "find")
+
+	var total int64
+	countStmt := base().Offset(-1).Limit(-1).Count(&total).Statement
+	assertTenantJoinSQL(t, countStmt.SQL.String(), "count")
+}
+
+func newTenantJoinDryRunDB(db *gorm.DB, ctx context.Context) *gorm.DB {
+	return db.Session(&gorm.Session{DryRun: true}).
+		WithContext(ctx).
+		Model(&tenantJoinOrderModel{}).
+		Clauses(clause.From{Joins: []clause.Join{{
+			Type:  clause.LeftJoin,
+			Table: clause.Table{Name: "tenant_join_suppliers"},
+			ON: clause.Where{Exprs: []clause.Expression{
+				clause.Expr{SQL: "`tenant_join_suppliers`.`id` = `tenant_join_orders`.`supplier_id`"},
+			}},
+		}}})
+}
+
+func assertTenantJoinSQL(t *testing.T, sql string, op string) {
+	t.Helper()
+	if !strings.Contains(sql, "`tenant_join_orders`.`company_id` = ?") {
+		t.Fatalf("expected %s main tenant field to be prefixed, sql=%s", op, sql)
+	}
+	if !strings.Contains(sql, "`tenant_join_suppliers`.`company_id` = ?") {
+		t.Fatalf("expected %s join table tenant field to be injected, sql=%s", op, sql)
+	}
+	if strings.Contains(sql, " WHERE `company_id` = ?") || strings.Contains(sql, " AND `company_id` = ?") {
+		t.Fatalf("expected %s to have no unqualified tenant field, sql=%s", op, sql)
+	}
+}

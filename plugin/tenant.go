@@ -360,6 +360,10 @@ func (p *tenantPlugin[T]) Initialize(db *gorm.DB) error {
 		Register(p.Name()+":query", p.injectWhere); err != nil {
 		return fmt.Errorf("RegisterTenant: 注册 query 钩子失败: %w", err)
 	}
+	if err := db.Callback().Row().Before("gorm:row").
+		Register(p.Name()+":row", p.injectWhere); err != nil {
+		return fmt.Errorf("RegisterTenant: 注册 row 钩子失败: %w", err)
+	}
 	if err := db.Callback().Update().Before("gorm:update").
 		Register(p.Name()+":update_check", p.checkGlobalUpdate); err != nil {
 		return fmt.Errorf("RegisterTenant: 注册 update_check 钩子失败: %w", err)
