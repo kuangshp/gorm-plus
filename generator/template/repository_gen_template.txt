@@ -508,6 +508,9 @@ func (r *default{{.ModelName}}Repository) DeleteByWrapperTx(ctx context.Context,
 
 func (r *default{{.ModelName}}Repository) UpdateById(ctx context.Context, {{.PrimaryKeyParamList}}, opts ...gormplus.UpdateOption) error {
 	updateOpts := gormplus.ResolveUpdateOptions(opts)
+	if len(updateOpts.Columns) == 0 {
+		return nil
+	}
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(updateOpts.Clauses) > 0 {
 		tx = tx.Clauses(updateOpts.Clauses...)
@@ -527,6 +530,9 @@ func (r *default{{.ModelName}}Repository) UpdateById(ctx context.Context, {{.Pri
 
 func (r *default{{.ModelName}}Repository) UpdateByIdTx(ctx context.Context, daoTx *dao.Query, {{.PrimaryKeyParamList}}, opts ...gormplus.UpdateOption) error {
 	updateOpts := gormplus.ResolveUpdateOptions(opts)
+	if len(updateOpts.Columns) == 0 {
+		return nil
+	}
 	tx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
 	if len(updateOpts.Clauses) > 0 {
 		tx = tx.Clauses(updateOpts.Clauses...)
@@ -544,6 +550,9 @@ func (r *default{{.ModelName}}Repository) UpdateByIdTx(ctx context.Context, daoT
 }
 
 func (r *default{{.ModelName}}Repository) UpdateMapById(ctx context.Context, {{.PrimaryKeyParamList}}, data map[string]any) error {
+	if len(data) == 0 {
+		return nil
+	}
 	_, err := dao.{{.ModelName}}Entity.WithContext(ctx).
 		Where(
 {{- range .PrimaryKeys}}
@@ -559,6 +568,9 @@ func (r *default{{.ModelName}}Repository) UpdateMapById(ctx context.Context, {{.
 }
 
 func (r *default{{.ModelName}}Repository) UpdateMapByIdTx(ctx context.Context, daoTx *dao.Query, {{.PrimaryKeyParamList}}, data map[string]any) error {
+	if len(data) == 0 {
+		return nil
+	}
 	_, err := daoTx.{{.ModelName}}Entity.WithContext(ctx).
 		Where(
 {{- range .PrimaryKeys}}
@@ -578,6 +590,9 @@ func (r *default{{.ModelName}}Repository) UpdateByWrapper(ctx context.Context, f
 		return errors.New("更新条件不能为空")
 	}
 	updateOpts := gormplus.ResolveUpdateOptions(opts)
+	if len(updateOpts.Columns) == 0 {
+		return nil
+	}
 	baseTx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(updateOpts.Clauses) > 0 {
 		baseTx = baseTx.Clauses(updateOpts.Clauses...)
@@ -597,6 +612,9 @@ func (r *default{{.ModelName}}Repository) UpdateByWrapperTx(ctx context.Context,
 		return errors.New("更新条件不能为空")
 	}
 	updateOpts := gormplus.ResolveUpdateOptions(opts)
+	if len(updateOpts.Columns) == 0 {
+		return nil
+	}
 	baseTx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
 	if len(updateOpts.Clauses) > 0 {
 		baseTx = baseTx.Clauses(updateOpts.Clauses...)

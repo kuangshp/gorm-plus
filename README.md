@@ -954,9 +954,8 @@ func (s *AccountService) RegisterWithVIP(ctx context.Context, req *RegisterReq) 
 			return err
 		}
 		// 3) 标记关联订单为已激活
-		_, err := s.orderRepo.UpdateByIdTx(ctx, tx, req.OrderId,
+		return s.orderRepo.UpdateByIdTx(ctx, tx, req.OrderId,
 			gormplus.WithUpdateColumns(dao.OrderEntity.Status.Value(1)))
-		return err
 		// return nil 自动提交
 	})
 }

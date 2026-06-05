@@ -268,6 +268,8 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 		"UpdateById(ctx context.Context, sequenceId string, opts ...gormplus.UpdateOption) error",
 		"UpdateByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.ISequenceEntityDo]), opts ...gormplus.UpdateOption) error",
 		"updateOpts := gormplus.ResolveUpdateOptions(opts)",
+		"if len(updateOpts.Columns) == 0",
+		"if len(data) == 0",
 		"tx = tx.Clauses(updateOpts.Clauses...)",
 		"UpdateSimple(updateOpts.Columns...)",
 		"UpdateMapById(ctx context.Context, sequenceId string, data map[string]any) error",
