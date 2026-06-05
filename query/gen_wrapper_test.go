@@ -14,6 +14,11 @@ type wrapperTestDO struct {
 	db *gorm.DB
 }
 
+type softDeleteWrapperModel struct {
+	ID        int64
+	DeletedAt gorm.DeletedAt
+}
+
 func (d *wrapperTestDO) UnderlyingDB() *gorm.DB {
 	return d.db
 }
@@ -171,5 +176,44 @@ func TestGenWrapperJoinSoftDeleteHelpers(t *testing.T) {
 	}
 	if !strings.Contains(sql, "u.deleted_at IS NOT NULL") {
 		t.Fatalf("expected joined table deleted condition, got SQL: %s", sql)
+	}
+}
+
+func TestGenWrapperAsUsesAliasForSoftDelete(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Model(&softDeleteWrapperModel{})},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+
+	sql := w.As("a").ToSQL()
+	if !strings.Contains(sql, "a.deleted_at IS NULL") {
+		t.Fatalf("expected alias deleted_at condition, got SQL: %s", sql)
+	}
+	if strings.Contains(sql, "soft_delete_wrapper_models.deleted_at IS NULL") {
+		t.Fatalf("expected original table deleted_at condition to be disabled, got SQL: %s", sql)
+	}
+}
+
+func TestGenWrapperAsWithDeletedSkipsAliasSoftDelete(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Model(&softDeleteWrapperModel{})},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+
+	sql := w.As("a").WithDeleted().ToSQL()
+	if strings.Contains(sql, "deleted_at IS NULL") {
+		t.Fatalf("expected deleted_at condition to be skipped, got SQL: %s", sql)
 	}
 }

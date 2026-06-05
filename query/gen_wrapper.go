@@ -190,6 +190,12 @@ type IGenWrapper[T GenDo[T]] interface {
 	//       Find()
 	As(alias string) IGenWrapper[T]
 
+	// WithDeleted 查询时包含当前模型表的逻辑删除数据。
+	WithDeleted() IGenWrapper[T]
+
+	// WithUnscoped 是 WithDeleted 的 GORM 语义别名。
+	WithUnscoped() IGenWrapper[T]
+
 	// Like 双侧模糊：WHERE col LIKE '%val%'，val 为空时跳过。
 	//
 	//   .Like(dao.AccountEntity.Username, "admin")
@@ -541,6 +547,7 @@ type GenWrapper[T GenDo[T]] struct {
 	do            T
 	ctx           context.Context // 保存原始 ctx，Apply 时复用
 	alias         string          // 表别名，As() 设置后在 Apply 时注入到底层 DB
+	unscoped      bool            // 包含当前模型表逻辑删除数据
 	limit         *int            // 限制行数，nil 表示不限制
 	offset        *int            // 偏移量，nil 表示不设置
 	selectCols    []any           // 指定查询字段，nil 表示查询全部
@@ -599,8 +606,53 @@ func (w *GenWrapper[T]) like(col field.Expr, pattern string, typ condType) {
 }
 
 func (w *GenWrapper[T]) As(alias string) IGenWrapper[T] {
-	w.alias = alias
+	w.alias = strings.TrimSpace(alias)
 	return w
+}
+
+func (w *GenWrapper[T]) WithDeleted() IGenWrapper[T] {
+	w.unscoped = true
+	return w
+}
+
+func (w *GenWrapper[T]) WithUnscoped() IGenWrapper[T] {
+	return w.WithDeleted()
+}
+
+func (w *GenWrapper[T]) hasDeletedAtField(db *gorm.DB) bool {
+	if db == nil || db.Statement == nil || db.Statement.Schema == nil {
+		return false
+	}
+	_, ok := db.Statement.Schema.FieldsByDBName["deleted_at"]
+	return ok
+}
+
+func (w *GenWrapper[T]) ensureSchema(db *gorm.DB) {
+	if db == nil || db.Statement == nil || db.Statement.Schema != nil || db.Statement.Model == nil {
+		return
+	}
+	_ = db.Statement.Parse(db.Statement.Model)
+}
+
+func (w *GenWrapper[T]) tableName(db *gorm.DB) string {
+	if db == nil || db.Statement == nil {
+		return ""
+	}
+	if db.Statement.Table != "" {
+		return db.Statement.Table
+	}
+	if db.Statement.Schema != nil {
+		return db.Statement.Schema.Table
+	}
+	return ""
+}
+
+func (w *GenWrapper[T]) applyAliasSoftDelete(db *gorm.DB, hasDeletedAt bool) *gorm.DB {
+	if w.alias == "" || w.unscoped || !hasDeletedAt {
+		return db
+	}
+	db = db.Unscoped()
+	return db.Where(fmt.Sprintf("%s.deleted_at IS NULL", w.alias))
 }
 
 func (w *GenWrapper[T]) Like(col field.Expr, val string) IGenWrapper[T] {
@@ -859,9 +911,18 @@ func (w *GenWrapper[T]) OrderDefault(fields ...field.Expr) IGenWrapper[T] {
 // buildDB 把所有累积的条件、字段选择、排序、分页应用到 db,返回新的 *gorm.DB。
 // Apply / ToSQL / Explain 共用此方法,保持行为一致。
 func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
+	if w.unscoped {
+		db = db.Unscoped()
+	}
 	// 注入表别名:gorm 支持 "table_name alias" 格式
 	if w.alias != "" {
-		db = db.Table(db.Statement.Table + " " + w.alias)
+		w.ensureSchema(db)
+		hasDeletedAt := w.hasDeletedAtField(db)
+		tableName := w.tableName(db)
+		if tableName != "" {
+			db = db.Table(tableName + " " + w.alias)
+		}
+		db = w.applyAliasSoftDelete(db, hasDeletedAt)
 	}
 	if !w.group.isEmpty() {
 		db = applyCondGroup(db, w.group)
@@ -918,10 +979,11 @@ func (w *GenWrapper[T]) PrintSQL() IGenWrapper[T] {
 }
 
 func (w *GenWrapper[T]) ToSQL() string {
-	return w.do.UnderlyingDB().ToSQL(func(tx *gorm.DB) *gorm.DB {
+	built := w.buildDB(w.do.UnderlyingDB())
+	return built.ToSQL(func(tx *gorm.DB) *gorm.DB {
 		// 必须调用一个终结方法(Find/First/Count 等),否则 gorm 不会生成完整 SQL。
 		// 这里用通用的 Find 触发 SELECT;Update/Delete 的调试场景请用 gorm 原生 ToSQL。
-		return w.buildDB(tx).Find(&struct{}{})
+		return tx.Find(nil)
 	})
 }
 

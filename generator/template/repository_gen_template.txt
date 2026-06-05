@@ -164,6 +164,9 @@ func (r *default{{.ModelName}}Repository) buildWrapperTx(ctx context.Context, fn
 		baseTx = baseTx.Unscoped()
 	}
 	tx := gormplus.GenWrap(baseTx)
+	if q.Unscoped {
+		tx.WithDeleted()
+	}
 
     if fn != nil {
         fn(tx)
@@ -403,6 +406,9 @@ func (r *default{{.ModelName}}Repository) DeleteByWrapper(ctx context.Context, f
 		baseTx = baseTx.Unscoped()
 	}
 	tx := gormplus.GenWrap(baseTx)
+	if deleteOpts.Physical {
+		tx.WithDeleted()
+	}
 	fn(tx)
 	_, err := tx.Apply().Delete()
 	if err == nil {
@@ -421,6 +427,9 @@ func (r *default{{.ModelName}}Repository) DeleteByWrapperTx(ctx context.Context,
 		baseTx = baseTx.Unscoped()
 	}
 	tx := gormplus.GenWrap(baseTx)
+	if deleteOpts.Physical {
+		tx.WithDeleted()
+	}
 	fn(tx)
 	_, err := tx.Apply().Delete()
 	if err == nil {
@@ -687,6 +696,9 @@ func (r *default{{.ModelName}}Repository) ExistsByWrapper(ctx context.Context, f
 				baseTx = baseTx.Unscoped()
 			}
 			tx := gormplus.GenWrap(baseTx)
+			if opt.Unscoped {
+				tx.WithDeleted()
+			}
 			if fn != nil {
 				fn(tx)
 			}
@@ -724,6 +736,9 @@ func (r *default{{.ModelName}}Repository) CountByWrapper(ctx context.Context, fn
 				baseTx = baseTx.Unscoped()
 			}
 			tx := gormplus.GenWrap(baseTx)
+			if opt.Unscoped {
+				tx.WithDeleted()
+			}
 			if fn != nil {
 				fn(tx)
 			}
