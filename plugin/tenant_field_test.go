@@ -105,6 +105,100 @@ func TestTenantCreateSkipsMissingTenantField(t *testing.T) {
 	}
 }
 
+func TestTenantCreatePolicyFillIfZero(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{
+		TenantField:  "tenant_id",
+		CreatePolicy: CreatePolicyFillIfZero,
+	}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(1001))
+	zeroTenant := tenantFieldTestModel{Name: "zero"}
+	if err := db.WithContext(ctx).Create(&zeroTenant).Error; err != nil {
+		t.Fatalf("create zero tenant: %v", err)
+	}
+	if zeroTenant.TenantID != 1001 {
+		t.Fatalf("zero tenant field was not filled, got %d", zeroTenant.TenantID)
+	}
+
+	existingTenant := tenantFieldTestModel{Name: "existing", TenantID: 2002}
+	if err := db.WithContext(ctx).Create(&existingTenant).Error; err != nil {
+		t.Fatalf("create existing tenant: %v", err)
+	}
+	if existingTenant.TenantID != 2002 {
+		t.Fatalf("existing tenant field should be preserved, got %d", existingTenant.TenantID)
+	}
+}
+
+func TestTenantCreatePolicyRejectMismatch(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{
+		TenantField:  "tenant_id",
+		CreatePolicy: CreatePolicyRejectMismatch,
+	}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(1001))
+	row := tenantFieldTestModel{Name: "mismatch", TenantID: 2002}
+	if err := db.WithContext(ctx).Create(&row).Error; err == nil {
+		t.Fatal("expected mismatched tenant create to fail")
+	}
+}
+
+func TestTenantRawSQLFieldBoundary(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{TenantField: "company_id"}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(3))
+	var rows []tenantJoinOrderModel
+	stmt := db.WithContext(ctx).
+		Where("old_company_id = ? OR status = ?", 99, 1).
+		Find(&rows).
+		Statement
+
+	if stmt.Error != nil {
+		t.Fatalf("old_company_id should not be treated as company_id, err=%v", stmt.Error)
+	}
+	sql := stmt.SQL.String()
+	if !strings.Contains(sql, "`company_id` = ?") {
+		t.Fatalf("expected tenant field to still be injected, sql=%s", sql)
+	}
+}
+
+func TestTenantRawSQLTenantFieldOrIsRejected(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{TenantField: "company_id"}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(3))
+	var rows []tenantJoinOrderModel
+	err = db.WithContext(ctx).
+		Where("company_id = ? OR status = ?", 99, 1).
+		Find(&rows).
+		Error
+	if err == nil {
+		t.Fatal("expected tenant field in OR condition to be rejected")
+	}
+}
+
 func TestTenantJoinPrefixesMainTableAndInjectsJoinTableWithTenantField(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -177,6 +271,49 @@ func TestTenantJoinSkipsJoinTableWithoutTenantField(t *testing.T) {
 	}
 	if strings.Contains(sql, "`no_tenant_join_suppliers`.`company_id`") {
 		t.Fatalf("expected join table without tenant field to be skipped, sql=%s", sql)
+	}
+}
+
+func TestTenantPolicyReplaceKeepsOtherAliasTenantCondition(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&tenantJoinOrderModel{}, &tenantJoinSupplierModel{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	if err := RegisterTenant[int64](db, TenantConfig[int64]{
+		TenantField:     "company_id",
+		DuplicatePolicy: PolicyReplace,
+	}); err != nil {
+		t.Fatalf("register tenant: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), int64(3))
+	var rows []tenantJoinOrderModel
+	stmt := db.Session(&gorm.Session{DryRun: true}).
+		WithContext(ctx).
+		Model(&tenantJoinOrderModel{}).
+		Where("`tenant_join_suppliers`.`company_id` = ?", int64(9)).
+		Clauses(clause.From{Joins: []clause.Join{{
+			Type:  clause.LeftJoin,
+			Table: clause.Table{Name: "tenant_join_suppliers"},
+			ON: clause.Where{Exprs: []clause.Expression{
+				clause.Expr{SQL: "`tenant_join_suppliers`.`id` = `tenant_join_orders`.`supplier_id`"},
+			}},
+		}}}).
+		Find(&rows).
+		Statement
+
+	sql := stmt.SQL.String()
+	if !strings.Contains(sql, "`tenant_join_orders`.`company_id` = ?") {
+		t.Fatalf("expected main tenant field to be injected, sql=%s", sql)
+	}
+	if !strings.Contains(sql, "`tenant_join_suppliers`.`company_id` = ?") {
+		t.Fatalf("expected supplier tenant condition to be preserved, sql=%s", sql)
+	}
+	if !containsVar(stmt.Vars, int64(9)) {
+		t.Fatalf("expected supplier tenant arg 9 to be preserved, vars=%v sql=%s", stmt.Vars, sql)
 	}
 }
 
@@ -388,4 +525,13 @@ func assertTenantJoinSQL(t *testing.T, sql string, op string) {
 	if strings.Contains(sql, " WHERE `company_id` = ?") || strings.Contains(sql, " AND `company_id` = ?") {
 		t.Fatalf("expected %s to have no unqualified tenant field, sql=%s", op, sql)
 	}
+}
+
+func containsVar(vars []any, target any) bool {
+	for _, v := range vars {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }

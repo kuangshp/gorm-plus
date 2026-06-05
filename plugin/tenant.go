@@ -187,6 +187,18 @@ const (
 	PolicyAppend
 )
 
+// CreateTenantPolicy 创建时遇到租户字段已有值的处理策略。
+type CreateTenantPolicy int
+
+const (
+	// CreatePolicyReplace 总是使用 ctx 中的租户 ID 覆盖实体字段（默认，保持历史行为）。
+	CreatePolicyReplace CreateTenantPolicy = iota
+	// CreatePolicyFillIfZero 仅当实体租户字段为零值时填充。
+	CreatePolicyFillIfZero
+	// CreatePolicyRejectMismatch 当实体租户字段非零且与 ctx 中租户 ID 不一致时拒绝创建。
+	CreatePolicyRejectMismatch
+)
+
 // ================== 多字段配置 ==================
 
 // TenantFieldConfig 单个租户字段的注入配置。
@@ -320,6 +332,9 @@ type TenantConfig[T comparable] struct {
 	// ⚠️ 安全提示：无论哪种策略，租户字段出现在 OR 条件中时均会被拒绝执行，
 	// 防止 WHERE (tenant_id = 9999 OR status = 1) 绕过租户隔离。
 	DuplicatePolicy DuplicateTenantPolicy
+
+	// CreatePolicy 创建时租户字段已有值的处理策略，默认 CreatePolicyReplace。
+	CreatePolicy CreateTenantPolicy
 
 	// ── 其他 ─────────────────────────────────────────────────────────────────
 
@@ -473,11 +488,9 @@ func checkExprForTenantField(expr clause.Expression, field, prefix string) (skip
 
 	case clause.Expr:
 		// 原生 SQL 字符串：扫描是否包含租户字段
-		sql := strings.ToLower(e.SQL)
-		fieldLower := strings.ToLower(field)
-		if strings.Contains(sql, fieldLower) {
+		if sqlContainsFieldWithPrefix(e.SQL, field, prefix) {
 			// 包含 OR 关键字时视为危险
-			if strings.Contains(sql, " or ") {
+			if sqlHasWord(e.SQL, "or") {
 				return false, fmt.Errorf(
 					"tenant: 原生 SQL 条件中检测到租户字段 %q 与 OR 同时出现，"+
 						"可能绕过租户隔离，已拒绝执行。"+
@@ -486,7 +499,15 @@ func checkExprForTenantField(expr clause.Expression, field, prefix string) (skip
 				)
 			}
 			// 纯 AND 的原生 SQL，视为用户已主动指定，跳过注入
-			return prefix == "" || sqlContainsFieldWithPrefix(sql, field, prefix), nil
+			return true, nil
+		}
+		if prefix != "" && sqlContainsFieldWithPrefix(e.SQL, field, "") && sqlHasWord(e.SQL, "or") {
+			return false, fmt.Errorf(
+				"tenant: 原生 SQL 条件中检测到租户字段 %q 与 OR 同时出现，"+
+					"可能绕过租户隔离，已拒绝执行。"+
+					"如需跨租户查询请使用 plugin.SkipTenant(ctx)",
+				field,
+			)
 		}
 	}
 	return false, nil
@@ -503,7 +524,7 @@ func containsTenantField(expr clause.Expression, field string) bool {
 			return colMatchesField(col.Name, field)
 		}
 	case clause.Expr:
-		return strings.Contains(strings.ToLower(e.SQL), strings.ToLower(field))
+		return sqlContainsFieldWithPrefix(e.SQL, field, "")
 	case clause.AndConditions:
 		for _, sub := range e.Exprs {
 			if containsTenantField(sub, field) {
@@ -564,16 +585,87 @@ func columnMatchesFieldWithPrefix(col clause.Column, field, prefix string) bool 
 }
 
 func sqlContainsFieldWithPrefix(sql, field, prefix string) bool {
-	sql = strings.ToLower(sql)
 	field = strings.ToLower(strings.Trim(field, "`"))
 	prefix = strings.ToLower(strings.Trim(prefix, "`"))
+	tokens := sqlTokens(sql)
 	if prefix == "" {
-		return strings.Contains(sql, field)
+		for _, token := range tokens {
+			if token == field {
+				return true
+			}
+		}
+		return false
 	}
-	return strings.Contains(sql, prefix+"."+field) ||
-		strings.Contains(sql, "`"+prefix+"`.`"+field+"`") ||
-		strings.Contains(sql, prefix+"`.`"+field) ||
-		strings.Contains(sql, "`"+prefix+"`."+field)
+	for i := 0; i+2 < len(tokens); i++ {
+		if tokens[i] == prefix && tokens[i+1] == "." && tokens[i+2] == field {
+			return true
+		}
+	}
+	return false
+}
+
+func sqlHasWord(sql, word string) bool {
+	word = strings.ToLower(word)
+	for _, token := range sqlTokens(sql) {
+		if token == word {
+			return true
+		}
+	}
+	return false
+}
+
+func sqlTokens(sql string) []string {
+	var tokens []string
+	for i := 0; i < len(sql); {
+		ch := sql[i]
+		switch {
+		case ch == '\'' || ch == '"':
+			quote := ch
+			i++
+			for i < len(sql) {
+				if sql[i] == '\\' {
+					i += 2
+					continue
+				}
+				if sql[i] == quote {
+					i++
+					break
+				}
+				i++
+			}
+		case ch == '`':
+			i++
+			start := i
+			for i < len(sql) && sql[i] != '`' {
+				i++
+			}
+			if start < i {
+				tokens = append(tokens, strings.ToLower(sql[start:i]))
+			}
+			if i < len(sql) {
+				i++
+			}
+		case ch == '.':
+			tokens = append(tokens, ".")
+			i++
+		case isSQLIdentChar(ch):
+			start := i
+			for i < len(sql) && isSQLIdentChar(sql[i]) {
+				i++
+			}
+			tokens = append(tokens, strings.ToLower(sql[start:i]))
+		default:
+			i++
+		}
+	}
+	return tokens
+}
+
+func isSQLIdentChar(ch byte) bool {
+	return ch == '_' ||
+		(ch >= '0' && ch <= '9') ||
+		(ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z')
 }
 
 // ================== 核心注入 ==================
@@ -616,7 +708,7 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 				_ = db.AddError(err)
 				return
 			}
-			removeWhereField(db, f.Field)
+			removeWhereField(db, f.Field, prefix)
 
 		default: // PolicySkip（默认）
 			// 扫描已有条件：
@@ -652,7 +744,7 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 
 // removeWhereField 从 Statement.Clauses["WHERE"] 中移除指定字段的所有 AND 条件。
 // 供 PolicyReplace 使用：先清除业务代码写的租户条件，再由插件重新注入正确值。
-func removeWhereField(db *gorm.DB, field string) {
+func removeWhereField(db *gorm.DB, field, prefix string) {
 	if db.Statement == nil {
 		return
 	}
@@ -666,7 +758,7 @@ func removeWhereField(db *gorm.DB, field string) {
 	}
 	filtered := w.Exprs[:0]
 	for _, expr := range w.Exprs {
-		if !exprContainsField(expr, field) {
+		if !exprContainsField(expr, field, prefix) {
 			filtered = append(filtered, expr)
 		}
 	}
@@ -676,20 +768,20 @@ func removeWhereField(db *gorm.DB, field string) {
 }
 
 // exprContainsField 判断 clause 表达式是否包含指定字段（供 removeWhereField 使用）。
-func exprContainsField(expr clause.Expression, field string) bool {
+func exprContainsField(expr clause.Expression, field, prefix string) bool {
 	switch e := expr.(type) {
 	case clause.Eq:
 		if colStr, ok := e.Column.(string); ok {
-			return colMatchesField(colStr, field)
+			return colMatchesFieldWithPrefix(colStr, field, prefix)
 		}
 		if col, ok := e.Column.(clause.Column); ok {
-			return colMatchesField(col.Name, field)
+			return columnMatchesFieldWithPrefix(col, field, prefix)
 		}
 	case clause.Expr:
-		return strings.Contains(strings.ToLower(e.SQL), strings.ToLower(field))
+		return sqlContainsFieldWithPrefix(e.SQL, field, prefix)
 	case clause.AndConditions:
 		for _, sub := range e.Exprs {
-			if exprContainsField(sub, field) {
+			if exprContainsField(sub, field, prefix) {
 				return true
 			}
 		}
@@ -879,12 +971,15 @@ func (p *tenantPlugin[T]) injectCreate(db *gorm.DB) {
 		if !ok {
 			continue
 		}
-		p.fillField(db, sf, tenantID)
+		if err := p.fillField(db, sf, tenantID); err != nil {
+			_ = db.AddError(err)
+			return
+		}
 	}
 }
 
 // fillField 对 struct 或 slice 的每个元素填充字段值。
-func (p *tenantPlugin[T]) fillField(db *gorm.DB, f *schema.Field, val T) {
+func (p *tenantPlugin[T]) fillField(db *gorm.DB, f *schema.Field, val T) error {
 	rv := db.Statement.ReflectValue
 	switch rv.Kind() {
 	case reflect.Slice, reflect.Array:
@@ -897,7 +992,9 @@ func (p *tenantPlugin[T]) fillField(db *gorm.DB, f *schema.Field, val T) {
 				elem = elem.Elem()
 			}
 			if elem.IsValid() {
-				_ = f.Set(db.Statement.Context, elem, val)
+				if err := p.fillElement(db, f, elem, val); err != nil {
+					return err
+				}
 			}
 		}
 	default:
@@ -906,9 +1003,42 @@ func (p *tenantPlugin[T]) fillField(db *gorm.DB, f *schema.Field, val T) {
 			elem = elem.Elem()
 		}
 		if elem.IsValid() {
-			_ = f.Set(db.Statement.Context, elem, val)
+			if err := p.fillElement(db, f, elem, val); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
+}
+
+func (p *tenantPlugin[T]) fillElement(db *gorm.DB, f *schema.Field, elem reflect.Value, val T) error {
+	current, zero := f.ValueOf(db.Statement.Context, elem)
+	switch p.cfg.CreatePolicy {
+	case CreatePolicyFillIfZero:
+		if !zero {
+			return nil
+		}
+	case CreatePolicyRejectMismatch:
+		if !zero && !tenantValuesEqual(current, val) {
+			return fmt.Errorf("tenant: 创建数据的租户字段 %q=%v 与 ctx 租户 ID %v 不一致", f.DBName, current, val)
+		}
+	}
+	return f.Set(db.Statement.Context, elem, val)
+}
+
+func tenantValuesEqual[T comparable](current any, expected T) bool {
+	if v, ok := current.(T); ok {
+		return v == expected
+	}
+	currentValue := reflect.ValueOf(current)
+	expectedValue := reflect.ValueOf(expected)
+	if currentValue.IsValid() && expectedValue.IsValid() && currentValue.Type().ConvertibleTo(expectedValue.Type()) {
+		converted := currentValue.Convert(expectedValue.Type()).Interface()
+		if v, ok := converted.(T); ok {
+			return v == expected
+		}
+	}
+	return reflect.DeepEqual(current, expected)
 }
 
 // ================== 全表保护 ==================
