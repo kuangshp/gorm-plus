@@ -17,6 +17,17 @@ import (
 // 通过 query.Query() 链式构造器构建，或直接构造字面量。
 type QueryOption = query.QueryOption
 
+// QueryOptionBuilder Repository 查询参数链式构建器。
+type QueryOptionBuilder = query.QueryBuilder
+
+// QueryOpt 创建 Repository 查询参数链式构建器。
+//
+// 根包已保留 gormplus.Query[T](db, ctx) 作为原生 GORM builder，
+// 因此 Repository 查询参数使用 QueryOpt 避免 Go 函数名冲突。
+func QueryOpt() *QueryOptionBuilder {
+	return query.Query()
+}
+
 // ExecuteQuery 执行单条/聚合查询并按 QueryOption 决定是否走 sf/cache。
 //
 // 参数：

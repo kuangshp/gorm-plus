@@ -257,6 +257,7 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 	mustContain := []string{
 		"Create(ctx context.Context, m *model.SequenceEntity, opts ...gormplus.CreateOption) error",
 		"CreateBatch(ctx context.Context, m []*model.SequenceEntity, opts ...gormplus.CreateOption) error",
+		"if len(m) == 0",
 		"createOpts := gormplus.ResolveCreateOptions(opts)",
 		"tx = tx.Omit(createOpts.OmitFields...)",
 		"tx = tx.Clauses(createOpts.Clauses...)",
@@ -264,8 +265,13 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 		"tx = tx.Clauses(q.Clauses...)",
 		"if len(deleteOpts.Clauses) > 0",
 		"tx = tx.Clauses(deleteOpts.Clauses...)",
+		"UpdateById(ctx context.Context, sequenceId string, columns ...field.AssignExpr) error",
+		"UpdateMapById(ctx context.Context, sequenceId string, data map[string]any) error",
 		"DeleteById(ctx context.Context, sequenceId string, opts ...gormplus.DeleteOption) error",
+		"if len(sequenceIds) == 0",
 		"FindById(ctx context.Context, sequenceId string, query ...gormplus.QueryOption)",
+		"tx = tx.Select(opt.Select...)",
+		"tx = tx.Omit(opt.OmitFields...)",
 		"dao.SequenceEntity.BizType.Eq(sequenceId)",
 		`gormplus.BuildArgs("biz_type", sequenceId)`,
 		"deleteOpts := gormplus.ResolveDeleteOptions(opts)",
@@ -284,6 +290,9 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 
 	mustNotContain := []string{
 		"Create(ctx context.Context, m *model.SequenceEntity, omitFields ...field.Expr) error",
+		"UpdateOption",
+		"UpdateByIdWithOption",
+		"opts ...gormplus.UpdateOption",
 		"DeleteById(ctx context.Context, sequenceId int64) error",
 		`gormplus.BuildArgs("id", sequenceId)`,
 		"PhysicalDeleteById(",

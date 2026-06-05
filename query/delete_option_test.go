@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"gorm.io/gen"
+	"gorm.io/gen/field"
 	gormclause "gorm.io/gorm/clause"
 )
 
@@ -39,6 +40,8 @@ func TestDeleteBuilder(t *testing.T) {
 }
 
 func TestSplitDeleteConditions(t *testing.T) {
+	id := gen.Condition(field.NewInt("", "id").Eq(1))
+
 	conditions, opts := SplitDeleteConditions(nil)
 	if len(conditions) != 0 {
 		t.Fatalf("conditions length = %d, want 0", len(conditions))
@@ -61,5 +64,38 @@ func TestSplitDeleteConditions(t *testing.T) {
 	}
 	if !opts.Physical {
 		t.Fatal("expected builder option to enable physical delete")
+	}
+
+	conditions, opts = SplitDeleteConditions([]gen.Condition{
+		Delete().
+			Physical().
+			Clauses(gormclause.Returning{}).
+			Build(),
+	})
+	if len(conditions) != 0 {
+		t.Fatalf("conditions length = %d, want 0", len(conditions))
+	}
+	if !opts.Physical {
+		t.Fatal("expected builder option to enable physical delete")
+	}
+	if len(opts.Clauses) != 1 {
+		t.Fatalf("clauses length = %d, want 1", len(opts.Clauses))
+	}
+
+	conditions, opts = SplitDeleteConditions([]gen.Condition{
+		id,
+		Delete().
+			Physical().
+			Clauses(gormclause.Returning{}).
+			Build(),
+	})
+	if len(conditions) != 1 {
+		t.Fatalf("conditions length = %d, want 1", len(conditions))
+	}
+	if !opts.Physical {
+		t.Fatal("expected builder option to enable physical delete")
+	}
+	if len(opts.Clauses) != 1 {
+		t.Fatalf("clauses length = %d, want 1", len(opts.Clauses))
 	}
 }

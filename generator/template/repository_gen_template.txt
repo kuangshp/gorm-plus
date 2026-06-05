@@ -236,6 +236,9 @@ func (r *default{{.ModelName}}Repository) CreateTx(ctx context.Context, daoTx *d
 }
 
 func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error {
+	if len(m) == 0 {
+		return nil
+	}
 	createOpts := gormplus.ResolveCreateOptions(opts)
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if len(createOpts.OmitFields) > 0 {
@@ -252,6 +255,9 @@ func (r *default{{.ModelName}}Repository) CreateBatch(ctx context.Context, m []*
 }
 
 func (r *default{{.ModelName}}Repository) CreateBatchTx(ctx context.Context, daoTx *dao.Query, m []*{{.ModelPkgName}}.{{.ModelName}}Entity, opts ...gormplus.CreateOption) error {
+	if len(m) == 0 {
+		return nil
+	}
 	createOpts := gormplus.ResolveCreateOptions(opts)
 	tx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
 	if len(createOpts.OmitFields) > 0 {
@@ -312,6 +318,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdTx(ctx context.Context, daoT
 
 {{- if .HasCompositePrimaryKey}}
 func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{.ModelNameLower}}Ids []{{.ModelName}}PrimaryKey, opts ...gormplus.DeleteOption) error {
+	if len({{.ModelNameLower}}Ids) == 0 {
+		return nil
+	}
 	deleteOpts := gormplus.ResolveDeleteOptions(opts)
 	for _, id := range {{.ModelNameLower}}Ids {
 		tx := dao.{{.ModelName}}Entity.WithContext(ctx)
@@ -338,6 +347,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{
 }
 
 func (r *default{{.ModelName}}Repository) DeleteByIdListTx(ctx context.Context, daoTx *dao.Query, {{.ModelNameLower}}Ids []{{.ModelName}}PrimaryKey, opts ...gormplus.DeleteOption) error {
+	if len({{.ModelNameLower}}Ids) == 0 {
+		return nil
+	}
 	deleteOpts := gormplus.ResolveDeleteOptions(opts)
 	for _, id := range {{.ModelNameLower}}Ids {
 		tx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
@@ -364,6 +376,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdListTx(ctx context.Context, 
 }
 {{- else}}
 func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{.ModelNameLower}}Ids []{{.PrimaryKeyType}}, opts ...gormplus.DeleteOption) error {
+	if len({{.ModelNameLower}}Ids) == 0 {
+		return nil
+	}
 	deleteOpts := gormplus.ResolveDeleteOptions(opts)
 	tx := dao.{{.ModelName}}Entity.WithContext(ctx)
 	if deleteOpts.Physical {
@@ -383,6 +398,9 @@ func (r *default{{.ModelName}}Repository) DeleteByIdList(ctx context.Context, {{
 }
 
 func (r *default{{.ModelName}}Repository) DeleteByIdListTx(ctx context.Context, daoTx *dao.Query, {{.ModelNameLower}}Ids []{{.PrimaryKeyType}}, opts ...gormplus.DeleteOption) error {
+	if len({{.ModelNameLower}}Ids) == 0 {
+		return nil
+	}
 	deleteOpts := gormplus.ResolveDeleteOptions(opts)
 	tx := daoTx.{{.ModelName}}Entity.WithContext(ctx)
 	if deleteOpts.Physical {
@@ -638,6 +656,9 @@ func (r *default{{.ModelName}}Repository) FindById(ctx context.Context, {{.Prima
 
 {{- if .HasCompositePrimaryKey}}
 func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []{{.ModelName}}PrimaryKey, query ...gormplus.QueryOption) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+	if len({{.ModelNameLower}}Ids) == 0 {
+		return []*{{.ModelPkgName}}.{{.ModelName}}Entity{}, nil
+	}
 	opt := gormplus.MergeQueryOptions(query...)
 	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindByIdList",
 		gormplus.BuildArgs("ids", {{.ModelNameLower}}Ids),
@@ -677,6 +698,9 @@ func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.M
 }
 {{- else}}
 func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.ModelNameLower}}Ids []{{.PrimaryKeyType}}, query ...gormplus.QueryOption) ([]*{{.ModelPkgName}}.{{.ModelName}}Entity, error) {
+	if len({{.ModelNameLower}}Ids) == 0 {
+		return []*{{.ModelPkgName}}.{{.ModelName}}Entity{}, nil
+	}
 	opt := gormplus.MergeQueryOptions(query...)
 	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindByIdList",
 		gormplus.BuildArgs("ids", {{.ModelNameLower}}Ids),
