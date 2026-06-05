@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gen/field"
@@ -98,6 +99,47 @@ func TestGenWrapperNilInputsAreSkipped(t *testing.T) {
 
 	if !w.group.isEmpty() {
 		t.Fatalf("expected nil inputs to be skipped, got %d conditions", len(w.group.conds))
+	}
+}
+
+func TestGenWrapperBetweenIfNotZeroSkipsZeroTime(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	createdAt := field.NewTime("", "created_at")
+	start := time.Time{}
+	end := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+	sql := w.BetweenIfNotZero(createdAt, start, end).ToSQL()
+	if strings.Contains(sql, "created_at BETWEEN") {
+		t.Fatalf("expected zero time range to be skipped, got SQL: %s", sql)
+	}
+
+	w = &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+	sql = w.BetweenIfNotZero(createdAt, start, &end).ToSQL()
+	if strings.Contains(sql, "created_at BETWEEN") {
+		t.Fatalf("expected zero start time with pointer end to be skipped, got SQL: %s", sql)
+	}
+
+	w = &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+	sql = w.BetweenIfNotZero(createdAt, &end, end).ToSQL()
+	if !strings.Contains(sql, "created_at BETWEEN") {
+		t.Fatalf("expected non-zero time range to be applied, got SQL: %s", sql)
 	}
 }
 

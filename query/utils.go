@@ -7,6 +7,13 @@ func isZeroVal(v any) bool {
 	if v == nil {
 		return true
 	}
+	rv := reflect.ValueOf(v)
+	if canBeNil(rv.Kind()) && rv.IsNil() {
+		return true
+	}
+	if val, ok := v.(interface{ IsZero() bool }); ok {
+		return val.IsZero()
+	}
 	switch val := v.(type) {
 	case int:
 		return val == 0
@@ -37,7 +44,15 @@ func isZeroVal(v any) bool {
 	case bool:
 		return !val
 	default:
-		rv := reflect.ValueOf(v)
 		return rv.IsZero()
+	}
+}
+
+func canBeNil(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return true
+	default:
+		return false
 	}
 }
