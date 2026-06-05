@@ -37,4 +37,12 @@ func TestRepositoryOptionPublicUsage(t *testing.T) {
 	if resolved := MergeQueryOptions(queryOpt); !resolved.Unscoped || len(resolved.Cond) != 1 || len(resolved.Clauses) != 1 {
 		t.Fatalf("unexpected query options: %+v", resolved)
 	}
+
+	updateOpt := Update().
+		Columns(name.Value("alice")).
+		Clauses(gormclause.Returning{}).
+		Build()
+	if resolved := ResolveUpdateOptions([]UpdateOption{updateOpt}); len(resolved.Columns) != 1 || len(resolved.Clauses) != 1 {
+		t.Fatalf("unexpected update options: %+v", resolved)
+	}
 }

@@ -602,7 +602,7 @@ func main() {
 
 ```go
 // ① 精确失效：FindById 更新后
-repo.UpdateById(ctx, id, ...)
+repo.UpdateById(ctx, id, gormplus.WithUpdateColumns(...))
 gormplus.SFInvalidate("user.FindById", gormplus.BuildArgs("id", id))
 
 // ② 前缀失效：删一条记录后，列表/统计缓存全清
@@ -955,7 +955,7 @@ func (s *AccountService) RegisterWithVIP(ctx context.Context, req *RegisterReq) 
 		}
 		// 3) 标记关联订单为已激活
 		_, err := s.orderRepo.UpdateByIdTx(ctx, tx, req.OrderId,
-			dao.OrderEntity.Status.Value(1))
+			gormplus.WithUpdateColumns(dao.OrderEntity.Status.Value(1)))
 		return err
 		// return nil 自动提交
 	})
@@ -985,7 +985,7 @@ generator 模板生成的所有写操作都有 `*Tx` 版本(`CreateTx`/`UpdateBy
 gormplus.TransactionAs(db, dao.Use, func(tx *dao.Query) error {
 	userRepo.CreateTx(ctx, tx, &user)            // ← 传 tx
 	profileRepo.CreateTx(ctx, tx, &profile)      // ← 同一个 tx
-	orderRepo.UpdateByIdTx(ctx, tx, id, ...)     // ← 同一个 tx
+	orderRepo.UpdateByIdTx(ctx, tx, id, gormplus.WithUpdateColumns(...)) // ← 同一个 tx
 	return nil
 })
 ```
@@ -1496,4 +1496,3 @@ gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
 - `gorm.io/gen`
 - `gopkg.in/yaml.v3`
 - 数据库驱动由用户按需引入（`gorm.io/driver/mysql`、`gorm.io/driver/postgres` 等）
-
