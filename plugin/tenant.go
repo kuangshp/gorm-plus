@@ -199,6 +199,16 @@ const (
 	CreatePolicyRejectMismatch
 )
 
+// BoolPtr 返回 bool 指针，便于配置 *bool 类型的开关。
+//
+//	plugin.RegisterTenant(db, plugin.TenantConfig[int64]{
+//	    TenantField:          "tenant_id",
+//	    AutoInjectJoinTables: plugin.BoolPtr(false),
+//	})
+func BoolPtr(v bool) *bool {
+	return &v
+}
+
 // ================== 多字段配置 ==================
 
 // TenantFieldConfig 单个租户字段的注入配置。

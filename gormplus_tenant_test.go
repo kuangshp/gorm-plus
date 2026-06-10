@@ -9,8 +9,9 @@ func TestTenantConfigUsesRootPackageTypes(t *testing.T) {
 	t.Parallel()
 
 	_ = TenantConfig[int64]{
-		TenantField:     "company_id",
-		DuplicatePolicy: PolicyReplace,
+		TenantField:          "company_id",
+		AutoInjectJoinTables: BoolPtr(false),
+		DuplicatePolicy:      PolicyReplace,
 		TenantFields: []TenantFieldConfig[int64]{
 			{Field: "company_id"},
 			{

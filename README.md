@@ -1209,10 +1209,9 @@ gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
 })
 
 // 关闭 JOIN 自动注入
-falseVal := false
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
 	TenantField:          "tenant_id",
-	AutoInjectJoinTables: &falseVal,
+	AutoInjectJoinTables: gormplus.BoolPtr(false),
 })
 ```
 

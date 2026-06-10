@@ -65,6 +65,16 @@ var (
 	PolicyAppend = plugin.PolicyAppend
 )
 
+// BoolPtr 返回 bool 指针，便于配置 *bool 类型的开关。
+//
+//	gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
+//	    TenantField:          "tenant_id",
+//	    AutoInjectJoinTables: gormplus.BoolPtr(false),
+//	})
+func BoolPtr(v bool) *bool {
+	return &v
+}
+
 // RegisterTenant 向指定 DB 注册多租户插件，整个应用只需调用一次。
 //
 // 注册后所有 db.WithContext(ctx) 的 Query / Update / Delete / Create 操作

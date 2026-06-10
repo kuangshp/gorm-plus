@@ -11,8 +11,9 @@ func TestTenantConfigSupportsRootPackageTypesExternally(t *testing.T) {
 	t.Parallel()
 
 	_, err := gormplus.NewTenantPlugin(gormplus.TenantConfig[int64]{
-		TenantField:     "tenant_id",
-		DuplicatePolicy: gormplus.PolicyReplace,
+		TenantField:          "tenant_id",
+		AutoInjectJoinTables: gormplus.BoolPtr(false),
+		DuplicatePolicy:      gormplus.PolicyReplace,
 		TenantFields: []gormplus.TenantFieldConfig[int64]{
 			{Field: "tenant_id"},
 			{
