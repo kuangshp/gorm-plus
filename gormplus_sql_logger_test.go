@@ -44,6 +44,17 @@ func TestSQLCallerLoggerUsesContextCaller(t *testing.T) {
 	}
 }
 
+func TestWithSQLCallerRecordsCaller(t *testing.T) {
+	ctx := recordSQLCallerForTest(context.Background())
+	caller, ok := SQLCallerFromContext(ctx)
+	if !ok {
+		t.Fatal("expected sql caller in context")
+	}
+	if !strings.HasSuffix(caller.File, "gormplus_sql_logger_test.go") {
+		t.Fatalf("expected test file caller, got %s", caller.File)
+	}
+}
+
 func TestSQLCallerLoggerAcceptFrameSkipsRepository(t *testing.T) {
 	l := NewSQLCallerLogger(bufferLogWriter{buf: &bytes.Buffer{}}, logger.Config{}).(*sqlCallerLogger)
 
@@ -53,6 +64,10 @@ func TestSQLCallerLoggerAcceptFrameSkipsRepository(t *testing.T) {
 	if !l.acceptFrame(runtimeFrame("/app/internal/logic/user_logic.go", 20)) {
 		t.Fatal("expected logic frame to be accepted")
 	}
+}
+
+func recordSQLCallerForTest(ctx context.Context) context.Context {
+	return WithSQLCaller(ctx)
 }
 
 func runtimeFrame(file string, line int) runtime.Frame {

@@ -7,27 +7,15 @@ import (
 	"log"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kuangshp/gorm-plus/internal/sqlcaller"
 	"gorm.io/gorm/logger"
 )
 
-type sqlCallerContextKey struct{}
-
 // SQLCaller 表示 SQL 日志希望展示的业务调用位置。
-type SQLCaller struct {
-	File string
-	Line int
-}
-
-func (c SQLCaller) String() string {
-	if c.File == "" || c.Line <= 0 {
-		return ""
-	}
-	return c.File + ":" + strconv.Itoa(c.Line)
-}
+type SQLCaller = sqlcaller.Caller
 
 // WithSQLCaller 在 ctx 中记录当前调用点,SQLCallerLogger 会优先打印这个位置。
 //
@@ -36,38 +24,22 @@ func (c SQLCaller) String() string {
 //	ctx = gormplus.WithSQLCaller(ctx)
 //	repo.FindById(ctx, id)
 func WithSQLCaller(ctx context.Context) context.Context {
-	return WithSQLCallerSkip(ctx, 1)
+	return sqlcaller.WithCallerSkip(ctx, 2)
 }
 
 // WithSQLCallerSkip 与 WithSQLCaller 类似,但允许调用方额外跳过封装层。
 func WithSQLCallerSkip(ctx context.Context, skip int) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if _, file, line, ok := runtime.Caller(skip + 1); ok {
-		return ContextWithSQLCaller(ctx, SQLCaller{File: file, Line: line})
-	}
-	return ctx
+	return sqlcaller.WithCallerSkip(ctx, skip+2)
 }
 
 // ContextWithSQLCaller 把明确的调用位置写入 ctx。
 func ContextWithSQLCaller(ctx context.Context, caller SQLCaller) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if caller.File == "" || caller.Line <= 0 {
-		return ctx
-	}
-	return context.WithValue(ctx, sqlCallerContextKey{}, caller)
+	return sqlcaller.ContextWithCaller(ctx, caller)
 }
 
 // SQLCallerFromContext 从 ctx 读取 SQL 日志调用位置。
 func SQLCallerFromContext(ctx context.Context) (SQLCaller, bool) {
-	if ctx == nil {
-		return SQLCaller{}, false
-	}
-	caller, ok := ctx.Value(sqlCallerContextKey{}).(SQLCaller)
-	return caller, ok && caller.File != "" && caller.Line > 0
+	return sqlcaller.FromContext(ctx)
 }
 
 // SQLCallerLoggerOption 调整 SQLCallerLogger 的调用栈定位策略。

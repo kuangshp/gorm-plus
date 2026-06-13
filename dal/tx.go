@@ -63,7 +63,7 @@ func TxQuery[T any](
 		Error
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, err)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, err)
 	runAfterHooks(d, ctx, sqlFile, args, cost, err)
 
 	if err != nil {
@@ -71,7 +71,7 @@ func TxQuery[T any](
 	}
 
 	if len(result) == 0 {
-		debugWarnEmpty(d, sqlFile)
+		debugWarnEmpty(d, ctx, sqlFile)
 	}
 
 	return result, nil
@@ -129,7 +129,7 @@ func TxQueryOne[T any](
 		Scan(&result)
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, txResult.Error)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, txResult.Error)
 	runAfterHooks(d, ctx, sqlFile, args, cost, txResult.Error)
 
 	if txResult.Error != nil {
@@ -137,7 +137,7 @@ func TxQueryOne[T any](
 	}
 
 	if txResult.RowsAffected == 0 {
-		debugWarnEmpty(d, sqlFile)
+		debugWarnEmpty(d, ctx, sqlFile)
 		return nil, nil
 	}
 
@@ -194,7 +194,7 @@ func TxQueryNamed[T any](
 		Error
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, err)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, err)
 	runAfterHooks(d, ctx, sqlFile, args, cost, err)
 
 	if err != nil {
@@ -202,7 +202,7 @@ func TxQueryNamed[T any](
 	}
 
 	if len(result) == 0 {
-		debugWarnEmpty(d, sqlFile)
+		debugWarnEmpty(d, ctx, sqlFile)
 	}
 
 	return result, nil
@@ -251,7 +251,7 @@ func TxCount(
 		Error
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, err)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, err)
 	runAfterHooks(d, ctx, sqlFile, args, cost, err)
 
 	if err != nil {
@@ -304,7 +304,7 @@ func TxExec(
 		Error
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, err)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, err)
 	runAfterHooks(d, ctx, sqlFile, args, cost, err)
 
 	if err != nil {

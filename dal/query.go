@@ -59,7 +59,7 @@ func Query[T any](
 		Error
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, err)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, err)
 	runAfterHooks(d, ctx, sqlFile, args, cost, err)
 
 	if err != nil {
@@ -67,7 +67,7 @@ func Query[T any](
 	}
 
 	if len(result) == 0 {
-		debugWarnEmpty(d, sqlFile)
+		debugWarnEmpty(d, ctx, sqlFile)
 	}
 
 	return result, nil
@@ -120,7 +120,7 @@ func QueryOne[T any](
 		Scan(&result)
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, tx.Error)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, tx.Error)
 	runAfterHooks(d, ctx, sqlFile, args, cost, tx.Error)
 
 	if tx.Error != nil {
@@ -129,7 +129,7 @@ func QueryOne[T any](
 
 	// RowsAffected == 0 表示没有匹配的行
 	if tx.RowsAffected == 0 {
-		debugWarnEmpty(d, sqlFile)
+		debugWarnEmpty(d, ctx, sqlFile)
 		return nil, nil
 	}
 
@@ -193,7 +193,7 @@ func QueryNamed[T any](
 		Error
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, err)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, err)
 	runAfterHooks(d, ctx, sqlFile, args, cost, err)
 
 	if err != nil {
@@ -201,7 +201,7 @@ func QueryNamed[T any](
 	}
 
 	if len(result) == 0 {
-		debugWarnEmpty(d, sqlFile)
+		debugWarnEmpty(d, ctx, sqlFile)
 	}
 
 	return result, nil
@@ -259,7 +259,7 @@ func QueryOneNamed[T any](
 		Scan(&result)
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, tx.Error)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, tx.Error)
 	runAfterHooks(d, ctx, sqlFile, args, cost, tx.Error)
 
 	if tx.Error != nil {
@@ -267,7 +267,7 @@ func QueryOneNamed[T any](
 	}
 
 	if tx.RowsAffected == 0 {
-		debugWarnEmpty(d, sqlFile)
+		debugWarnEmpty(d, ctx, sqlFile)
 		return nil, nil
 	}
 
@@ -343,7 +343,7 @@ func ExecAffected(
 	tx := d.db(ctx).Exec(sqlText, args...)
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, tx.Error)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, tx.Error)
 	runAfterHooks(d, ctx, sqlFile, args, cost, tx.Error)
 
 	if tx.Error != nil {
@@ -351,7 +351,7 @@ func ExecAffected(
 	}
 
 	if tx.RowsAffected == 0 {
-		debugWarnEmpty(d, sqlFile)
+		debugWarnEmpty(d, ctx, sqlFile)
 	}
 
 	return &ExecResult{RowsAffected: tx.RowsAffected}, nil
@@ -410,7 +410,7 @@ func Count(
 		Error
 
 	cost := time.Since(start)
-	debugLog(d, sqlFile, sqlText, args, cost, err)
+	debugLog(d, ctx, sqlFile, sqlText, args, cost, err)
 	runAfterHooks(d, ctx, sqlFile, args, cost, err)
 
 	if err != nil {
