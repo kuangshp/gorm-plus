@@ -118,7 +118,7 @@ func TestGenWrapperBetweenIfNotZeroSkipsZeroTime(t *testing.T) {
 		group: newCondGroup(),
 	}
 	sql := w.BetweenIfNotZero(createdAt, start, end).ToSQL()
-	if strings.Contains(sql, "created_at BETWEEN") {
+	if strings.Contains(sql, "`created_at` BETWEEN") {
 		t.Fatalf("expected zero time range to be skipped, got SQL: %s", sql)
 	}
 
@@ -128,7 +128,7 @@ func TestGenWrapperBetweenIfNotZeroSkipsZeroTime(t *testing.T) {
 		group: newCondGroup(),
 	}
 	sql = w.BetweenIfNotZero(createdAt, start, &end).ToSQL()
-	if strings.Contains(sql, "created_at BETWEEN") {
+	if strings.Contains(sql, "`created_at` BETWEEN") {
 		t.Fatalf("expected zero start time with pointer end to be skipped, got SQL: %s", sql)
 	}
 
@@ -138,8 +138,66 @@ func TestGenWrapperBetweenIfNotZeroSkipsZeroTime(t *testing.T) {
 		group: newCondGroup(),
 	}
 	sql = w.BetweenIfNotZero(createdAt, &end, end).ToSQL()
-	if !strings.Contains(sql, "created_at BETWEEN") {
+	if !strings.Contains(sql, "`created_at` BETWEEN") {
 		t.Fatalf("expected non-zero time range to be applied, got SQL: %s", sql)
+	}
+}
+
+func TestGenWrapperColumnHelpersKeepJoinTableAlias(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	name := field.NewString("d", "name")
+	createdAt := field.NewTime("d", "created_at")
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+	sql := w.Like(name, "sales").
+		BetweenIfNotZero(createdAt, 1, 2).
+		ToSQL()
+
+	if !strings.Contains(sql, "`d`.`name` LIKE \"%sales%\"") {
+		t.Fatalf("expected LIKE to keep join table alias, got SQL: %s", sql)
+	}
+	if !strings.Contains(sql, "`d`.`created_at` BETWEEN 1 AND 2") {
+		t.Fatalf("expected BETWEEN to keep join table alias, got SQL: %s", sql)
+	}
+	if strings.Contains(sql, "WHERE `name` LIKE") || strings.Contains(sql, "AND `created_at` BETWEEN") {
+		t.Fatalf("expected helper conditions to include join table alias, got SQL: %s", sql)
+	}
+}
+
+func TestGenWrapperNativeExprMethodsKeepJoinTableAlias(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	status := field.NewInt("d", "status")
+	code := field.NewString("d", "code")
+	createdAt := field.NewTime("d", "created_at")
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+	sql := w.WhereIf(true, status.Eq(1)).
+		WhereGroup(code.Eq("A")).
+		Order(createdAt.Desc()).
+		ToSQL()
+
+	if !strings.Contains(sql, "`d`.`status` = 1") {
+		t.Fatalf("expected WhereIf to keep join table alias, got SQL: %s", sql)
+	}
+	if !strings.Contains(sql, "`d`.`code` = \"A\"") {
+		t.Fatalf("expected WhereGroup to keep join table alias, got SQL: %s", sql)
+	}
+	if !strings.Contains(sql, "ORDER BY `d`.`created_at` DESC") {
+		t.Fatalf("expected Order to keep join table alias, got SQL: %s", sql)
 	}
 }
 
@@ -189,10 +247,10 @@ func TestGenWrapperWhereGroupFnCanBuildOptionalOrLikes(t *testing.T) {
 		}).
 		ToSQL()
 
-	if !strings.Contains(sql, "WHERE status = 1 AND code LIKE \"%AC%\"") {
+	if !strings.Contains(sql, "WHERE status = 1 AND `code` LIKE \"%AC%\"") {
 		t.Fatalf("expected empty LIKE to be skipped and non-empty OR LIKE to remain, got SQL: %s", sql)
 	}
-	if strings.Contains(sql, "name LIKE") || strings.Contains(sql, "%%") {
+	if strings.Contains(sql, "`name` LIKE") || strings.Contains(sql, "%%") {
 		t.Fatalf("expected empty LIKE to be skipped, got SQL: %s", sql)
 	}
 }

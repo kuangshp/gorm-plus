@@ -264,27 +264,44 @@ func (b *Builder) add(c *clause) IQueryBuilder {
 	return b
 }
 
+func quoteIdentPath(col string) string {
+	col = strings.TrimSpace(col)
+	if col == "" {
+		return "``"
+	}
+	parts := strings.Split(col, ".")
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		if len(part) >= 2 && part[0] == '`' && part[len(part)-1] == '`' {
+			parts[i] = part
+			continue
+		}
+		parts[i] = "`" + strings.Trim(part, "`") + "`"
+	}
+	return strings.Join(parts, ".")
+}
+
 func (b *Builder) Like(col string, val string) IQueryBuilder {
-	return b.WhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), "%"+val+"%")
+	return b.WhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val+"%")
 }
 func (b *Builder) LLike(col string, val string) IQueryBuilder {
-	return b.WhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), "%"+val)
+	return b.WhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val)
 }
 func (b *Builder) RLike(col string, val string) IQueryBuilder {
-	return b.WhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), val+"%")
+	return b.WhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), val+"%")
 }
 func (b *Builder) OrLike(col string, val string) IQueryBuilder {
-	return b.OrWhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), "%"+val+"%")
+	return b.OrWhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val+"%")
 }
 func (b *Builder) OrLLike(col string, val string) IQueryBuilder {
-	return b.OrWhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), "%"+val)
+	return b.OrWhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val)
 }
 func (b *Builder) OrRLike(col string, val string) IQueryBuilder {
-	return b.OrWhereIf(val != "", fmt.Sprintf("`%s` LIKE ?", col), val+"%")
+	return b.OrWhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), val+"%")
 }
 
 func (b *Builder) BetweenIfNotZero(col string, min, max any) IQueryBuilder {
-	return b.WhereIf(!isZeroVal(min) && !isZeroVal(max), fmt.Sprintf("`%s` BETWEEN ? AND ?", col), min, max)
+	return b.WhereIf(!isZeroVal(min) && !isZeroVal(max), fmt.Sprintf("%s BETWEEN ? AND ?", quoteIdentPath(col)), min, max)
 }
 
 func (b *Builder) WhereIf(condition bool, query string, args ...any) IQueryBuilder {

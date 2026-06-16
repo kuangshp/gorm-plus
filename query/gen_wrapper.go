@@ -601,8 +601,33 @@ func (w *GenWrapper[T]) like(col field.Expr, pattern string, typ condType) {
 		return
 	}
 	// 直接拼 SQL,值走 ? 占位符,避免反射调用 field 类型方法的类型严格匹配问题。
-	colName := fmt.Sprint(col.ColumnName())
+	colName := w.columnSQL(col)
 	w.addExpr(RawField(colName+" LIKE ?", pattern), typ)
+}
+
+func (w *GenWrapper[T]) columnSQL(col field.Expr) string {
+	if col == nil {
+		return ""
+	}
+	db := w.underlyingDB()
+	if db == nil {
+		return fmt.Sprint(col.ColumnName())
+	}
+	stmt := &gorm.Statement{
+		DB:     db.Statement.DB,
+		Table:  db.Statement.Table,
+		Schema: db.Statement.Schema,
+	}
+	return fmt.Sprint(col.BuildColumn(stmt, field.WithTable))
+}
+
+func (w *GenWrapper[T]) underlyingDB() (db *gorm.DB) {
+	defer func() {
+		if recover() != nil {
+			db = nil
+		}
+	}()
+	return w.do.UnderlyingDB()
 }
 
 func (w *GenWrapper[T]) As(alias string) IGenWrapper[T] {
@@ -703,9 +728,7 @@ func (w *GenWrapper[T]) BetweenIfNotZero(col field.Expr, min, max any) IGenWrapp
 	// 直接用 RawField 拼 SQL,值走 ? 占位符,gorm 内部按 reflect 转换值类型,
 	// 业务方完全不需要关心字段的具体 field 子类型。
 	//
-	// 注意:field.Expr 的 ColumnName() 返回未导出类型 field.sql(本质是 string),
-	// 通过 fmt.Sprint 转换为通用 string,效果等同 string(x) 但避免类型导出限制。
-	colName := fmt.Sprint(col.ColumnName())
+	colName := w.columnSQL(col)
 	w.addExpr(RawField(colName+" BETWEEN ? AND ?", min, max), condAnd)
 	return w
 }

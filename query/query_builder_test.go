@@ -58,6 +58,37 @@ func TestQueryBuilderOptionalOrLikesSkipEmptyValues(t *testing.T) {
 	}
 }
 
+func TestQueryBuilderJoinColumnHelpersQuoteTableAlias(t *testing.T) {
+	sql := newDryRunBuilder(t).
+		Like("d.name", "sales").
+		BetweenIfNotZero("d.created_at", 1, 2).
+		ToSQL()
+
+	if !strings.Contains(sql, "`d`.`name` LIKE \"%sales%\"") {
+		t.Fatalf("expected LIKE to keep join table alias, got SQL: %s", sql)
+	}
+	if !strings.Contains(sql, "`d`.`created_at` BETWEEN 1 AND 2") {
+		t.Fatalf("expected BETWEEN to keep join table alias, got SQL: %s", sql)
+	}
+	if strings.Contains(sql, "`d.name`") || strings.Contains(sql, "`d.created_at`") {
+		t.Fatalf("expected dotted columns to be quoted by segment, got SQL: %s", sql)
+	}
+}
+
+func TestQueryBuilderWhereIfKeepsExplicitJoinTableAlias(t *testing.T) {
+	sql := newDryRunBuilder(t).
+		WhereIf(true, "d.status = ?", 1).
+		WhereIf(true, "d.created_at BETWEEN ? AND ?", 1, 2).
+		ToSQL()
+
+	if !strings.Contains(sql, "d.status = 1") {
+		t.Fatalf("expected WhereIf to keep explicit join table alias, got SQL: %s", sql)
+	}
+	if !strings.Contains(sql, "d.created_at BETWEEN 1 AND 2") {
+		t.Fatalf("expected WhereIf BETWEEN to keep explicit join table alias, got SQL: %s", sql)
+	}
+}
+
 func TestQueryBuilderOrLikeAndSkippedGroups(t *testing.T) {
 	sql := newDryRunBuilder(t).
 		WhereIf(true, "status = ?", 1).
