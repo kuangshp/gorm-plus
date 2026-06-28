@@ -195,8 +195,92 @@ func (r *default{{.ModelName}}Repository) buildWrapperTx(ctx context.Context, fn
         if q.Limit != nil {
             entityDo = entityDo.Limit(*q.Limit)
         }
-    }
+	}
 	return entityDo
+}
+
+// {{.ModelName}}JoinQueryBuilder 构建{{.ModelName}}连表查询基础语句。
+type {{.ModelName}}JoinQueryBuilder func(ctx context.Context) dao.I{{.ModelName}}EntityDo
+
+// newDefault{{.ModelName}}JoinQuery 创建{{.ModelName}}默认连表查询基础语句。
+func newDefault{{.ModelName}}JoinQuery(ctx context.Context) dao.I{{.ModelName}}EntityDo {
+	return dao.{{.ModelName}}Entity.WithContext(ctx)
+}
+
+// build{{.ModelName}}JoinTx 构建{{.ModelName}}连表查询语句。
+func build{{.ModelName}}JoinTx(ctx context.Context, build {{.ModelName}}JoinQueryBuilder, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query []gormplus.QueryOption) dao.I{{.ModelName}}EntityDo {
+	q := gormplus.MergeQueryOptions(query...)
+	if build == nil {
+		build = newDefault{{.ModelName}}JoinQuery
+	}
+	baseTx := build(ctx)
+	if q.Unscoped {
+		baseTx = baseTx.Unscoped()
+	}
+	if len(q.Clauses) > 0 {
+		baseTx = baseTx.Clauses(q.Clauses...)
+	}
+	tx := gormplus.GenWrap(baseTx)
+	if q.Unscoped {
+		tx.WithDeleted()
+	}
+	if fn != nil {
+		fn(tx)
+	}
+	entityDo := tx.Apply()
+	if len(q.Cond) > 0 {
+		entityDo = entityDo.Where(q.Cond...)
+	}
+	if len(q.Select) > 0 {
+		entityDo = entityDo.Select(q.Select...)
+	}
+	if len(q.OmitFields) > 0 {
+		entityDo = entityDo.Omit(q.OmitFields...)
+	}
+	if len(q.Order) > 0 {
+		entityDo = entityDo.Order(q.Order...)
+	}
+	if q.Limit != nil {
+		entityDo = entityDo.Limit(*q.Limit)
+	}
+	return entityDo
+}
+
+// Find{{.ModelName}}JoinList 查询{{.ModelName}}连表列表，T 可以是调用方自定义的行结构体。
+func Find{{.ModelName}}JoinList[T any](ctx context.Context, build {{.ModelName}}JoinQueryBuilder, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (rows []T, err error) {
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindJoinList", nil,
+		func() (rows []T, err error) {
+			rows = make([]T, 0)
+			err = build{{.ModelName}}JoinTx(ctx, build, fn, query).Scan(&rows)
+			return rows, err
+		},
+	)
+}
+
+// Find{{.ModelName}}JoinPage 分页查询{{.ModelName}}连表列表，T 可以是调用方自定义的行结构体。
+func Find{{.ModelName}}JoinPage[T any](ctx context.Context, pageNumber int64, pageSize int64, build {{.ModelName}}JoinQueryBuilder, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (rows []T, total int64, err error) {
+	offset, limit := gormplus.DbPage(pageNumber, pageSize)
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecutePage(opt, "{{.TableName}}.FindJoinPage",
+		gormplus.BuildArgs("page", pageNumber, "size", pageSize),
+		func() (rows []T, total int64, err error) {
+			rows = make([]T, 0)
+			total, err = build{{.ModelName}}JoinTx(ctx, build, fn, query).ScanByPage(&rows, offset, limit)
+			return rows, total, err
+		},
+	)
+}
+
+// Find{{.ModelName}}JoinOne 查询{{.ModelName}}连表单条数据，T 可以是调用方自定义的行结构体。
+func Find{{.ModelName}}JoinOne[T any](ctx context.Context, build {{.ModelName}}JoinQueryBuilder, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (row T, err error) {
+	opt := gormplus.MergeQueryOptions(query...)
+	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindJoinOne", nil,
+		func() (row T, err error) {
+			err = build{{.ModelName}}JoinTx(ctx, build, fn, query).Limit(1).Scan(&row)
+			return row, err
+		},
+	)
 }
 
 // ==================== 实现 ====================
