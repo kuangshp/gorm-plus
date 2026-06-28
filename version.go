@@ -1,3 +1,3 @@
 package gormplus
 
-const Version = "v1.0.24"
+const Version = "v1.0.25"
