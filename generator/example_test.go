@@ -8,18 +8,19 @@ import (
 func ExampleGenerate() {
 	// 直接传递配置
 	cfg := &Config{
-		DBType:       "mysql",
-		Host:         "localhost",
-		Port:         3306,
-		Username:     "root",
-		Password:     "123456",
-		Database:     "gin-admin-api",
-		OutPath:      "query/dao",
-		ModelPkgPath: "query/model",
-		RepoPath:     "query/repository1",
-		ApiPath:      "apps/admin/desc",
-		MapperPath:   "query/mapper",
-		Package:      "esim-api",
+		DBType:        "mysql",
+		Host:          "localhost",
+		Port:          3306,
+		Username:      "root",
+		Password:      "123456",
+		Database:      "gin-admin-api",
+		OutPath:       "query/dao",
+		ModelPkgPath:  "query/model",
+		RepoPath:      "query/repository1",
+		ApiPath:       "apps/admin/desc",
+		MapperPath:    "query/mapper",
+		Package:       "esim-api",
+		ExcludeTables: []string{"sys_config", "sys_dict"},
 	}
 
 	err := Generate(cfg)

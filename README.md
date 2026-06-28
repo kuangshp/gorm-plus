@@ -237,6 +237,9 @@ api_path: ./api/desc
 vo_path: ./api/vo
 dto_path: ./api/dto
 package: your_package
+exclude_tables:
+  - sys_config
+  - sys_dict
 ```
 
 ```go
@@ -250,7 +253,7 @@ if err := gormplus.Generate(cfg); err != nil {
 }
 // 运行后提示输入表名：
 // - 输入表名：只生成该表的 Model / Repository / API / VO / DTO
-// - 直接回车：生成所有表的 Model（其他文件不生成）
+// - 直接回车：生成所有未排除表的 Model / Repository / API / VO / DTO
 ```
 
 > **注意**：数据模型（Model）每次都会重新生成覆盖；Repository / API / VO / DTO 文件已存在时自动跳过，不会覆盖已有的自定义代码。

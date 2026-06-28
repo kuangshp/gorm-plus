@@ -37,3 +37,6 @@ vo_path: ./internal/dal/vo
 dto_path: ./internal/dal/dto
 mapper_path: ./internal/dal/mapper
 package: gin-admin-api
+exclude_tables:
+  - sys_config
+  - sys_dict

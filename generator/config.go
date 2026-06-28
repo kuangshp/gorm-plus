@@ -34,6 +34,9 @@ type Config struct {
 
 	// 项目包名
 	Package string `yaml:"package"` // 项目包名，如 "esim-api"
+
+	// ExcludeTables 不执行代码生成的表名列表（不区分大小写）。
+	ExcludeTables []string `yaml:"exclude_tables"`
 }
 
 // LoadConfig 从YAML文件加载配置

@@ -2,6 +2,7 @@ package generator
 
 import (
 	"go/format"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -71,6 +72,16 @@ func TestBuildApiColumnsAddsDecimalValidateRule(t *testing.T) {
 	want := "required,decimal"
 	if columns[0].Validate != want {
 		t.Fatalf("Validate = %q, want %q", columns[0].Validate, want)
+	}
+}
+
+func TestFilterExcludedTables(t *testing.T) {
+	tables := []string{"sys_user", "sys_config", "sys_dict", "biz_order"}
+	got := filterExcludedTables(tables, []string{" Sys_Config ", "`SYS_DICT`", ""})
+	want := []string{"sys_user", "biz_order"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filterExcludedTables() = %#v, want %#v", got, want)
 	}
 }
 

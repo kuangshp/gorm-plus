@@ -210,6 +210,42 @@ func mergeTableNames(existing []string, newTables ...string) []string {
 	return result
 }
 
+func normalizeTableName(table string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(table), "`"))
+}
+
+func buildExcludeTableSet(excludeTables []string) map[string]struct{} {
+	excludeSet := make(map[string]struct{}, len(excludeTables))
+	for _, table := range excludeTables {
+		table = normalizeTableName(table)
+		if table == "" {
+			continue
+		}
+		excludeSet[table] = struct{}{}
+	}
+	return excludeSet
+}
+
+func filterExcludedTables(tables []string, excludeTables []string) []string {
+	if len(tables) == 0 || len(excludeTables) == 0 {
+		return tables
+	}
+
+	excludeSet := buildExcludeTableSet(excludeTables)
+	if len(excludeSet) == 0 {
+		return tables
+	}
+
+	filtered := make([]string, 0, len(tables))
+	for _, table := range tables {
+		if _, excluded := excludeSet[normalizeTableName(table)]; excluded {
+			continue
+		}
+		filtered = append(filtered, table)
+	}
+	return filtered
+}
+
 // ═══════════════════════════════════════════════════════════
 //  命名工具
 // ═══════════════════════════════════════════════════════════
@@ -1080,6 +1116,16 @@ func Generate(cfg *Config) error {
 		fmt.Printf("  全量模式，共 %d 张表\n", len(modelTables))
 	}
 
+	if len(cfg.ExcludeTables) > 0 {
+		before := len(modelTables)
+		modelTables = filterExcludedTables(modelTables, cfg.ExcludeTables)
+		fmt.Printf("  已排除 %d 张表: %v\n", before-len(modelTables), cfg.ExcludeTables)
+	}
+	if len(modelTables) == 0 {
+		fmt.Println("  没有需要生成的表。")
+		return nil
+	}
+
 	// ③ 统一生成（含所有历史表 + 新表）
 	allModels := make([]interface{}, 0, len(modelTables))
 	for _, tbl := range modelTables {
@@ -1106,6 +1152,7 @@ func Generate(cfg *Config) error {
 	} else {
 		step2Tables = modelTables
 	}
+	step2Tables = filterExcludedTables(step2Tables, cfg.ExcludeTables)
 
 	fmt.Printf("\n【第二步】生成 Repo / API / VO / DTO / Mapper（共 %d 张表）...\n", len(step2Tables))
 	for _, tbl := range step2Tables {
