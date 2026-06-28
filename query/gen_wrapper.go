@@ -951,7 +951,7 @@ func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
 		db = applyCondGroup(db, w.group)
 	}
 	if len(w.selectCols) > 0 {
-		db = db.Select(w.selectCols[0], w.selectCols[1:]...)
+		db = applySelectCols(db, w.selectCols)
 	}
 	// 排序:显式排序优先;没有显式排序时才使用 OrderDefault 的默认排序。
 	// 按调用顺序写入 db,gorm 内部会拼成 ORDER BY a, b, c
@@ -968,6 +968,38 @@ func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
 		db = db.Offset(*w.offset)
 	}
 	return db
+}
+
+func applySelectCols(db *gorm.DB, cols []any) *gorm.DB {
+	if len(cols) == 0 {
+		return db
+	}
+
+	exprs := make([]field.Expr, 0, len(cols))
+	for _, col := range cols {
+		if expr, ok := col.(field.Expr); ok {
+			exprs = append(exprs, expr)
+			continue
+		}
+		return db.Select(cols[0], cols[1:]...)
+	}
+
+	queryParts := make([]string, 0, len(exprs))
+	args := make([]any, 0)
+	for _, expr := range exprs {
+		stmt := &gorm.Statement{DB: db.Statement.DB}
+		expr.Build(stmt)
+		query := strings.TrimSpace(stmt.SQL.String())
+		if query == "" {
+			continue
+		}
+		queryParts = append(queryParts, query)
+		args = append(args, stmt.Vars...)
+	}
+	if len(queryParts) == 0 {
+		return db
+	}
+	return db.Select(strings.Join(queryParts, ", "), args...)
 }
 
 func buildOrderSQL(db *gorm.DB, order field.Expr) string {
