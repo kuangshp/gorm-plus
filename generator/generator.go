@@ -395,6 +395,12 @@ type ApiTemplateData struct {
 	Columns                                        []ColumnInfo
 }
 
+type ProtoTemplateData struct {
+	TableName, ModelName, EntityName, TableComment string
+	ProtoPackage                                   string
+	Columns                                        []ColumnInfo
+}
+
 type VoTemplateData struct {
 	TableName, ModelName, TableComment string
 	Columns                            []ColumnInfo
@@ -502,6 +508,15 @@ func getProtoType(sqlType string) string {
 	default:
 		return "string"
 	}
+}
+
+func getProtoPackage(protoPath string) string {
+	pkg := strings.ToLower(filepath.Base(filepath.Clean(protoPath)))
+	pkg = regexp.MustCompile(`[^a-z0-9_]`).ReplaceAllString(pkg, "_")
+	if pkg == "" || pkg == "." || (pkg[0] >= '0' && pkg[0] <= '9') {
+		return "pb"
+	}
+	return pkg
 }
 
 func getGoTypeForApiDto(sqlType string) string {
@@ -827,7 +842,7 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 	})
 }
 
-func generateProtoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
+func generateProtoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath, protoPackage string) (string, error) {
 	columnData := make([]ColumnInfo, len(columns))
 	for i, col := range columns {
 		columnData[i] = ColumnInfo{
@@ -840,9 +855,10 @@ func generateProtoFile(tableName string, columns []ColumnInfo, modelName string,
 	if tableComment == "" {
 		tableComment = modelName
 	}
-	return renderTemplate(tmplPath, ApiTemplateData{
+	return renderTemplate(tmplPath, ProtoTemplateData{
 		TableName: tableName, ModelName: modelName,
-		EntityName: modelName + "Entity", TableComment: tableComment, Columns: columnData,
+		EntityName: modelName + "Entity", TableComment: tableComment,
+		ProtoPackage: protoPackage, Columns: columnData,
 	})
 }
 
@@ -942,9 +958,15 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 
 	// Proto .proto（go-zero RPC 描述文件，已存在则跳过）
 	if cfg.ProtoPath != "" {
+		protoPackage := getProtoPackage(cfg.ProtoPath)
 		baseProtoFile := filepath.Join(cfg.ProtoPath, "base.proto")
 		if _, err := os.Stat(baseProtoFile); os.IsNotExist(err) {
-			if content, ok := embeddedTemplates["base_proto_template.txt"]; ok {
+			if content, err := renderTemplate(
+				filepath.Join(filepath.Dir(protoTmplPath), "base_proto_template.txt"),
+				ProtoTemplateData{ProtoPackage: protoPackage},
+			); err != nil {
+				fmt.Printf("渲染 base.proto 失败: %v\n", err)
+			} else {
 				if err := os.WriteFile(baseProtoFile, []byte(content), 0644); err != nil {
 					fmt.Printf("写入 base.proto 失败: %v\n", err)
 				} else {
@@ -952,7 +974,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 				}
 			}
 		}
-		if content, err := generateProtoFile(tbl, columns, modelName, db, protoTmplPath); err != nil {
+		if content, err := generateProtoFile(tbl, columns, modelName, db, protoTmplPath, protoPackage); err != nil {
 			fmt.Printf("[%s] 生成 proto 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(

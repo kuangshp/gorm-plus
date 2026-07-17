@@ -76,8 +76,9 @@ func TestBuildApiColumnsAddsDecimalValidateRule(t *testing.T) {
 }
 
 func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
-	got, err := renderTemplate("template/proto_template.txt", ApiTemplateData{
+	got, err := renderTemplate("template/proto_template.txt", ProtoTemplateData{
 		TableName: "sys_user", ModelName: "SysUser", TableComment: "系统用户",
+		ProtoPackage: "rpc",
 		Columns: []ColumnInfo{
 			{Name: "id", FieldName: "ID", FieldType: "int64", Comment: "主键"},
 			{Name: "username", FieldName: "Username", FieldType: "string", Comment: "用户名"},
@@ -91,20 +92,20 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 
 	mustContain := []string{
 		`syntax = "proto3";`,
+		"package rpc;",
 		`import "base.proto";`,
 		"// CreateSysUserReq 创建系统用户请求。",
 		"message CreateSysUserReq",
 		"string username = 2;",
 		"double balance = 3;",
-		"message CreateSysUserResponse {",
-		"common.BaseResponse base_resp = 1; // 基础响应",
-		"common.PageRequest page = 1;",
-		"common.PageInfo page_info = 2;",
+		"PageRequest page = 1;",
+		"PageInfo page_info = 2;",
+		"BaseResponse baseResp = 1; // 基础响应",
 		"// GetSysUserPage 分页查询系统用户。",
-		"rpc CreateSysUser(CreateSysUserReq) returns (CreateSysUserResponse)",
-		"rpc DeleteSysUserById(SysUserIdReq) returns (DeleteSysUserByIdResponse)",
-		"rpc BatchDeleteSysUserByIdList(BatchDeleteSysUserByIdListReq) returns (BatchDeleteSysUserByIdListResponse)",
-		"rpc ModifySysUserById(ModifySysUserReq) returns (ModifySysUserByIdResponse)",
+		"rpc CreateSysUser(CreateSysUserReq) returns (OperationResponse)",
+		"rpc DeleteSysUserById(SysUserIdReq) returns (OperationResponse)",
+		"rpc BatchDeleteSysUserByIdList(BatchDeleteSysUserByIdListReq) returns (OperationResponse)",
+		"rpc ModifySysUserById(ModifySysUserReq) returns (OperationResponse)",
 		"rpc GetSysUserPage(PageSysUserReq)",
 		"rpc GetSysUserList(SysUserListReq)",
 		"rpc GetSysUserDetail(SysUserIdReq) returns (SysUserDetailResponse)",
@@ -113,6 +114,26 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("generated proto missing %q\n%s", want, got)
 		}
+	}
+}
+
+func TestBaseAndBusinessProtoUseSamePackage(t *testing.T) {
+	pkg := getProtoPackage("/project/apps/user-rpc")
+	if pkg != "user_rpc" {
+		t.Fatalf("getProtoPackage() = %q, want %q", pkg, "user_rpc")
+	}
+
+	got, err := renderTemplate("template/base_proto_template.txt", ProtoTemplateData{ProtoPackage: pkg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"package user_rpc;", `option go_package = "./user_rpc";`, "message BaseResponse", "message OperationResponse"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("generated base proto missing %q\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "base_resp") {
+		t.Fatalf("generated base proto should use lower camel case baseResp\n%s", got)
 	}
 }
 

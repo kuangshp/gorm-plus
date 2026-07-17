@@ -245,6 +245,8 @@ exclude_tables:
   - sys_dict
 ```
 
+`base.proto` 与各业务 Proto 使用同一个包，包名取 `proto_path` 最后一级目录；例如 `./apps/rpc` 对应 `package rpc`。
+
 ```go
 cfg, err := gormplus.LoadGeneratorConfig("./generator.yaml")
 if err != nil {
