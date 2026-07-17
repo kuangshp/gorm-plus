@@ -7,29 +7,23 @@ import "base.proto";
 
 // {{.ModelName}}Model {{.TableComment}}数据模型。
 message {{.ModelName}}Model {
-{{- range $index, $column := .Columns}}
-{{- if ne $column.Name "deleted_at"}}
-  {{$column.FieldType}} {{$column.Name}} = {{add $index 1}}; // {{fieldComment $column}}
-{{- end}}
+{{- range $index, $column := .ModelColumns}}
+  {{$column.FieldType}} {{$column.ParamName}} = {{add $index 1}}; // {{fieldComment $column}}
 {{- end}}
 }
 
 // Create{{.ModelName}}Req 创建{{.TableComment}}请求。
 message Create{{.ModelName}}Req {
-{{- range $index, $column := .Columns}}
-{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}
-  {{$column.FieldType}} {{$column.Name}} = {{add $index 1}}; // {{fieldComment $column}}
-{{- end}}
+{{- range $index, $column := .WritableColumns}}
+  {{$column.FieldType}} {{$column.ParamName}} = {{add $index 1}}; // {{fieldComment $column}}
 {{- end}}
 }
 
 // Modify{{.ModelName}}Req 修改{{.TableComment}}请求。
 message Modify{{.ModelName}}Req {
   int64 id = 1; // 主键ID
-{{- range $index, $column := .Columns}}
-{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}
-  {{$column.FieldType}} {{$column.Name}} = {{add $index 2}}; // {{fieldComment $column}}
-{{- end}}
+{{- range $index, $column := .WritableColumns}}
+  {{$column.FieldType}} {{$column.ParamName}} = {{add $index 2}}; // {{fieldComment $column}}
 {{- end}}
 }
 
@@ -40,16 +34,14 @@ message {{.ModelName}}IdReq {
 
 // BatchDelete{{.ModelName}}ByIdListReq 批量删除{{.TableComment}}请求。
 message BatchDelete{{.ModelName}}ByIdListReq {
-  repeated int64 id_list = 1; // 主键ID列表
+  repeated int64 idList = 1; // 主键ID列表
 }
 
 // Page{{.ModelName}}Req 分页查询{{.TableComment}}请求。
 message Page{{.ModelName}}Req {
   PageRequest page = 1; // 分页参数
-{{- range $index, $column := .Columns}}
-{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}
-  {{$column.FieldType}} {{$column.Name}} = {{add $index 2}}; // {{fieldComment $column}}
-{{- end}}
+{{- range $index, $column := .WritableColumns}}
+  {{$column.FieldType}} {{$column.ParamName}} = {{add $index 2}}; // {{fieldComment $column}}
 {{- end}}
 }
 
@@ -62,7 +54,7 @@ message {{.ModelName}}DetailResponse {
 // {{.ModelName}}PageResp {{.TableComment}}分页响应。
 message {{.ModelName}}PageResp {
   BaseResponse baseResp = 1; // 基础响应
-  PageInfo page_info = 2; // 分页信息
+  PageInfo pageInfo = 2; // 分页信息
   repeated {{.ModelName}}Model data = 3; // {{.TableComment}}列表
 }
 

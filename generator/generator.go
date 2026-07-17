@@ -398,7 +398,7 @@ type ApiTemplateData struct {
 type ProtoTemplateData struct {
 	TableName, ModelName, EntityName, TableComment string
 	ProtoPackage                                   string
-	Columns                                        []ColumnInfo
+	ModelColumns, WritableColumns                  []ColumnInfo
 }
 
 type VoTemplateData struct {
@@ -510,8 +510,8 @@ func getProtoType(sqlType string) string {
 	}
 }
 
-func getProtoPackage(protoPath string) string {
-	pkg := strings.ToLower(filepath.Base(filepath.Clean(protoPath)))
+func getProtoPackage(packageName string) string {
+	pkg := strings.ToLower(filepath.Base(filepath.Clean(packageName)))
 	pkg = regexp.MustCompile(`[^a-z0-9_]`).ReplaceAllString(pkg, "_")
 	if pkg == "" || pkg == "." || (pkg[0] >= '0' && pkg[0] <= '9') {
 		return "pb"
@@ -843,12 +843,22 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 }
 
 func generateProtoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath, protoPackage string) (string, error) {
-	columnData := make([]ColumnInfo, len(columns))
-	for i, col := range columns {
-		columnData[i] = ColumnInfo{
+	modelColumns := make([]ColumnInfo, 0, len(columns))
+	writableColumns := make([]ColumnInfo, 0, len(columns))
+	for _, col := range columns {
+		column := ColumnInfo{
 			Name: col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
+			ParamName: LowerCamelCase(Case2Camel(col.Name)),
 			FieldType: getProtoType(col.Type), CanNull: col.CanNull, IsKey: col.IsKey,
 			Extra: col.Extra, Comment: col.Comment,
+		}
+		if col.Name != "deleted_at" {
+			modelColumns = append(modelColumns, column)
+		}
+		switch col.Name {
+		case "id", "created_at", "updated_at", "deleted_at", "created_by", "updated_by":
+		default:
+			writableColumns = append(writableColumns, column)
 		}
 	}
 	tableComment := getTableComment(db, tableName)
@@ -858,7 +868,7 @@ func generateProtoFile(tableName string, columns []ColumnInfo, modelName string,
 	return renderTemplate(tmplPath, ProtoTemplateData{
 		TableName: tableName, ModelName: modelName,
 		EntityName: modelName + "Entity", TableComment: tableComment,
-		ProtoPackage: protoPackage, Columns: columnData,
+		ProtoPackage: protoPackage, ModelColumns: modelColumns, WritableColumns: writableColumns,
 	})
 }
 
@@ -958,7 +968,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 
 	// Proto .proto（go-zero RPC 描述文件，已存在则跳过）
 	if cfg.ProtoPath != "" {
-		protoPackage := getProtoPackage(cfg.ProtoPath)
+		protoPackage := getProtoPackage(cfg.Package)
 		baseProtoFile := filepath.Join(cfg.ProtoPath, "base.proto")
 		if _, err := os.Stat(baseProtoFile); os.IsNotExist(err) {
 			if content, err := renderTemplate(

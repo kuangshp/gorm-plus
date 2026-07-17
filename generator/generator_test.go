@@ -79,11 +79,15 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 	got, err := renderTemplate("template/proto_template.txt", ProtoTemplateData{
 		TableName: "sys_user", ModelName: "SysUser", TableComment: "系统用户",
 		ProtoPackage: "rpc",
-		Columns: []ColumnInfo{
-			{Name: "id", FieldName: "ID", FieldType: "int64", Comment: "主键"},
-			{Name: "username", FieldName: "Username", FieldType: "string", Comment: "用户名"},
-			{Name: "balance", FieldName: "Balance", FieldType: "double", Comment: "余额"},
-			{Name: "created_at", FieldName: "CreatedAt", FieldType: "string", Comment: "创建时间"},
+		ModelColumns: []ColumnInfo{
+			{Name: "id", FieldName: "ID", ParamName: "id", FieldType: "int64", Comment: "主键"},
+			{Name: "site_code", FieldName: "SiteCode", ParamName: "siteCode", FieldType: "string", Comment: "站点编码"},
+			{Name: "balance", FieldName: "Balance", ParamName: "balance", FieldType: "double", Comment: "余额"},
+			{Name: "created_at", FieldName: "CreatedAt", ParamName: "createdAt", FieldType: "string", Comment: "创建时间"},
+		},
+		WritableColumns: []ColumnInfo{
+			{Name: "site_code", FieldName: "SiteCode", ParamName: "siteCode", FieldType: "string", Comment: "站点编码"},
+			{Name: "balance", FieldName: "Balance", ParamName: "balance", FieldType: "double", Comment: "余额"},
 		},
 	})
 	if err != nil {
@@ -96,10 +100,10 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 		`import "base.proto";`,
 		"// CreateSysUserReq 创建系统用户请求。",
 		"message CreateSysUserReq",
-		"string username = 2;",
-		"double balance = 3;",
+		"string siteCode = 1;",
+		"double balance = 2;",
 		"PageRequest page = 1;",
-		"PageInfo page_info = 2;",
+		"PageInfo pageInfo = 2;",
 		"BaseResponse baseResp = 1; // 基础响应",
 		"// GetSysUserPage 分页查询系统用户。",
 		"rpc CreateSysUser(CreateSysUserReq) returns (OperationResponse)",
@@ -118,7 +122,7 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 }
 
 func TestBaseAndBusinessProtoUseSamePackage(t *testing.T) {
-	pkg := getProtoPackage("/project/apps/user-rpc")
+	pkg := getProtoPackage("github.com/example/user-rpc")
 	if pkg != "user_rpc" {
 		t.Fatalf("getProtoPackage() = %q, want %q", pkg, "user_rpc")
 	}
