@@ -18,6 +18,7 @@ func ExampleGenerate() {
 		ModelPkgPath:  "query/model",
 		RepoPath:      "query/repository1",
 		ApiPath:       "apps/admin/desc",
+		ProtoPath:     "apps/rpc",
 		MapperPath:    "query/mapper",
 		Package:       "esim-api",
 		ExcludeTables: []string{"sys_config", "sys_dict"},

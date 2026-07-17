@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package common;
+option go_package = "./common";
+
+// BaseResponse 所有 RPC 接口的统一基础响应。
+message BaseResponse {
+  int32 code = 1; // 状态码
+  string message = 2; // 响应消息
+}
+
+// PageRequest 通用分页请求。
+message PageRequest {
+  int64 page_size = 1; // 每页记录数
+  int64 page_number = 2; // 当前页码
+}
+
+// PageInfo 通用分页信息。
+message PageInfo {
+  int64 total = 1; // 总记录数
+  int64 page_size = 2; // 每页记录数
+  int64 page_number = 3; // 当前页码
+}

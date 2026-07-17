@@ -75,6 +75,47 @@ func TestBuildApiColumnsAddsDecimalValidateRule(t *testing.T) {
 	}
 }
 
+func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
+	got, err := renderTemplate("template/proto_template.txt", ApiTemplateData{
+		TableName: "sys_user", ModelName: "SysUser", TableComment: "系统用户",
+		Columns: []ColumnInfo{
+			{Name: "id", FieldName: "ID", FieldType: "int64", Comment: "主键"},
+			{Name: "username", FieldName: "Username", FieldType: "string", Comment: "用户名"},
+			{Name: "balance", FieldName: "Balance", FieldType: "double", Comment: "余额"},
+			{Name: "created_at", FieldName: "CreatedAt", FieldType: "string", Comment: "创建时间"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustContain := []string{
+		`syntax = "proto3";`,
+		`import "base.proto";`,
+		"// CreateSysUserReq 创建系统用户请求。",
+		"message CreateSysUserReq",
+		"string username = 2;",
+		"double balance = 3;",
+		"message CreateSysUserResponse {",
+		"common.BaseResponse base_resp = 1; // 基础响应",
+		"common.PageRequest page = 1;",
+		"common.PageInfo page_info = 2;",
+		"// GetSysUserPage 分页查询系统用户。",
+		"rpc CreateSysUser(CreateSysUserReq) returns (CreateSysUserResponse)",
+		"rpc DeleteSysUserById(SysUserIdReq) returns (DeleteSysUserByIdResponse)",
+		"rpc BatchDeleteSysUserByIdList(BatchDeleteSysUserByIdListReq) returns (BatchDeleteSysUserByIdListResponse)",
+		"rpc ModifySysUserById(ModifySysUserReq) returns (ModifySysUserByIdResponse)",
+		"rpc GetSysUserPage(PageSysUserReq)",
+		"rpc GetSysUserList(SysUserListReq)",
+		"rpc GetSysUserDetail(SysUserIdReq) returns (SysUserDetailResponse)",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Fatalf("generated proto missing %q\n%s", want, got)
+		}
+	}
+}
+
 func TestFilterExcludedTables(t *testing.T) {
 	tables := []string{"sys_user", "sys_config", "sys_dict", "biz_order"}
 	got := filterExcludedTables(tables, []string{" Sys_Config ", "`SYS_DICT`", ""})

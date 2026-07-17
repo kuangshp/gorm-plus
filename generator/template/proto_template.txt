@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package {{.TableName}};
+option go_package = "./{{.TableName}}";
+
+import "base.proto";
+
+// {{.ModelName}}Model {{.TableComment}}数据模型。
+message {{.ModelName}}Model {
+{{- range $index, $column := .Columns}}
+{{- if ne $column.Name "deleted_at"}}
+  {{$column.FieldType}} {{$column.Name}} = {{add $index 1}}; // {{fieldComment $column}}
+{{- end}}
+{{- end}}
+}
+
+// Create{{.ModelName}}Req 创建{{.TableComment}}请求。
+message Create{{.ModelName}}Req {
+{{- range $index, $column := .Columns}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}
+  {{$column.FieldType}} {{$column.Name}} = {{add $index 1}}; // {{fieldComment $column}}
+{{- end}}
+{{- end}}
+}
+
+// Modify{{.ModelName}}Req 修改{{.TableComment}}请求。
+message Modify{{.ModelName}}Req {
+  int64 id = 1; // 主键ID
+{{- range $index, $column := .Columns}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}
+  {{$column.FieldType}} {{$column.Name}} = {{add $index 2}}; // {{fieldComment $column}}
+{{- end}}
+{{- end}}
+}
+
+// {{.ModelName}}IdReq {{.TableComment}}主键请求。
+message {{.ModelName}}IdReq {
+  int64 id = 1; // 主键ID
+}
+
+// BatchDelete{{.ModelName}}ByIdListReq 批量删除{{.TableComment}}请求。
+message BatchDelete{{.ModelName}}ByIdListReq {
+  repeated int64 id_list = 1; // 主键ID列表
+}
+
+// Page{{.ModelName}}Req 分页查询{{.TableComment}}请求。
+message Page{{.ModelName}}Req {
+  common.PageRequest page = 1; // 分页参数
+{{- range $index, $column := .Columns}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}
+  {{$column.FieldType}} {{$column.Name}} = {{add $index 2}}; // {{fieldComment $column}}
+{{- end}}
+{{- end}}
+}
+
+// Create{{.ModelName}}Response 创建{{.TableComment}}响应。
+message Create{{.ModelName}}Response {
+  common.BaseResponse base_resp = 1; // 基础响应
+}
+
+// Delete{{.ModelName}}ByIdResponse 删除{{.TableComment}}响应。
+message Delete{{.ModelName}}ByIdResponse {
+  common.BaseResponse base_resp = 1; // 基础响应
+}
+
+// BatchDelete{{.ModelName}}ByIdListResponse 批量删除{{.TableComment}}响应。
+message BatchDelete{{.ModelName}}ByIdListResponse {
+  common.BaseResponse base_resp = 1; // 基础响应
+}
+
+// Modify{{.ModelName}}ByIdResponse 修改{{.TableComment}}响应。
+message Modify{{.ModelName}}ByIdResponse {
+  common.BaseResponse base_resp = 1; // 基础响应
+}
+
+// {{.ModelName}}DetailResponse {{.TableComment}}详情响应。
+message {{.ModelName}}DetailResponse {
+  common.BaseResponse base_resp = 1; // 基础响应
+  {{.ModelName}}Model data = 2; // {{.TableComment}}详情
+}
+
+// {{.ModelName}}PageResp {{.TableComment}}分页响应。
+message {{.ModelName}}PageResp {
+  common.BaseResponse base_resp = 1; // 基础响应
+  common.PageInfo page_info = 2; // 分页信息
+  repeated {{.ModelName}}Model data = 3; // {{.TableComment}}列表
+}
+
+// {{.ModelName}}ListReq 查询{{.TableComment}}列表请求。
+message {{.ModelName}}ListReq {}
+
+// {{.ModelName}}ListResp {{.TableComment}}列表响应。
+message {{.ModelName}}ListResp {
+  common.BaseResponse base_resp = 1; // 基础响应
+  repeated {{.ModelName}}Model data = 2; // {{.TableComment}}列表
+}
+
+// {{.ModelName}}Service {{.TableComment}}服务。
+service {{.ModelName}}Service {
+  // Create{{.ModelName}} 创建{{.TableComment}}。
+  rpc Create{{.ModelName}}(Create{{.ModelName}}Req) returns (Create{{.ModelName}}Response);
+  // Delete{{.ModelName}}ById 根据ID删除{{.TableComment}}。
+  rpc Delete{{.ModelName}}ById({{.ModelName}}IdReq) returns (Delete{{.ModelName}}ByIdResponse);
+  // BatchDelete{{.ModelName}}ByIdList 根据ID列表批量删除{{.TableComment}}。
+  rpc BatchDelete{{.ModelName}}ByIdList(BatchDelete{{.ModelName}}ByIdListReq) returns (BatchDelete{{.ModelName}}ByIdListResponse);
+  // Modify{{.ModelName}}ById 根据ID修改{{.TableComment}}。
+  rpc Modify{{.ModelName}}ById(Modify{{.ModelName}}Req) returns (Modify{{.ModelName}}ByIdResponse);
+  // Get{{.ModelName}}Page 分页查询{{.TableComment}}。
+  rpc Get{{.ModelName}}Page(Page{{.ModelName}}Req) returns ({{.ModelName}}PageResp);
+  // Get{{.ModelName}}List 查询{{.TableComment}}列表。
+  rpc Get{{.ModelName}}List({{.ModelName}}ListReq) returns ({{.ModelName}}ListResp);
+  // Get{{.ModelName}}Detail 根据ID查询{{.TableComment}}详情。
+  rpc Get{{.ModelName}}Detail({{.ModelName}}IdReq) returns ({{.ModelName}}DetailResponse);
+}

@@ -56,6 +56,7 @@ func resolveConfigPaths(cfg *Config) error {
 	cfg.ModelPkgPath = resolve(cfg.ModelPkgPath)
 	cfg.RepoPath = resolve(cfg.RepoPath)
 	cfg.ApiPath = resolve(cfg.ApiPath)
+	cfg.ProtoPath = resolve(cfg.ProtoPath)
 	cfg.VoPath = resolve(cfg.VoPath)
 	cfg.DtoPath = resolve(cfg.DtoPath)
 	cfg.MapperPath = resolve(cfg.MapperPath)
@@ -91,6 +92,12 @@ func Title(s string) string {
 //go:embed template/api_template.txt
 var embeddedApiTemplate string
 
+//go:embed template/proto_template.txt
+var embeddedProtoTemplate string
+
+//go:embed template/base_proto_template.txt
+var embeddedBaseProtoTemplate string
+
 //go:embed template/dto_template.txt
 var embeddedDtoTemplate string
 
@@ -111,6 +118,8 @@ var embeddedMapperTemplate string
 
 var embeddedTemplates = map[string]string{
 	"api_template.txt":            embeddedApiTemplate,
+	"proto_template.txt":          embeddedProtoTemplate,
+	"base_proto_template.txt":     embeddedBaseProtoTemplate,
 	"dto_template.txt":            embeddedDtoTemplate,
 	"base_api_template.txt":       embeddedBaseApiTemplate,
 	"repository_gen_template.txt": embeddedRepoGenTemplate,
@@ -421,7 +430,16 @@ type MapperTemplateData struct {
 
 func loadTemplate(templatePath string) (*template.Template, error) {
 	templateName := filepath.Base(templatePath)
-	funcMap := template.FuncMap{"lowerFirst": lowerFirst}
+	funcMap := template.FuncMap{
+		"lowerFirst": lowerFirst,
+		"add":        func(a, b int) int { return a + b },
+		"fieldComment": func(col ColumnInfo) string {
+			if strings.TrimSpace(col.Comment) != "" {
+				return col.Comment
+			}
+			return col.FieldName
+		},
+	}
 	if fileContent, err := os.ReadFile(templatePath); err == nil {
 		return template.New(templateName).Funcs(funcMap).Parse(string(fileContent))
 	}
@@ -465,6 +483,25 @@ func getGoType(sqlType string) string {
 		return "bool"
 	}
 	return "string"
+}
+
+// getProtoType 将数据库字段类型转换为 proto3 标量类型。
+// 时间类型使用 string，便于保持与 API 模板中的 JSON 时间表示一致。
+func getProtoType(sqlType string) string {
+	s := strings.ToLower(sqlType)
+	switch {
+	case strings.Contains(s, "bool"):
+		return "bool"
+	case strings.Contains(s, "int"):
+		return "int64"
+	case strings.Contains(s, "decimal"), strings.Contains(s, "numeric"),
+		strings.Contains(s, "float"), strings.Contains(s, "double"), strings.Contains(s, "real"):
+		return "double"
+	case strings.Contains(s, "binary"), strings.Contains(s, "blob"), strings.Contains(s, "bytea"):
+		return "bytes"
+	default:
+		return "string"
+	}
 }
 
 func getGoTypeForApiDto(sqlType string) string {
@@ -790,6 +827,25 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 	})
 }
 
+func generateProtoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
+	columnData := make([]ColumnInfo, len(columns))
+	for i, col := range columns {
+		columnData[i] = ColumnInfo{
+			Name: col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
+			FieldType: getProtoType(col.Type), CanNull: col.CanNull, IsKey: col.IsKey,
+			Extra: col.Extra, Comment: col.Comment,
+		}
+	}
+	tableComment := getTableComment(db, tableName)
+	if tableComment == "" {
+		tableComment = modelName
+	}
+	return renderTemplate(tmplPath, ApiTemplateData{
+		TableName: tableName, ModelName: modelName,
+		EntityName: modelName + "Entity", TableComment: tableComment, Columns: columnData,
+	})
+}
+
 func generateVoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
 	columnData := make([]ColumnInfo, len(columns))
 	for i, col := range columns {
@@ -875,7 +931,7 @@ func buildMapperData(tableName string, columns []ColumnInfo, modelName string, d
 // ═══════════════════════════════════════════════════════════
 
 func generateForTable(tbl string, cfg *Config, db *gorm.DB,
-	repoGenTmplPath, repoTmplPath, apiTmplPath, voTmplPath, dtoTmplPath, mapperTmplPath string) {
+	repoGenTmplPath, repoTmplPath, apiTmplPath, protoTmplPath, voTmplPath, dtoTmplPath, mapperTmplPath string) {
 
 	columns, err := getTableColumns(db, tbl)
 	if err != nil {
@@ -884,6 +940,27 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 	}
 	modelName := Case2Camel(strings.ToUpper(tbl[:1]) + tbl[1:])
 
+	// Proto .proto（go-zero RPC 描述文件，已存在则跳过）
+	if cfg.ProtoPath != "" {
+		baseProtoFile := filepath.Join(cfg.ProtoPath, "base.proto")
+		if _, err := os.Stat(baseProtoFile); os.IsNotExist(err) {
+			if content, ok := embeddedTemplates["base_proto_template.txt"]; ok {
+				if err := os.WriteFile(baseProtoFile, []byte(content), 0644); err != nil {
+					fmt.Printf("写入 base.proto 失败: %v\n", err)
+				} else {
+					fmt.Printf("已生成: %s\n", baseProtoFile)
+				}
+			}
+		}
+		if content, err := generateProtoFile(tbl, columns, modelName, db, protoTmplPath); err != nil {
+			fmt.Printf("[%s] 生成 proto 失败: %v\n", tbl, err)
+		} else {
+			writeFileIfNotExist(
+				filepath.Join(cfg.ProtoPath, LowerCamelCase(Case2Camel(tbl))+".proto"),
+				content, "proto",
+			)
+		}
+	}
 	// Repository _gen.go（始终覆盖，与 model 保持同步）
 	if cfg.RepoPath != "" {
 		if content, err := generateRepositoryFile(columns, modelName, cfg.Package,
@@ -1030,6 +1107,7 @@ func Generate(cfg *Config) error {
 	}
 
 	apiTmplPath := filepath.Join(templateDir, "api_template.txt")
+	protoTmplPath := filepath.Join(templateDir, "proto_template.txt")
 	dtoTmplPath := filepath.Join(templateDir, "dto_template.txt")
 	repoGenTmplPath := filepath.Join(templateDir, "repository_gen_template.txt")
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
@@ -1142,6 +1220,7 @@ func Generate(cfg *Config) error {
 	// ══════════════════════════════════════════════════════
 	ensureDir(cfg.RepoPath)
 	ensureDir(cfg.ApiPath)
+	ensureDir(cfg.ProtoPath)
 	ensureDir(cfg.VoPath)
 	ensureDir(cfg.DtoPath)
 	ensureDir(cfg.MapperPath)
@@ -1154,12 +1233,12 @@ func Generate(cfg *Config) error {
 	}
 	step2Tables = filterExcludedTables(step2Tables, cfg.ExcludeTables)
 
-	fmt.Printf("\n【第二步】生成 Repo / API / VO / DTO / Mapper（共 %d 张表）...\n", len(step2Tables))
+	fmt.Printf("\n【第二步】生成 Repo / API / Proto / VO / DTO / Mapper（共 %d 张表）...\n", len(step2Tables))
 	for _, tbl := range step2Tables {
 		fmt.Printf("\n─── 表: %s ───\n", tbl)
 		generateForTable(tbl, cfg, db,
 			repoGenTmplPath, repoTmplPath,
-			apiTmplPath, voTmplPath, dtoTmplPath, mapperTmplPath)
+			apiTmplPath, protoTmplPath, voTmplPath, dtoTmplPath, mapperTmplPath)
 	}
 
 	fmt.Println("\n全部生成完成！")

@@ -137,6 +137,8 @@ gorm-plus/
         ├── repository_gen_template.txt   # 自动生成(含缓存失效)
         ├── repository_template.txt       # 用户可改(自定义查询示例)
         ├── api_template.txt  # go-zero开发中使用 
+        ├── proto_template.txt # go-zero RPC proto 文件
+        ├── base_proto_template.txt # Proto 统一基础响应
         ├── base_api_template.txt  # go-zero开发中使用
         ├── dto_template.txt
         ├── vo_template.txt
@@ -234,6 +236,7 @@ out_path: ./dal/query
 model_pkg_path: ./dal/model
 repo_path: ./dal/repository
 api_path: ./api/desc
+proto_path: ./rpc
 vo_path: ./api/vo
 dto_path: ./api/dto
 package: your_package
@@ -252,11 +255,11 @@ if err := gormplus.Generate(cfg); err != nil {
 	log.Fatal(err)
 }
 // 运行后提示输入表名：
-// - 输入表名：只生成该表的 Model / Repository / API / VO / DTO
-// - 直接回车：生成所有未排除表的 Model / Repository / API / VO / DTO
+// - 输入表名：只生成该表的 Model / Repository / API / Proto / VO / DTO
+// - 直接回车：生成所有未排除表的 Model / Repository / API / Proto / VO / DTO
 ```
 
-> **注意**：数据模型（Model）每次都会重新生成覆盖；Repository / API / VO / DTO 文件已存在时自动跳过，不会覆盖已有的自定义代码。
+> **注意**：数据模型（Model）每次都会重新生成覆盖；Repository / API / Proto / VO / DTO 文件已存在时自动跳过，不会覆盖已有的自定义代码。
 
 ---
 

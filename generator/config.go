@@ -28,6 +28,7 @@ type Config struct {
 	ModelPkgPath string `yaml:"model_pkg_path"` // model包路径，如 "./query/model"
 	RepoPath     string `yaml:"repo_path"`      // repository输出路径，如 "./query/repository"
 	ApiPath      string `yaml:"api_path"`       // api desc路径，如 "./apps/admin/desc"
+	ProtoPath    string `yaml:"proto_path"`     // proto文件输出路径，如 "./apps/rpc"
 	VoPath       string `yaml:"vo_path"`        // vo输出路径，如 "./query/vo"
 	DtoPath      string `yaml:"dto_path"`       // dto输出路径，如 "./apps/admin/dto"
 	MapperPath   string `yaml:"mapper_path"`    // mapper输出路径，如 "./query/mapper"
