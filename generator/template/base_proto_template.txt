@@ -14,6 +14,9 @@ message OperationResponse {
   BaseResponse baseResp = 1; // 基础响应
 }
 
+// EmptyRequest 无请求参数时使用的通用空请求。
+message EmptyRequest {}
+
 // PageRequest 通用分页请求。
 message PageRequest {
   int64 pageSize = 1; // 每页记录数

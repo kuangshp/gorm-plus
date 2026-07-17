@@ -58,9 +58,6 @@ message {{.ModelName}}PageResp {
   repeated {{.ModelName}}Model data = 3; // {{.TableComment}}列表
 }
 
-// {{.ModelName}}ListReq 查询{{.TableComment}}列表请求。
-message {{.ModelName}}ListReq {}
-
 // {{.ModelName}}ListResp {{.TableComment}}列表响应。
 message {{.ModelName}}ListResp {
   BaseResponse baseResp = 1; // 基础响应
@@ -80,7 +77,7 @@ service {{.ModelName}}Service {
   // Get{{.ModelName}}Page 分页查询{{.TableComment}}。
   rpc Get{{.ModelName}}Page(Page{{.ModelName}}Req) returns ({{.ModelName}}PageResp);
   // Get{{.ModelName}}List 查询{{.TableComment}}列表。
-  rpc Get{{.ModelName}}List({{.ModelName}}ListReq) returns ({{.ModelName}}ListResp);
+  rpc Get{{.ModelName}}List(EmptyRequest) returns ({{.ModelName}}ListResp);
   // Get{{.ModelName}}Detail 根据ID查询{{.TableComment}}详情。
   rpc Get{{.ModelName}}Detail({{.ModelName}}IdReq) returns ({{.ModelName}}DetailResponse);
 }

@@ -111,7 +111,7 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 		"rpc BatchDeleteSysUserByIdList(BatchDeleteSysUserByIdListReq) returns (OperationResponse)",
 		"rpc ModifySysUserById(ModifySysUserReq) returns (OperationResponse)",
 		"rpc GetSysUserPage(PageSysUserReq)",
-		"rpc GetSysUserList(SysUserListReq)",
+		"rpc GetSysUserList(EmptyRequest)",
 		"rpc GetSysUserDetail(SysUserIdReq) returns (SysUserDetailResponse)",
 	}
 	for _, want := range mustContain {
@@ -131,7 +131,7 @@ func TestBaseAndBusinessProtoUseSamePackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"package user_rpc;", `option go_package = "./user_rpc";`, "message BaseResponse", "message OperationResponse"} {
+	for _, want := range []string{"package user_rpc;", `option go_package = "./user_rpc";`, "message BaseResponse", "message OperationResponse", "message EmptyRequest {}"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("generated base proto missing %q\n%s", want, got)
 		}
