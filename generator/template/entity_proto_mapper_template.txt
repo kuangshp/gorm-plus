@@ -1,0 +1,74 @@
+package entityproto
+
+import (
+{{- if .HasTimeField}}
+	"time"
+{{- end}}
+{{- if .HasDecimalField}}
+	"github.com/shopspring/decimal"
+{{- end}}
+	"{{.Package}}/{{.ModelPkgPath}}"
+	"{{.Package}}/{{.ProtoPkgPath}}"
+)
+
+// {{.ModelName}}EntityProtoMapper 负责数据库实体与 gRPC 消息之间的转换。
+type {{.ModelName}}EntityProtoMapper struct{}
+
+func New{{.ModelName}}EntityProtoMapper() *{{.ModelName}}EntityProtoMapper {
+	return &{{.ModelName}}EntityProtoMapper{}
+}
+
+func (m *{{.ModelName}}EntityProtoMapper) CreateReqToEntity(req *{{.ProtoPkgName}}.Create{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+	if req == nil {
+		return nil
+	}
+	return &{{.ModelPkgName}}.{{.ModelName}}Entity{
+{{- range .WritableColumns}}
+{{- if .IsTimeType}}
+		{{.FieldName}}: time.Unix(req.{{.ParamName}}, 0),
+{{- else if .IsDecimalType}}
+		{{.FieldName}}: decimal.NewFromFloat(req.{{.ParamName}}),
+{{- else}}
+		{{.FieldName}}: req.{{.ParamName}},
+{{- end}}
+{{- end}}
+	}
+}
+
+func (m *{{.ModelName}}EntityProtoMapper) ModifyReqToEntity(req *{{.ProtoPkgName}}.Modify{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+	if req == nil {
+		return nil
+	}
+	entity := m.CreateReqToEntity(&{{.ProtoPkgName}}.Create{{.ModelName}}Req{
+{{- range .WritableColumns}}
+		{{.ParamName}}: req.{{.ParamName}},
+{{- end}}
+	})
+	entity.ID = req.Id
+	return entity
+}
+
+func (m *{{.ModelName}}EntityProtoMapper) EntityToProto(entity *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{.ProtoPkgName}}.{{.ModelName}}Model {
+	if entity == nil {
+		return nil
+	}
+	return &{{.ProtoPkgName}}.{{.ModelName}}Model{
+{{- range .Columns}}
+{{- if .IsTimeType}}
+		{{.ParamName}}: entity.{{.FieldName}}.Unix(),
+{{- else if .IsDecimalType}}
+		{{.ParamName}}: entity.{{.FieldName}}.InexactFloat64(),
+{{- else}}
+		{{.ParamName}}: entity.{{.FieldName}},
+{{- end}}
+{{- end}}
+	}
+}
+
+func (m *{{.ModelName}}EntityProtoMapper) EntityListToProto(entities []*{{.ModelPkgName}}.{{.ModelName}}Entity) []*{{.ProtoPkgName}}.{{.ModelName}}Model {
+	result := make([]*{{.ProtoPkgName}}.{{.ModelName}}Model, 0, len(entities))
+	for _, entity := range entities {
+		result = append(result, m.EntityToProto(entity))
+	}
+	return result
+}

@@ -75,6 +75,50 @@ func TestBuildApiColumnsAddsDecimalValidateRule(t *testing.T) {
 	}
 }
 
+func TestTimeTypesUseStringForAPIAndInt64ForProto(t *testing.T) {
+	if got := getGoTypeForApiDto("datetime"); got != "string" {
+		t.Fatalf("getGoTypeForApiDto(datetime) = %q, want string", got)
+	}
+	if got := getProtoType("datetime"); got != "int64" {
+		t.Fatalf("getProtoType(datetime) = %q, want int64", got)
+	}
+	if got := getProtoType("timestamp"); got != "int64" {
+		t.Fatalf("getProtoType(timestamp) = %q, want int64", got)
+	}
+}
+
+func TestProtoMapperTemplatesGenerateValidGo(t *testing.T) {
+	data := ProtoMapperTemplateData{
+		ModelName: "SysUser", ModelNameLower: "sysUser", TableComment: "系统用户",
+		Package: "example.com/project", ModelPkgPath: "internal/dal/model/entity", ModelPkgName: "entity",
+		ProtoPkgPath: "apps/rpc/pb", ProtoPkgName: "pb", APITypesPkgPath: "apps/admin/internal/types",
+		HasTimeField: true, HasDecimalField: true, HasFloatField: true,
+		Columns: []ColumnInfo{
+			{Name: "id", FieldName: "ID", ParamName: "Id"},
+			{Name: "started_at", FieldName: "StartedAt", ParamName: "StartedAt", IsTimeType: true},
+			{Name: "amount", FieldName: "Amount", ParamName: "Amount", IsDecimalType: true},
+			{Name: "ratio", FieldName: "Ratio", ParamName: "Ratio", IsFloatType: true},
+		},
+		WritableColumns: []ColumnInfo{
+			{Name: "started_at", FieldName: "StartedAt", ParamName: "StartedAt", IsTimeType: true},
+			{Name: "amount", FieldName: "Amount", ParamName: "Amount", IsDecimalType: true},
+			{Name: "ratio", FieldName: "Ratio", ParamName: "Ratio", IsFloatType: true},
+		},
+	}
+	for _, templatePath := range []string{
+		"template/entity_proto_mapper_template.txt",
+		"template/api_proto_mapper_template.txt",
+	} {
+		generated, err := renderTemplate(templatePath, data)
+		if err != nil {
+			t.Fatalf("renderTemplate(%s): %v", templatePath, err)
+		}
+		if _, err := format.Source([]byte(generated)); err != nil {
+			t.Fatalf("generated mapper from %s is invalid Go: %v\n%s", templatePath, err, generated)
+		}
+	}
+}
+
 func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 	got, err := renderTemplate("template/proto_template.txt", ProtoTemplateData{
 		TableName: "sys_user", ModelName: "SysUser", TableComment: "系统用户",

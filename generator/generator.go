@@ -116,16 +116,24 @@ var embeddedVoTemplate string
 //go:embed template/mapper_template.txt
 var embeddedMapperTemplate string
 
+//go:embed template/entity_proto_mapper_template.txt
+var embeddedEntityProtoMapperTemplate string
+
+//go:embed template/api_proto_mapper_template.txt
+var embeddedAPIProtoMapperTemplate string
+
 var embeddedTemplates = map[string]string{
-	"api_template.txt":            embeddedApiTemplate,
-	"proto_template.txt":          embeddedProtoTemplate,
-	"base_proto_template.txt":     embeddedBaseProtoTemplate,
-	"dto_template.txt":            embeddedDtoTemplate,
-	"base_api_template.txt":       embeddedBaseApiTemplate,
-	"repository_gen_template.txt": embeddedRepoGenTemplate,
-	"repository_template.txt":     embeddedRepoTemplate,
-	"vo_template.txt":             embeddedVoTemplate,
-	"mapper_template.txt":         embeddedMapperTemplate,
+	"api_template.txt":                 embeddedApiTemplate,
+	"proto_template.txt":               embeddedProtoTemplate,
+	"base_proto_template.txt":          embeddedBaseProtoTemplate,
+	"dto_template.txt":                 embeddedDtoTemplate,
+	"base_api_template.txt":            embeddedBaseApiTemplate,
+	"repository_gen_template.txt":      embeddedRepoGenTemplate,
+	"repository_template.txt":          embeddedRepoTemplate,
+	"vo_template.txt":                  embeddedVoTemplate,
+	"mapper_template.txt":              embeddedMapperTemplate,
+	"entity_proto_mapper_template.txt": embeddedEntityProtoMapperTemplate,
+	"api_proto_mapper_template.txt":    embeddedAPIProtoMapperTemplate,
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -387,7 +395,7 @@ type ColumnInfo struct {
 	CanNull, IsKey                   bool
 	Extra, Comment, Validate         string
 	IsTimeType, IsAuditField         bool
-	IsDecimalType                    bool
+	IsDecimalType, IsFloatType       bool
 }
 
 type ApiTemplateData struct {
@@ -428,6 +436,15 @@ type MapperTemplateData struct {
 	SameDtoPkg, IsGoZero                               bool
 	HasTimeField, HasDecimalField                      bool
 	Columns                                            []ColumnInfo
+}
+
+type ProtoMapperTemplateData struct {
+	TableName, ModelName, ModelNameLower, TableComment string
+	Package, ModelPkgPath, ModelPkgName                string
+	ProtoPkgPath, ProtoPkgName                         string
+	APITypesPkgPath                                    string
+	HasTimeField, HasDecimalField, HasFloatField       bool
+	Columns, WritableColumns                           []ColumnInfo
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -492,12 +509,14 @@ func getGoType(sqlType string) string {
 }
 
 // getProtoType 将数据库字段类型转换为 proto3 标量类型。
-// 时间类型使用 string，便于保持与 API 模板中的 JSON 时间表示一致。
+// 时间类型统一使用 Unix 秒，API 层的字符串时间由 mapper 负责转换。
 func getProtoType(sqlType string) string {
 	s := strings.ToLower(sqlType)
 	switch {
 	case strings.Contains(s, "bool"):
 		return "bool"
+	case strings.Contains(s, "datetime"), strings.Contains(s, "timestamp"), strings.Contains(s, "date"):
+		return "int64"
 	case strings.Contains(s, "int"):
 		return "int64"
 	case strings.Contains(s, "decimal"), strings.Contains(s, "numeric"),
@@ -521,6 +540,9 @@ func getProtoPackage(packageName string) string {
 
 func getGoTypeForApiDto(sqlType string) string {
 	s := strings.ToLower(sqlType)
+	if strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date") {
+		return "string"
+	}
 	if strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double") {
 		return "string"
 	}
@@ -952,12 +974,55 @@ func buildMapperData(tableName string, columns []ColumnInfo, modelName string, d
 	}
 }
 
+func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB,
+	pkg, modelPkgPath, protoPkgPath, apiTypesPkgPath string) ProtoMapperTemplateData {
+	columnData := make([]ColumnInfo, 0, len(columns))
+	writableColumns := make([]ColumnInfo, 0, len(columns))
+	hasTime, hasDecimal, hasFloat := false, false, false
+	for _, col := range columns {
+		s := strings.ToLower(col.Type)
+		isTime := strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
+		isDecimal := strings.Contains(s, "decimal") || strings.Contains(s, "numeric")
+		isFloat := strings.Contains(s, "float") || strings.Contains(s, "double") || strings.Contains(s, "real")
+		hasTime = hasTime || isTime
+		hasDecimal = hasDecimal || isDecimal
+		hasFloat = hasFloat || isFloat
+		item := ColumnInfo{
+			Name: col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
+			ParamName:  normalizeAcronyms(Case2Camel(col.Name)),
+			IsTimeType: isTime, IsDecimalType: isDecimal, IsFloatType: isFloat,
+			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
+		}
+		if col.Name != "deleted_at" {
+			columnData = append(columnData, item)
+		}
+		switch col.Name {
+		case "id", "created_at", "updated_at", "deleted_at", "created_by", "updated_by":
+		default:
+			writableColumns = append(writableColumns, item)
+		}
+	}
+	tableComment := getTableComment(db, tableName)
+	if tableComment == "" {
+		tableComment = modelName
+	}
+	return ProtoMapperTemplateData{
+		TableName: tableName, ModelName: modelName, ModelNameLower: LowerCamelCase(modelName),
+		TableComment: tableComment, Package: pkg,
+		ModelPkgPath: modelPkgPath, ModelPkgName: getLastPathSegment(modelPkgPath),
+		ProtoPkgPath: protoPkgPath, ProtoPkgName: getLastPathSegment(protoPkgPath),
+		APITypesPkgPath: apiTypesPkgPath, HasTimeField: hasTime, HasDecimalField: hasDecimal, HasFloatField: hasFloat,
+		Columns: columnData, WritableColumns: writableColumns,
+	}
+}
+
 // ═══════════════════════════════════════════════════════════
 //  单表文件生成入口
 // ═══════════════════════════════════════════════════════════
 
 func generateForTable(tbl string, cfg *Config, db *gorm.DB,
-	repoGenTmplPath, repoTmplPath, apiTmplPath, protoTmplPath, voTmplPath, dtoTmplPath, mapperTmplPath string) {
+	repoGenTmplPath, repoTmplPath, apiTmplPath, protoTmplPath, voTmplPath, dtoTmplPath,
+	mapperTmplPath, entityProtoMapperTmplPath, apiProtoMapperTmplPath string) {
 
 	columns, err := getTableColumns(db, tbl)
 	if err != nil {
@@ -1076,22 +1141,56 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		}
 	}
 
-	// Mapper（已存在则跳过）
+	// Mapper（已存在则跳过）。没有 ProtoPath 时保持原来的 DTO/VO ↔ Entity mapper。
 	if cfg.MapperPath != "" {
-		dtoPkg, voPkg := "", ""
-		if cfg.ApiPath == "" {
-			dtoPkg = pathToPkg(cfg.DtoPath)
-			voPkg = pathToPkg(cfg.VoPath)
-		}
-		data := buildMapperData(tbl, columns, modelName, db,
-			cfg.Package, pathToPkg(cfg.ModelPkgPath), dtoPkg, voPkg, cfg.ApiPath != "")
-		if content, err := renderTemplate(mapperTmplPath, data); err != nil {
-			fmt.Printf("[%s] 生成 mapper 失败: %v\n", tbl, err)
+		if cfg.ProtoPath == "" {
+			dtoPkg, voPkg := "", ""
+			if cfg.ApiPath == "" {
+				dtoPkg = pathToPkg(cfg.DtoPath)
+				voPkg = pathToPkg(cfg.VoPath)
+			}
+			data := buildMapperData(tbl, columns, modelName, db,
+				cfg.Package, pathToPkg(cfg.ModelPkgPath), dtoPkg, voPkg, cfg.ApiPath != "")
+			if content, err := renderTemplate(mapperTmplPath, data); err != nil {
+				fmt.Printf("[%s] 生成 mapper 失败: %v\n", tbl, err)
+			} else {
+				writeFileIfNotExist(
+					fmt.Sprintf("%s/%sMapper.go", cfg.MapperPath, LowerCamelCase(Case2Camel(tbl))),
+					content, "mapper",
+				)
+			}
 		} else {
-			writeFileIfNotExist(
-				fmt.Sprintf("%s/%sMapper.go", cfg.MapperPath, LowerCamelCase(Case2Camel(tbl))),
-				content, "mapper",
-			)
+			entityProtoMapperPath := filepath.Join(cfg.MapperPath, "entityproto")
+			apiProtoMapperPath := filepath.Join(cfg.MapperPath, "apiproto")
+			ensureDir(entityProtoMapperPath)
+			if cfg.ApiPath != "" {
+				ensureDir(apiProtoMapperPath)
+			}
+			protoPkgPath := filepath.Join(pathToPkg(cfg.ProtoPath), getProtoPackage(cfg.Package))
+			apiTypesPkgPath := ""
+			if cfg.ApiPath != "" {
+				apiTypesPkgPath = pathToPkg(filepath.Join(filepath.Dir(cfg.ApiPath), "internal", "types"))
+			}
+			data := buildProtoMapperData(tbl, columns, modelName, db,
+				cfg.Package, pathToPkg(cfg.ModelPkgPath), protoPkgPath, apiTypesPkgPath)
+			if content, err := renderTemplate(entityProtoMapperTmplPath, data); err != nil {
+				fmt.Printf("[%s] 生成 Entity/Proto mapper 失败: %v\n", tbl, err)
+			} else {
+				writeFileIfNotExist(
+					fmt.Sprintf("%s/%sMapper.go", entityProtoMapperPath, LowerCamelCase(Case2Camel(tbl))),
+					content, "Entity/Proto mapper",
+				)
+			}
+			if cfg.ApiPath != "" {
+				if content, err := renderTemplate(apiProtoMapperTmplPath, data); err != nil {
+					fmt.Printf("[%s] 生成 API/Proto mapper 失败: %v\n", tbl, err)
+				} else {
+					writeFileIfNotExist(
+						fmt.Sprintf("%s/%sMapper.go", apiProtoMapperPath, LowerCamelCase(Case2Camel(tbl))),
+						content, "API/Proto mapper",
+					)
+				}
+			}
 		}
 	}
 }
@@ -1145,6 +1244,8 @@ func Generate(cfg *Config) error {
 	repoTmplPath := filepath.Join(templateDir, "repository_template.txt")
 	voTmplPath := filepath.Join(templateDir, "vo_template.txt")
 	mapperTmplPath := filepath.Join(templateDir, "mapper_template.txt")
+	entityProtoMapperTmplPath := filepath.Join(templateDir, "entity_proto_mapper_template.txt")
+	apiProtoMapperTmplPath := filepath.Join(templateDir, "api_proto_mapper_template.txt")
 
 	// gorm-gen 配置
 	g := gen.NewGenerator(gen.Config{
@@ -1270,7 +1371,8 @@ func Generate(cfg *Config) error {
 		fmt.Printf("\n─── 表: %s ───\n", tbl)
 		generateForTable(tbl, cfg, db,
 			repoGenTmplPath, repoTmplPath,
-			apiTmplPath, protoTmplPath, voTmplPath, dtoTmplPath, mapperTmplPath)
+			apiTmplPath, protoTmplPath, voTmplPath, dtoTmplPath,
+			mapperTmplPath, entityProtoMapperTmplPath, apiProtoMapperTmplPath)
 	}
 
 	fmt.Println("\n全部生成完成！")

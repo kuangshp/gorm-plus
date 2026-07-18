@@ -33,7 +33,9 @@ repo_path: ./internal/dal/repository
 api_path: ./apps/admin/desc
 proto_path: ./apps/rpc
 # go-zero 项目:配置 api_path 后不生成 vo/dto
-# mapper 生成后自行挪到对应目录并修改 import 路径
+# 未配置 proto_path 时生成 DTO/VO ↔ Entity mapper。
+# 配置 proto_path 时生成到 mapper/entityproto；同时配置 api_path 时再生成到 mapper/apiproto。
+# mapper 生成后可按项目分层挪到对应目录
 vo_path: ./internal/dal/vo
 dto_path: ./internal/dal/dto
 mapper_path: ./internal/dal/mapper

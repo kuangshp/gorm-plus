@@ -142,8 +142,12 @@ gorm-plus/
         ├── base_api_template.txt  # go-zero开发中使用
         ├── dto_template.txt
         ├── vo_template.txt
-        └── mapper_template.txt # 自定生成dto,vo 映射到数据库
+        ├── mapper_template.txt # 未使用 Proto 时生成 DTO/VO ↔ Entity 映射
+        ├── entity_proto_mapper_template.txt # Entity ↔ Proto 映射
+        └── api_proto_mapper_template.txt # API types ↔ Proto 映射
 ```
+
+配置 `proto_path` 后，mapper 分别输出到 `mapper/entityproto` 和 `mapper/apiproto`；未配置时仍输出到原 `mapper` 目录。
 
 > **顶层 `gormplus_*.go` 文件**只做类型别名 + 函数转发,把分包的 API 聚合到 `gormplus` 命名空间。业务方一律用 `gormplus.XXX` 调用,不需要直接 import 子包(`sf`/`query`/`plugin`/`dal` 等)。
 
