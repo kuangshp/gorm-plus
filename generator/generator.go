@@ -396,6 +396,7 @@ type ColumnInfo struct {
 	Extra, Comment, Validate         string
 	IsTimeType, IsAuditField         bool
 	IsDecimalType, IsFloatType       bool
+	IsBytesType                      bool
 }
 
 type ApiTemplateData struct {
@@ -457,6 +458,9 @@ func loadTemplate(templatePath string) (*template.Template, error) {
 	funcMap := template.FuncMap{
 		"lowerFirst": lowerFirst,
 		"add":        func(a, b int) int { return a + b },
+		"protoValidation": func(col ColumnInfo, required bool) string {
+			return buildProtoValidationOptions(col, required)
+		},
 		"fieldComment": func(col ColumnInfo) string {
 			if strings.TrimSpace(col.Comment) != "" {
 				return col.Comment
@@ -472,6 +476,43 @@ func loadTemplate(templatePath string) (*template.Template, error) {
 		return nil, fmt.Errorf("模板 %q 不存在且无内嵌版本", templatePath)
 	}
 	return template.New(templateName).Funcs(funcMap).Parse(embeddedContent)
+}
+
+func buildProtoValidationOptions(col ColumnInfo, required bool) string {
+	var options []string
+	if required {
+		options = append(options, "(buf.validate.field).required = true")
+	}
+	sqlType := strings.ToLower(col.Type)
+	if col.FieldType == "string" {
+		if length, ok := parseSQLTypeLength(sqlType); ok {
+			if strings.HasPrefix(sqlType, "char(") {
+				options = append(options, fmt.Sprintf("(buf.validate.field).string.len = %d", length))
+			} else if strings.HasPrefix(sqlType, "varchar(") {
+				options = append(options, fmt.Sprintf("(buf.validate.field).string.max_len = %d", length))
+			}
+		}
+		switch {
+		case strings.Contains(sqlType, "datetime") || strings.Contains(sqlType, "timestamp"):
+			options = append(options, "(buf.validate.field).string.(date_time_format) = true")
+		case strings.Contains(sqlType, "date"):
+			options = append(options, "(buf.validate.field).string.(date_format) = true")
+		}
+	}
+	if isDecimalSQLType(col.Type) && col.FieldType == "double" {
+		options = append(options, "(buf.validate.field).double.finite = true")
+	}
+	if enumValues := extractEnumValuesFromComment(col.Comment); len(enumValues) > 0 {
+		ruleType := col.FieldType
+		if ruleType == "double" {
+			ruleType = "double"
+		}
+		options = append(options, fmt.Sprintf("(buf.validate.field).%s = {in: [%s]}", ruleType, strings.Join(enumValues, ", ")))
+	}
+	if len(options) == 0 {
+		return ""
+	}
+	return " [\n    " + strings.Join(options, ",\n    ") + "\n  ]"
 }
 
 func renderTemplate(tmplPath string, data any) (string, error) {
@@ -1010,13 +1051,14 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 		isTime := strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
 		isDecimal := strings.Contains(s, "decimal") || strings.Contains(s, "numeric")
 		isFloat := strings.Contains(s, "float") || strings.Contains(s, "double") || strings.Contains(s, "real")
+		isBytes := strings.Contains(s, "binary") || strings.Contains(s, "blob") || strings.Contains(s, "bytea")
 		hasTime = hasTime || isTime
 		hasDecimal = hasDecimal || isDecimal
 		hasFloat = hasFloat || isFloat
 		item := ColumnInfo{
 			Name: col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
 			ParamName:  normalizeAcronyms(Case2Camel(col.Name)),
-			IsTimeType: isTime, IsDecimalType: isDecimal, IsFloatType: isFloat,
+			IsTimeType: isTime, IsDecimalType: isDecimal, IsFloatType: isFloat, IsBytesType: isBytes,
 			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 		}
 		if col.Name != "deleted_at" {

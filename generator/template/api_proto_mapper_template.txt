@@ -31,17 +31,19 @@ func (m *{{.ModelNameLower}}Mapper) CreateReqToProto(req *types.Create{{.ModelNa
 	result := &{{.ProtoPkgName}}.Create{{.ModelName}}Req{}
 {{- range .WritableColumns}}
 {{- if .IsTimeType}}
-	result.{{.ParamName}} = req.{{.FieldName}}
+	result.{{.ParamName}} = &req.{{.FieldName}}
+{{- else if .IsBytesType}}
+	result.{{.ParamName}} = []byte(req.{{.FieldName}})
 {{- else if or .IsDecimalType .IsFloatType}}
 	{
 		value, err := strconv.ParseFloat(req.{{.FieldName}}, 64)
 		if err != nil {
 			return nil, fmt.Errorf("字段 {{.FieldName}}: %w", err)
 		}
-		result.{{.ParamName}} = value
+		result.{{.ParamName}} = &value
 	}
 {{- else}}
-	result.{{.ParamName}} = req.{{.FieldName}}
+	result.{{.ParamName}} = &req.{{.FieldName}}
 {{- end}}
 {{- end}}
 	return result, nil
@@ -71,17 +73,19 @@ func (m *{{.ModelNameLower}}Mapper) PageReqToProto(req *types.Page{{.ModelName}}
 	}
 {{- range .WritableColumns}}
 {{- if .IsTimeType}}
-	result.{{.ParamName}} = req.{{.FieldName}}
+	result.{{.ParamName}} = &req.{{.FieldName}}
+{{- else if .IsBytesType}}
+	result.{{.ParamName}} = []byte(req.{{.FieldName}})
 {{- else if or .IsDecimalType .IsFloatType}}
 	{
 		value, err := strconv.ParseFloat(req.{{.FieldName}}, 64)
 		if err != nil {
 			return nil, fmt.Errorf("字段 {{.FieldName}}: %w", err)
 		}
-		result.{{.ParamName}} = value
+		result.{{.ParamName}} = &value
 	}
 {{- else}}
-	result.{{.ParamName}} = req.{{.FieldName}}
+	result.{{.ParamName}} = &req.{{.FieldName}}
 {{- end}}
 {{- end}}
 	return result, nil
@@ -95,6 +99,8 @@ func (m *{{.ModelNameLower}}Mapper) ProtoToVO(model *{{.ProtoPkgName}}.{{.ModelN
 {{- range .Columns}}
 {{- if .IsTimeType}}
 		{{.FieldName}}: model.{{.ParamName}},
+{{- else if .IsBytesType}}
+		{{.FieldName}}: string(model.{{.ParamName}}),
 {{- else if or .IsDecimalType .IsFloatType}}
 		{{.FieldName}}: strconv.FormatFloat(model.{{.ParamName}}, 'f', -1, 64),
 {{- else}}

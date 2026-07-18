@@ -90,6 +90,57 @@ func TestTimeTypesUseStringForAPIAndInt64ForProto(t *testing.T) {
 	}
 }
 
+func TestBuildProtoValidationOptions(t *testing.T) {
+	tests := []struct {
+		name     string
+		column   ColumnInfo
+		required bool
+		contains []string
+	}{
+		{
+			name:     "required varchar max length",
+			column:   ColumnInfo{Name: "site_code", Type: "varchar(32)", FieldType: "string"},
+			required: true,
+			contains: []string{"required = true", "string.max_len = 32"},
+		},
+		{
+			name:     "fixed char length",
+			column:   ColumnInfo{Name: "currency", Type: "char(3)", FieldType: "string", CanNull: true},
+			contains: []string{"string.len = 3"},
+		},
+		{
+			name:     "integer enum",
+			column:   ColumnInfo{Name: "status", Type: "tinyint", FieldType: "int64", Comment: "状态：1、正常，2、禁用"},
+			contains: []string{"int64 = {in: [1, 2]}"},
+		},
+		{
+			name:     "decimal finite",
+			column:   ColumnInfo{Name: "amount", Type: "decimal(10,2)", FieldType: "double"},
+			contains: []string{"double.finite = true"},
+		},
+		{
+			name:     "date format",
+			column:   ColumnInfo{Name: "birthday", Type: "date", FieldType: "string"},
+			contains: []string{"string.(date_format) = true"},
+		},
+		{
+			name:     "datetime format",
+			column:   ColumnInfo{Name: "started_at", Type: "datetime", FieldType: "string"},
+			contains: []string{"string.(date_time_format) = true"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildProtoValidationOptions(tt.column, tt.required)
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Fatalf("buildProtoValidationOptions() missing %q: %s", want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestAPITemplateAllowsStringRequestAndInt64ResponseTime(t *testing.T) {
 	generated, err := renderTemplate("template/api_template.txt", ApiTemplateData{
 		TableName: "site", ModelName: "Site", TableComment: "站点",
@@ -187,9 +238,11 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 		`import "proto/base.proto";`,
 		"// CreateSysUserReq 创建系统用户请求。",
 		"message CreateSysUserReq",
-		"string siteCode = 1;",
-		"double balance = 2;",
-		"PageRequest page = 1;",
+		"optional string siteCode = 1 [",
+		"optional double balance = 2 [",
+		`import "buf/validate/validate.proto";`,
+		"(buf.validate.field).required = true",
+		"PageRequest page = 1 [(buf.validate.field).required = true];",
 		"PageInfo pageInfo = 1;",
 		"// GetSysUserPage 分页查询系统用户。",
 		"rpc CreateSysUser(CreateSysUserReq) returns (EmptyResponse)",
@@ -217,7 +270,16 @@ func TestBaseAndBusinessProtoUseSamePackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"package user_rpc;", `option go_package = "./user_rpc";`, "message EmptyRequest {}", "message EmptyResponse {}"} {
+	for _, want := range []string{
+		"package user_rpc;",
+		`option go_package = "./user_rpc";`,
+		`import "buf/validate/validate.proto";`,
+		"extend buf.validate.StringRules",
+		"bool date_format = 1000",
+		"bool date_time_format = 1001",
+		"message EmptyRequest {}",
+		"message EmptyResponse {}",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("generated base proto missing %q\n%s", want, got)
 		}

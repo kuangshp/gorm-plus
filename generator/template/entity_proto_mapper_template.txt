@@ -36,9 +36,9 @@ func (m *{{.ModelNameLower}}Mapper) CreateReqToEntity(req *{{.ProtoPkgName}}.Cre
 {{- if .IsTimeType}}
 		{{.FieldName}}: {{lowerFirst .FieldName}},
 {{- else if .IsDecimalType}}
-		{{.FieldName}}: decimal.NewFromFloat(req.{{.ParamName}}),
+		{{.FieldName}}: decimal.NewFromFloat(req.Get{{.ParamName}}()),
 {{- else}}
-		{{.FieldName}}: req.{{.ParamName}},
+		{{.FieldName}}: req.Get{{.ParamName}}(),
 {{- end}}
 {{- end}}
 	}

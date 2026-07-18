@@ -3,6 +3,24 @@ syntax = "proto3";
 package {{.ProtoPackage}};
 option go_package = "./{{.ProtoPackage}}";
 
+import "buf/validate/validate.proto";
+
+// date_format 校验 YYYY-MM-DD 格式。
+extend buf.validate.StringRules {
+  bool date_format = 1000 [(buf.validate.predefined).cel = {
+    id: "string.date_format"
+    message: "日期格式必须为 YYYY-MM-DD"
+    expression: "!rule || this.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')"
+  }];
+
+  // date_time_format 校验 YYYY-MM-DD HH:mm:ss 格式。
+  bool date_time_format = 1001 [(buf.validate.predefined).cel = {
+    id: "string.date_time_format"
+    message: "时间格式必须为 YYYY-MM-DD HH:mm:ss"
+    expression: "!rule || this.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$')"
+  }];
+}
+
 // EmptyRequest 无请求参数时使用的通用空请求。
 message EmptyRequest {}
 

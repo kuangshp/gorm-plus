@@ -4,6 +4,7 @@ package {{.ProtoPackage}};
 option go_package = "./{{.ProtoPackage}}";
 
 import "{{.BaseProtoImport}}";
+import "buf/validate/validate.proto";
 
 // {{.ModelName}}Model {{.TableComment}}数据模型。
 message {{.ModelName}}Model {
@@ -15,33 +16,33 @@ message {{.ModelName}}Model {
 // Create{{.ModelName}}Req 创建{{.TableComment}}请求。
 message Create{{.ModelName}}Req {
 {{- range $index, $column := .WritableColumns}}
-  {{$column.FieldType}} {{$column.ParamName}} = {{add $index 1}}; // {{fieldComment $column}}
+  optional {{$column.FieldType}} {{$column.ParamName}} = {{add $index 1}}{{protoValidation $column (not $column.CanNull)}}; // {{fieldComment $column}}
 {{- end}}
 }
 
 // Modify{{.ModelName}}Req 修改{{.TableComment}}请求。
 message Modify{{.ModelName}}Req {
-  int64 id = 1; // 主键ID
+  int64 id = 1 [(buf.validate.field).int64.gt = 0]; // 主键ID
 {{- range $index, $column := .WritableColumns}}
-  {{$column.FieldType}} {{$column.ParamName}} = {{add $index 2}}; // {{fieldComment $column}}
+  optional {{$column.FieldType}} {{$column.ParamName}} = {{add $index 2}}{{protoValidation $column false}}; // {{fieldComment $column}}
 {{- end}}
 }
 
 // {{.ModelName}}IdReq {{.TableComment}}主键请求。
 message {{.ModelName}}IdReq {
-  int64 id = 1; // 主键ID
+  int64 id = 1 [(buf.validate.field).int64.gt = 0]; // 主键ID
 }
 
 // BatchDelete{{.ModelName}}ByIdListReq 批量删除{{.TableComment}}请求。
 message BatchDelete{{.ModelName}}ByIdListReq {
-  repeated int64 idList = 1; // 主键ID列表
+  repeated int64 idList = 1 [(buf.validate.field).repeated = {min_items: 1, items: {int64: {gt: 0}}}]; // 主键ID列表
 }
 
 // Page{{.ModelName}}Req 分页查询{{.TableComment}}请求。
 message Page{{.ModelName}}Req {
-  PageRequest page = 1; // 分页参数
+  PageRequest page = 1 [(buf.validate.field).required = true]; // 分页参数
 {{- range $index, $column := .WritableColumns}}
-  {{$column.FieldType}} {{$column.ParamName}} = {{add $index 2}}; // {{fieldComment $column}}
+  optional {{$column.FieldType}} {{$column.ParamName}} = {{add $index 2}}{{protoValidation $column false}}; // {{fieldComment $column}}
 {{- end}}
 }
 
