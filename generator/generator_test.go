@@ -114,7 +114,8 @@ func TestProtoMapperTemplatesGenerateValidGo(t *testing.T) {
 		ModelName: "SysUser", ModelNameLower: "sysUser", TableComment: "系统用户",
 		Package: "example.com/project", ModelPkgPath: "internal/dal/model/entity", ModelPkgName: "entity",
 		ProtoPkgPath: "apps/rpc/pb", ProtoPkgName: "pb", APITypesPkgPath: "apps/admin/internal/types",
-		HasTimeField: true, HasDecimalField: true, HasFloatField: true,
+		HasTimeField: true, HasWritableTimeField: true,
+		HasDecimalField: true, HasFloatField: true,
 		Columns: []ColumnInfo{
 			{Name: "id", FieldName: "ID", ParamName: "Id"},
 			{Name: "started_at", FieldName: "StartedAt", ParamName: "StartedAt", IsTimeType: true},
@@ -138,6 +139,26 @@ func TestProtoMapperTemplatesGenerateValidGo(t *testing.T) {
 		if _, err := format.Source([]byte(generated)); err != nil {
 			t.Fatalf("generated mapper from %s is invalid Go: %v\n%s", templatePath, err, generated)
 		}
+	}
+}
+
+func TestEntityProtoMapperDoesNotImportTimeForAuditFieldsOnly(t *testing.T) {
+	generated, err := renderTemplate("template/entity_proto_mapper_template.txt", ProtoMapperTemplateData{
+		ModelName: "Site", ModelNameLower: "site", ModelPkgName: "model", ProtoPkgName: "site",
+		HasTimeField: true,
+		Columns: []ColumnInfo{
+			{Name: "created_at", FieldName: "CreatedAt", ParamName: "CreatedAt", IsTimeType: true},
+			{Name: "updated_at", FieldName: "UpdatedAt", ParamName: "UpdatedAt", IsTimeType: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(generated, `"time"`) {
+		t.Fatalf("audit-only time fields should not add time import\n%s", generated)
+	}
+	if _, err := format.Source([]byte(generated)); err != nil {
+		t.Fatalf("generated mapper is invalid Go: %v\n%s", err, generated)
 	}
 }
 

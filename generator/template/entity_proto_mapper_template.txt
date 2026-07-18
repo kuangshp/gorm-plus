@@ -1,8 +1,8 @@
 package mapper
 
-{{- if or .HasTimeField .HasDecimalField}}
+{{- if or .HasWritableTimeField .HasDecimalField}}
 import (
-{{- if .HasTimeField}}
+{{- if .HasWritableTimeField}}
 	"time"
 {{- end}}
 {{- if .HasDecimalField}}

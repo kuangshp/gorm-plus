@@ -443,7 +443,8 @@ type ProtoMapperTemplateData struct {
 	Package, ModelPkgPath, ModelPkgName                string
 	ProtoPkgPath, ProtoPkgName                         string
 	APITypesPkgPath                                    string
-	HasTimeField, HasDecimalField, HasFloatField       bool
+	HasTimeField, HasWritableTimeField                 bool
+	HasDecimalField, HasFloatField                     bool
 	Columns, WritableColumns                           []ColumnInfo
 }
 
@@ -1003,7 +1004,7 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 	pkg, modelPkgPath, protoPkgPath, apiTypesPkgPath string) ProtoMapperTemplateData {
 	columnData := make([]ColumnInfo, 0, len(columns))
 	writableColumns := make([]ColumnInfo, 0, len(columns))
-	hasTime, hasDecimal, hasFloat := false, false, false
+	hasTime, hasWritableTime, hasDecimal, hasFloat := false, false, false, false
 	for _, col := range columns {
 		s := strings.ToLower(col.Type)
 		isTime := strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
@@ -1025,6 +1026,7 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 		case "id", "created_at", "updated_at", "deleted_at", "created_by", "updated_by":
 		default:
 			writableColumns = append(writableColumns, item)
+			hasWritableTime = hasWritableTime || isTime
 		}
 	}
 	tableComment := getTableComment(db, tableName)
@@ -1036,7 +1038,8 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 		TableComment: tableComment, Package: pkg,
 		ModelPkgPath: modelPkgPath, ModelPkgName: getLastPathSegment(modelPkgPath),
 		ProtoPkgPath: protoPkgPath, ProtoPkgName: getLastPathSegment(protoPkgPath),
-		APITypesPkgPath: apiTypesPkgPath, HasTimeField: hasTime, HasDecimalField: hasDecimal, HasFloatField: hasFloat,
+		APITypesPkgPath: apiTypesPkgPath, HasTimeField: hasTime, HasWritableTimeField: hasWritableTime,
+		HasDecimalField: hasDecimal, HasFloatField: hasFloat,
 		Columns: columnData, WritableColumns: writableColumns,
 	}
 }
