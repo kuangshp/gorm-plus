@@ -103,13 +103,12 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 		"string siteCode = 1;",
 		"double balance = 2;",
 		"PageRequest page = 1;",
-		"PageInfo pageInfo = 2;",
-		"BaseResponse baseResp = 1; // 基础响应",
+		"PageInfo pageInfo = 1;",
 		"// GetSysUserPage 分页查询系统用户。",
-		"rpc CreateSysUser(CreateSysUserReq) returns (OperationResponse)",
-		"rpc DeleteSysUserById(SysUserIdReq) returns (OperationResponse)",
-		"rpc BatchDeleteSysUserByIdList(BatchDeleteSysUserByIdListReq) returns (OperationResponse)",
-		"rpc ModifySysUserById(ModifySysUserReq) returns (OperationResponse)",
+		"rpc CreateSysUser(CreateSysUserReq) returns (EmptyResponse)",
+		"rpc DeleteSysUserById(SysUserIdReq) returns (EmptyResponse)",
+		"rpc BatchDeleteSysUserByIdList(BatchDeleteSysUserByIdListReq) returns (EmptyResponse)",
+		"rpc ModifySysUserById(ModifySysUserReq) returns (EmptyResponse)",
 		"rpc GetSysUserPage(PageSysUserReq)",
 		"rpc GetSysUserList(EmptyRequest)",
 		"rpc GetSysUserDetail(SysUserIdReq) returns (SysUserDetailResponse)",
@@ -131,13 +130,15 @@ func TestBaseAndBusinessProtoUseSamePackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"package user_rpc;", `option go_package = "./user_rpc";`, "message BaseResponse", "message OperationResponse", "message EmptyRequest {}"} {
+	for _, want := range []string{"package user_rpc;", `option go_package = "./user_rpc";`, "message EmptyRequest {}", "message EmptyResponse {}"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("generated base proto missing %q\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "base_resp") {
-		t.Fatalf("generated base proto should use lower camel case baseResp\n%s", got)
+	for _, unwanted := range []string{"BaseResponse", "OperationResponse"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("generated base proto should not contain %q\n%s", unwanted, got)
+		}
 	}
 }
 

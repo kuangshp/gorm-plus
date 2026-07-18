@@ -3,19 +3,11 @@ syntax = "proto3";
 package {{.ProtoPackage}};
 option go_package = "./{{.ProtoPackage}}";
 
-// BaseResponse 所有 RPC 接口的统一基础响应。
-message BaseResponse {
-  int32 code = 1; // 状态码
-  string message = 2; // 响应消息
-}
-
-// OperationResponse 创建、修改、删除等写操作的统一响应。
-message OperationResponse {
-  BaseResponse baseResp = 1; // 基础响应
-}
-
 // EmptyRequest 无请求参数时使用的通用空请求。
 message EmptyRequest {}
+
+// EmptyResponse 无响应数据时使用的通用空响应。
+message EmptyResponse {}
 
 // PageRequest 通用分页请求。
 message PageRequest {
