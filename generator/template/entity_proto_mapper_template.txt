@@ -11,14 +11,21 @@ import (
 	"{{.Package}}/{{.ProtoPkgPath}}"
 )
 
-// {{.ModelName}}EntityProtoMapper 负责数据库实体与 gRPC 消息之间的转换。
-type {{.ModelName}}EntityProtoMapper struct{}
-
-func New{{.ModelName}}EntityProtoMapper() *{{.ModelName}}EntityProtoMapper {
-	return &{{.ModelName}}EntityProtoMapper{}
+// I{{.ModelName}}Mapper 负责数据库实体与 gRPC 消息之间的转换。
+type I{{.ModelName}}Mapper interface {
+	CreateReqToEntity(req *{{.ProtoPkgName}}.Create{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity
+	ModifyReqToEntity(req *{{.ProtoPkgName}}.Modify{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity
+	EntityToProto(entity *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{.ProtoPkgName}}.{{.ModelName}}Model
+	EntityListToProto(entities []*{{.ModelPkgName}}.{{.ModelName}}Entity) []*{{.ProtoPkgName}}.{{.ModelName}}Model
 }
 
-func (m *{{.ModelName}}EntityProtoMapper) CreateReqToEntity(req *{{.ProtoPkgName}}.Create{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+type {{.ModelNameLower}}Mapper struct{}
+
+func New{{.ModelName}}Mapper() I{{.ModelName}}Mapper {
+	return &{{.ModelNameLower}}Mapper{}
+}
+
+func (m *{{.ModelNameLower}}Mapper) CreateReqToEntity(req *{{.ProtoPkgName}}.Create{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity {
 	if req == nil {
 		return nil
 	}
@@ -35,7 +42,7 @@ func (m *{{.ModelName}}EntityProtoMapper) CreateReqToEntity(req *{{.ProtoPkgName
 	}
 }
 
-func (m *{{.ModelName}}EntityProtoMapper) ModifyReqToEntity(req *{{.ProtoPkgName}}.Modify{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+func (m *{{.ModelNameLower}}Mapper) ModifyReqToEntity(req *{{.ProtoPkgName}}.Modify{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity {
 	if req == nil {
 		return nil
 	}
@@ -48,7 +55,7 @@ func (m *{{.ModelName}}EntityProtoMapper) ModifyReqToEntity(req *{{.ProtoPkgName
 	return entity
 }
 
-func (m *{{.ModelName}}EntityProtoMapper) EntityToProto(entity *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{.ProtoPkgName}}.{{.ModelName}}Model {
+func (m *{{.ModelNameLower}}Mapper) EntityToProto(entity *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{.ProtoPkgName}}.{{.ModelName}}Model {
 	if entity == nil {
 		return nil
 	}
@@ -65,7 +72,7 @@ func (m *{{.ModelName}}EntityProtoMapper) EntityToProto(entity *{{.ModelPkgName}
 	}
 }
 
-func (m *{{.ModelName}}EntityProtoMapper) EntityListToProto(entities []*{{.ModelPkgName}}.{{.ModelName}}Entity) []*{{.ProtoPkgName}}.{{.ModelName}}Model {
+func (m *{{.ModelNameLower}}Mapper) EntityListToProto(entities []*{{.ModelPkgName}}.{{.ModelName}}Entity) []*{{.ProtoPkgName}}.{{.ModelName}}Model {
 	result := make([]*{{.ProtoPkgName}}.{{.ModelName}}Model, 0, len(entities))
 	for _, entity := range entities {
 		result = append(result, m.EntityToProto(entity))

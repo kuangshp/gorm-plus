@@ -400,7 +400,7 @@ type ColumnInfo struct {
 
 type ApiTemplateData struct {
 	TableName, ModelName, EntityName, TableComment string
-	Columns                                        []ColumnInfo
+	Columns, ModelColumns                          []ColumnInfo
 }
 
 type ProtoTemplateData struct {
@@ -540,13 +540,18 @@ func getProtoPackage(packageName string) string {
 
 func getGoTypeForApiDto(sqlType string) string {
 	s := strings.ToLower(sqlType)
-	if strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date") {
+	if isTimeSQLType(s) {
 		return "string"
 	}
 	if strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double") {
 		return "string"
 	}
 	return getGoType(sqlType)
+}
+
+func isTimeSQLType(sqlType string) bool {
+	s := strings.ToLower(sqlType)
+	return strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
 }
 
 func getGoTypeForVo(sqlType string) string { return getGoTypeForApiDto(sqlType) }
@@ -851,6 +856,13 @@ func buildApiColumns(columns []ColumnInfo) []ColumnInfo {
 
 func generateApiFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath string) (string, error) {
 	columnData := buildApiColumns(columns)
+	modelColumns := make([]ColumnInfo, len(columnData))
+	copy(modelColumns, columnData)
+	for i := range modelColumns {
+		if isTimeSQLType(modelColumns[i].Type) {
+			modelColumns[i].FieldType = "int64"
+		}
+	}
 	tableComment := getTableComment(db, tableName)
 	if tableComment == "" {
 		tableComment = modelName
@@ -861,6 +873,7 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 		EntityName:   Case2Camel(strings.ToUpper(tableName[:1]+tableName[1:])) + "Entity",
 		TableComment: tableComment,
 		Columns:      columnData,
+		ModelColumns: modelColumns,
 	})
 }
 

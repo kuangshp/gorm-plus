@@ -87,6 +87,25 @@ func TestTimeTypesUseStringForAPIAndInt64ForProto(t *testing.T) {
 	}
 }
 
+func TestAPITemplateAllowsStringRequestAndInt64ResponseTime(t *testing.T) {
+	generated, err := renderTemplate("template/api_template.txt", ApiTemplateData{
+		TableName: "site", ModelName: "Site", TableComment: "站点",
+		Columns:      []ColumnInfo{{Name: "event_time", FieldName: "EventTime", FieldType: "string", JsonTag: "eventTime"}},
+		ModelColumns: []ColumnInfo{{Name: "event_time", FieldName: "EventTime", FieldType: "int64", JsonTag: "eventTime"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`EventTime string ` + "`" + `json:"eventTime"` + "`",
+		`EventTime int64 ` + "`" + `json:"eventTime"` + "`",
+	} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("generated API missing %q\n%s", want, generated)
+		}
+	}
+}
+
 func TestProtoMapperTemplatesGenerateValidGo(t *testing.T) {
 	data := ProtoMapperTemplateData{
 		ModelName: "SysUser", ModelNameLower: "sysUser", TableComment: "系统用户",

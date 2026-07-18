@@ -40,7 +40,7 @@ type (
 {{- end}}
 	}
 	{{.ModelName}}Model {
-{{- range .Columns}}
+{{- range .ModelColumns}}
 {{- if ne .Name "deleted_at"}}
 		{{.FieldName}} {{.FieldType}} `json:"{{.JsonTag}}"` // {{.Comment}}
 {{- end}}

@@ -1,61 +1,37 @@
 package apiproto
 
-import (
-{{- if or .HasTimeField .HasDecimalField .HasFloatField}}
-	"fmt"
-{{- end}}
-{{- if .HasTimeField}}
-	"time"
-{{- end}}
 {{- if or .HasDecimalField .HasFloatField}}
+import (
+	"fmt"
 	"strconv"
-{{- end}}
-	"{{.Package}}/{{.APITypesPkgPath}}"
-	"{{.Package}}/{{.ProtoPkgPath}}"
 )
-
-// {{.ModelName}}APIProtoMapper 负责 API types 与 gRPC 消息之间的转换。
-type {{.ModelName}}APIProtoMapper struct{}
-
-func New{{.ModelName}}APIProtoMapper() *{{.ModelName}}APIProtoMapper {
-	return &{{.ModelName}}APIProtoMapper{}
-}
-
-{{- if .HasTimeField}}
-func parse{{.ModelName}}Time(value string) (int64, error) {
-	if value == "" {
-		return 0, nil
-	}
-	for _, layout := range []string{time.DateTime, time.RFC3339} {
-		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
-			return parsed.Unix(), nil
-		}
-	}
-	return 0, fmt.Errorf("无效的时间格式 %q，支持 YYYY-MM-DD HH:mm:ss 或 RFC3339", value)
-}
-
-func format{{.ModelName}}Time(value int64) string {
-	if value == 0 {
-		return ""
-	}
-	return time.Unix(value, 0).Format(time.DateTime)
-}
 {{- end}}
 
-func (m *{{.ModelName}}APIProtoMapper) CreateReqToProto(req *types.Create{{.ModelName}}Req) (*{{.ProtoPkgName}}.Create{{.ModelName}}Req, error) {
+// TODO: 请手动引入 API types 包和 Proto 包，并分别使用 types、{{.ProtoPkgName}} 作为包名。
+
+// I{{.ModelName}}Mapper 负责 API types 与 gRPC 消息之间的转换。
+type I{{.ModelName}}Mapper interface {
+	CreateReqToProto(req *types.Create{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}) (*{{.ProtoPkgName}}.Create{{.ModelName}}Req, error)
+	ModifyReqToProto(req *types.Modify{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}) (*{{.ProtoPkgName}}.Modify{{.ModelName}}Req, error)
+	PageReqToProto(req *types.Page{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}) (*{{.ProtoPkgName}}.Page{{.ModelName}}Req, error)
+	ProtoToVO(model *{{.ProtoPkgName}}.{{.ModelName}}Model) *types.{{.ModelName}}Model
+	ProtoListToVO(models []*{{.ProtoPkgName}}.{{.ModelName}}Model) []types.{{.ModelName}}Model
+}
+
+type {{.ModelNameLower}}Mapper struct{}
+
+func New{{.ModelName}}Mapper() I{{.ModelName}}Mapper {
+	return &{{.ModelNameLower}}Mapper{}
+}
+
+func (m *{{.ModelNameLower}}Mapper) CreateReqToProto(req *types.Create{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}) (*{{.ProtoPkgName}}.Create{{.ModelName}}Req, error) {
 	if req == nil {
 		return nil, nil
 	}
 	result := &{{.ProtoPkgName}}.Create{{.ModelName}}Req{}
 {{- range .WritableColumns}}
 {{- if .IsTimeType}}
-	{
-		value, err := parse{{$.ModelName}}Time(req.{{.FieldName}})
-		if err != nil {
-			return nil, fmt.Errorf("字段 {{.FieldName}}: %w", err)
-		}
-		result.{{.ParamName}} = value
-	}
+	result.{{.ParamName}} = {{lowerFirst .FieldName}}
 {{- else if or .IsDecimalType .IsFloatType}}
 	{
 		value, err := strconv.ParseFloat(req.{{.FieldName}}, 64)
@@ -71,11 +47,11 @@ func (m *{{.ModelName}}APIProtoMapper) CreateReqToProto(req *types.Create{{.Mode
 	return result, nil
 }
 
-func (m *{{.ModelName}}APIProtoMapper) ModifyReqToProto(req *types.Modify{{.ModelName}}Req) (*{{.ProtoPkgName}}.Modify{{.ModelName}}Req, error) {
+func (m *{{.ModelNameLower}}Mapper) ModifyReqToProto(req *types.Modify{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}) (*{{.ProtoPkgName}}.Modify{{.ModelName}}Req, error) {
 	if req == nil {
 		return nil, nil
 	}
-	createReq, err := m.CreateReqToProto(&req.Create{{.ModelName}}Req)
+	createReq, err := m.CreateReqToProto(&req.Create{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}}{{end}}{{end}})
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +62,7 @@ func (m *{{.ModelName}}APIProtoMapper) ModifyReqToProto(req *types.Modify{{.Mode
 	return result, nil
 }
 
-func (m *{{.ModelName}}APIProtoMapper) PageReqToProto(req *types.Page{{.ModelName}}Req) (*{{.ProtoPkgName}}.Page{{.ModelName}}Req, error) {
+func (m *{{.ModelNameLower}}Mapper) PageReqToProto(req *types.Page{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}) (*{{.ProtoPkgName}}.Page{{.ModelName}}Req, error) {
 	if req == nil {
 		return nil, nil
 	}
@@ -95,13 +71,7 @@ func (m *{{.ModelName}}APIProtoMapper) PageReqToProto(req *types.Page{{.ModelNam
 	}
 {{- range .WritableColumns}}
 {{- if .IsTimeType}}
-	{
-		value, err := parse{{$.ModelName}}Time(req.{{.FieldName}})
-		if err != nil {
-			return nil, fmt.Errorf("字段 {{.FieldName}}: %w", err)
-		}
-		result.{{.ParamName}} = value
-	}
+	result.{{.ParamName}} = {{lowerFirst .FieldName}}
 {{- else if or .IsDecimalType .IsFloatType}}
 	{
 		value, err := strconv.ParseFloat(req.{{.FieldName}}, 64)
@@ -117,14 +87,14 @@ func (m *{{.ModelName}}APIProtoMapper) PageReqToProto(req *types.Page{{.ModelNam
 	return result, nil
 }
 
-func (m *{{.ModelName}}APIProtoMapper) ProtoToVO(model *{{.ProtoPkgName}}.{{.ModelName}}Model) *types.{{.ModelName}}Model {
+func (m *{{.ModelNameLower}}Mapper) ProtoToVO(model *{{.ProtoPkgName}}.{{.ModelName}}Model) *types.{{.ModelName}}Model {
 	if model == nil {
 		return nil
 	}
 	return &types.{{.ModelName}}Model{
 {{- range .Columns}}
 {{- if .IsTimeType}}
-		{{.FieldName}}: format{{$.ModelName}}Time(model.{{.ParamName}}),
+		{{.FieldName}}: model.{{.ParamName}},
 {{- else if or .IsDecimalType .IsFloatType}}
 		{{.FieldName}}: strconv.FormatFloat(model.{{.ParamName}}, 'f', -1, 64),
 {{- else}}
@@ -134,7 +104,7 @@ func (m *{{.ModelName}}APIProtoMapper) ProtoToVO(model *{{.ProtoPkgName}}.{{.Mod
 	}
 }
 
-func (m *{{.ModelName}}APIProtoMapper) ProtoListToVO(models []*{{.ProtoPkgName}}.{{.ModelName}}Model) []types.{{.ModelName}}Model {
+func (m *{{.ModelNameLower}}Mapper) ProtoListToVO(models []*{{.ProtoPkgName}}.{{.ModelName}}Model) []types.{{.ModelName}}Model {
 	result := make([]types.{{.ModelName}}Model, 0, len(models))
 	for _, model := range models {
 		if item := m.ProtoToVO(model); item != nil {
