@@ -1,4 +1,4 @@
-package apiproto
+package mapper
 
 {{- if or .HasDecimalField .HasFloatField}}
 import (

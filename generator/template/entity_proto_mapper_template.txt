@@ -1,5 +1,6 @@
-package entityproto
+package mapper
 
+{{- if or .HasTimeField .HasDecimalField}}
 import (
 {{- if .HasTimeField}}
 	"time"
@@ -7,9 +8,10 @@ import (
 {{- if .HasDecimalField}}
 	"github.com/shopspring/decimal"
 {{- end}}
-	"{{.Package}}/{{.ModelPkgPath}}"
-	"{{.Package}}/{{.ProtoPkgPath}}"
 )
+{{- end}}
+
+// TODO: 请手动引入 Entity model 包和 Proto 包，并分别使用 {{.ModelPkgName}}、{{.ProtoPkgName}} 作为包名。
 
 // I{{.ModelName}}Mapper 负责数据库实体与 gRPC 消息之间的转换。
 type I{{.ModelName}}Mapper interface {
