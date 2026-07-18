@@ -15,8 +15,8 @@ import (
 
 // I{{.ModelName}}Mapper 负责数据库实体与 gRPC 消息之间的转换。
 type I{{.ModelName}}Mapper interface {
-	CreateReqToEntity(req *{{.ProtoPkgName}}.Create{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity
-	ModifyReqToEntity(req *{{.ProtoPkgName}}.Modify{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity
+	CreateReqToEntity(req *{{.ProtoPkgName}}.Create{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
+	ModifyReqToEntity(req *{{.ProtoPkgName}}.Modify{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
 	EntityToProto(entity *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{.ProtoPkgName}}.{{.ModelName}}Model
 	EntityListToProto(entities []*{{.ModelPkgName}}.{{.ModelName}}Entity) []*{{.ProtoPkgName}}.{{.ModelName}}Model
 }
@@ -27,14 +27,14 @@ func New{{.ModelName}}Mapper() I{{.ModelName}}Mapper {
 	return &{{.ModelNameLower}}Mapper{}
 }
 
-func (m *{{.ModelNameLower}}Mapper) CreateReqToEntity(req *{{.ProtoPkgName}}.Create{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+func (m *{{.ModelNameLower}}Mapper) CreateReqToEntity(req *{{.ProtoPkgName}}.Create{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity {
 	if req == nil {
 		return nil
 	}
 	return &{{.ModelPkgName}}.{{.ModelName}}Entity{
 {{- range .WritableColumns}}
 {{- if .IsTimeType}}
-		{{.FieldName}}: time.Unix(req.{{.ParamName}}, 0),
+		{{.FieldName}}: {{lowerFirst .FieldName}},
 {{- else if .IsDecimalType}}
 		{{.FieldName}}: decimal.NewFromFloat(req.{{.ParamName}}),
 {{- else}}
@@ -44,7 +44,7 @@ func (m *{{.ModelNameLower}}Mapper) CreateReqToEntity(req *{{.ProtoPkgName}}.Cre
 	}
 }
 
-func (m *{{.ModelNameLower}}Mapper) ModifyReqToEntity(req *{{.ProtoPkgName}}.Modify{{.ModelName}}Req) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+func (m *{{.ModelNameLower}}Mapper) ModifyReqToEntity(req *{{.ProtoPkgName}}.Modify{{.ModelName}}Req{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity {
 	if req == nil {
 		return nil
 	}
@@ -52,7 +52,7 @@ func (m *{{.ModelNameLower}}Mapper) ModifyReqToEntity(req *{{.ProtoPkgName}}.Mod
 {{- range .WritableColumns}}
 		{{.ParamName}}: req.{{.ParamName}},
 {{- end}}
-	})
+	}{{range .WritableColumns}}{{if .IsTimeType}}, {{lowerFirst .FieldName}}{{end}}{{end}})
 	entity.ID = req.Id
 	return entity
 }

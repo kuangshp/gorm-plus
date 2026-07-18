@@ -85,6 +85,9 @@ func TestTimeTypesUseStringForAPIAndInt64ForProto(t *testing.T) {
 	if got := getProtoType("timestamp"); got != "int64" {
 		t.Fatalf("getProtoType(timestamp) = %q, want int64", got)
 	}
+	if got := getProtoRequestType("datetime"); got != "string" {
+		t.Fatalf("getProtoRequestType(datetime) = %q, want string", got)
+	}
 }
 
 func TestAPITemplateAllowsStringRequestAndInt64ResponseTime(t *testing.T) {
@@ -141,7 +144,7 @@ func TestProtoMapperTemplatesGenerateValidGo(t *testing.T) {
 func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 	got, err := renderTemplate("template/proto_template.txt", ProtoTemplateData{
 		TableName: "sys_user", ModelName: "SysUser", TableComment: "系统用户",
-		ProtoPackage: "rpc",
+		ProtoPackage: "rpc", BaseProtoImport: "proto/base.proto",
 		ModelColumns: []ColumnInfo{
 			{Name: "id", FieldName: "ID", ParamName: "id", FieldType: "int64", Comment: "主键"},
 			{Name: "site_code", FieldName: "SiteCode", ParamName: "siteCode", FieldType: "string", Comment: "站点编码"},
@@ -160,7 +163,7 @@ func TestRenderProtoTemplateProvidesApiEquivalentCRUDMethods(t *testing.T) {
 	mustContain := []string{
 		`syntax = "proto3";`,
 		"package rpc;",
-		`import "base.proto";`,
+		`import "proto/base.proto";`,
 		"// CreateSysUserReq 创建系统用户请求。",
 		"message CreateSysUserReq",
 		"string siteCode = 1;",

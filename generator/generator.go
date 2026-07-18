@@ -405,7 +405,7 @@ type ApiTemplateData struct {
 
 type ProtoTemplateData struct {
 	TableName, ModelName, EntityName, TableComment string
-	ProtoPackage                                   string
+	ProtoPackage, BaseProtoImport                  string
 	ModelColumns, WritableColumns                  []ColumnInfo
 }
 
@@ -527,6 +527,15 @@ func getProtoType(sqlType string) string {
 	default:
 		return "string"
 	}
+}
+
+// getProtoRequestType 将数据库字段类型转换为 proto 请求字段类型。
+// 时间由调用方以字符串传入，响应 Model 则通过 getProtoType 使用 Unix 秒。
+func getProtoRequestType(sqlType string) string {
+	if isTimeSQLType(sqlType) {
+		return "string"
+	}
+	return getProtoType(sqlType)
 }
 
 func getProtoPackage(packageName string) string {
@@ -877,23 +886,25 @@ func generateApiFile(tableName string, columns []ColumnInfo, modelName string, d
 	})
 }
 
-func generateProtoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath, protoPackage string) (string, error) {
+func generateProtoFile(tableName string, columns []ColumnInfo, modelName string, db *gorm.DB, tmplPath, protoPackage, baseProtoImport string) (string, error) {
 	modelColumns := make([]ColumnInfo, 0, len(columns))
 	writableColumns := make([]ColumnInfo, 0, len(columns))
 	for _, col := range columns {
-		column := ColumnInfo{
+		modelColumn := ColumnInfo{
 			Name: col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
 			ParamName: LowerCamelCase(Case2Camel(col.Name)),
 			FieldType: getProtoType(col.Type), CanNull: col.CanNull, IsKey: col.IsKey,
 			Extra: col.Extra, Comment: col.Comment,
 		}
 		if col.Name != "deleted_at" {
-			modelColumns = append(modelColumns, column)
+			modelColumns = append(modelColumns, modelColumn)
 		}
 		switch col.Name {
 		case "id", "created_at", "updated_at", "deleted_at", "created_by", "updated_by":
 		default:
-			writableColumns = append(writableColumns, column)
+			requestColumn := modelColumn
+			requestColumn.FieldType = getProtoRequestType(col.Type)
+			writableColumns = append(writableColumns, requestColumn)
 		}
 	}
 	tableComment := getTableComment(db, tableName)
@@ -903,7 +914,8 @@ func generateProtoFile(tableName string, columns []ColumnInfo, modelName string,
 	return renderTemplate(tmplPath, ProtoTemplateData{
 		TableName: tableName, ModelName: modelName,
 		EntityName: modelName + "Entity", TableComment: tableComment,
-		ProtoPackage: protoPackage, ModelColumns: modelColumns, WritableColumns: writableColumns,
+		ProtoPackage: protoPackage, BaseProtoImport: baseProtoImport,
+		ModelColumns: modelColumns, WritableColumns: writableColumns,
 	})
 }
 
@@ -1047,6 +1059,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 	// Proto .proto（go-zero RPC 描述文件，已存在则跳过）
 	if cfg.ProtoPath != "" {
 		protoPackage := getProtoPackage(cfg.Package)
+		baseProtoImport := filepath.Join(filepath.Base(filepath.Clean(cfg.ProtoPath)), "base.proto")
 		baseProtoFile := filepath.Join(cfg.ProtoPath, "base.proto")
 		if _, err := os.Stat(baseProtoFile); os.IsNotExist(err) {
 			if content, err := renderTemplate(
@@ -1062,7 +1075,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 				}
 			}
 		}
-		if content, err := generateProtoFile(tbl, columns, modelName, db, protoTmplPath, protoPackage); err != nil {
+		if content, err := generateProtoFile(tbl, columns, modelName, db, protoTmplPath, protoPackage, baseProtoImport); err != nil {
 			fmt.Printf("[%s] 生成 proto 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(

@@ -3,7 +3,7 @@ syntax = "proto3";
 package {{.ProtoPackage}};
 option go_package = "./{{.ProtoPackage}}";
 
-import "base.proto";
+import "{{.BaseProtoImport}}";
 
 // {{.ModelName}}Model {{.TableComment}}数据模型。
 message {{.ModelName}}Model {
