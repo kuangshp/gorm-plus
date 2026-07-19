@@ -6,16 +6,9 @@ import (
 	"google.golang.org/grpc"
 )
 
-func TestRootPackageExportsZeroConfigPropagationInterceptors(t *testing.T) {
-	var client grpc.UnaryClientInterceptor = UnaryInt64ContextPropagationClientInterceptor
-	var server grpc.UnaryServerInterceptor = UnaryInt64ContextPropagationServerInterceptor
-	if client == nil || server == nil {
-		t.Fatal("zero-config propagation interceptor is nil")
-	}
-}
-
 func TestRootPackageExportsArbitraryContextPropagation(t *testing.T) {
 	fields := []ContextMetadataField{
+		PropagateTenantID[int64](),
 		PropagateContextKey[int64]("tenantId"),
 		PropagateContextKey[int64]("operatorId"),
 	}

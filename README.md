@@ -522,11 +522,11 @@ API middleware
   → Tenant / AutoFill plugin
 ```
 
-最简单的方式是在 API 创建 RPC Client 时声明需要透传的字符串 Context Key：
+在 API 创建 RPC Client 时声明实际需要透传的字段：
 
 ```go
 contextFields := []gormplus.ContextMetadataField{
-	gormplus.PropagateContextKey[int64]("tenantId"),
+	gormplus.PropagateTenantID[int64](), // Tenant 插件租户 ID
 	gormplus.PropagateContextKey[int64](gormplus.CtxContextKey1), // 操作人 ID
 	gormplus.PropagateContextKey[string](gormplus.CtxContextKey2), // 操作人姓名
 	gormplus.PropagateContextKey[string]("loginUserId"),
@@ -555,7 +555,7 @@ s.AddUnaryInterceptors(
 之后在 RPC Logic 中使用相同 key 读取：
 
 ```go
-tenantID, _ := l.ctx.Value("tenantId").(int64)
+tenantID := gormplus.TenantIDFromCtx[int64](l.ctx)
 operatorID := gormplus.CtxGetter[int64](gormplus.CtxContextKey1)(l.ctx)
 operatorName := gormplus.CtxGetter[string](gormplus.CtxContextKey2)(l.ctx)
 loginUserID, _ := l.ctx.Value("loginUserId").(string)
@@ -576,51 +576,7 @@ func TenantOperatorMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 ```
 
-API 服务创建 RPC 客户端时注册客户端拦截器。后续 Logic 调用 RPC 时必须继续传递 `l.ctx`：
-
-```go
-rpcClient := zrpc.MustNewClient(
-	c.SiteRpc,
-	zrpc.WithUnaryClientInterceptor(
-		gormplus.UnaryInt64ContextPropagationClientInterceptor,
-	),
-)
-
-// API Logic：使用当前请求 ctx 调用 RPC。
-resp, err := siteClient.CreateSite(l.ctx, request)
-```
-
-租户和操作人是两个独立字段，不要求同时存在：只有租户时仅透传租户，只有操作人时仅透传操作人，两者都没有时直接调用 RPC。只有设置 `RequireTenant = true` 后，缺少租户才会返回 `Unauthenticated`；不要求每个接口都有租户时请保持默认值 `false`。
-
-RPC 服务端注册 context 恢复拦截器和参数校验拦截器。context 恢复拦截器应放在参数校验和业务 Logic 之前：
-
-```go
-s.AddUnaryInterceptors(
-	gormplus.UnaryInt64ContextPropagationServerInterceptor,
-	gormplus.UnaryValidationInterceptor,
-)
-```
-
-与 Jaeger 等其他 Unary 拦截器组合时，推荐顺序为“链路追踪 → Context 恢复 → 参数校验 → 业务 Logic”：
-
-```go
-s.AddUnaryInterceptors(
-	interceptor.UnaryJaegerTraceInterceptor,
-	gormplus.UnaryInt64ContextPropagationServerInterceptor,
-	gormplus.UnaryValidationInterceptor,
-)
-```
-
-服务端注册 Context 恢复拦截器后，API 侧对应的 RPC Client 也必须注册客户端透传拦截器，否则服务端收不到租户和操作人 metadata：
-
-```go
-rpcClient := zrpc.MustNewClient(
-	c.SiteRpc,
-	zrpc.WithUnaryClientInterceptor(
-		gormplus.UnaryInt64ContextPropagationClientInterceptor,
-	),
-)
-```
+API Logic 调用 RPC 时必须继续传递当前请求的 `l.ctx`。租户和操作人彼此独立：Context 中存在什么就透传什么，缺少某个字段不会影响其他字段，也不会阻止 RPC 调用。
 
 RPC Logic 执行数据库操作时继续使用收到的 context：
 
@@ -634,34 +590,9 @@ func (l *CreateSiteLogic) CreateSite(req *site.CreateSiteReq) (*site.EmptyRespon
 }
 ```
 
-默认配置约定：
+`PropagateTenantID` 会在 RPC 端通过 `WithTenantID` 恢复租户，因此现有 Tenant 插件可直接在 `db.WithContext(l.ctx)` 的查询、更新和删除中追加租户条件。操作人字段恢复到对应的 `CtxContextKey`，供 AutoFill 插件在新增和更新时填充；操作人不会自动成为查询条件。
 
-- 租户 ID 类型为 `int64`，metadata key 为 `x-gorm-plus-tenant-id`。
-- 操作人 ID 类型为 `int64`，从 `CtxContextKey1` 读取，metadata key 为 `x-gorm-plus-operator-id`。
-- RPC 服务端使用 `WithTenantID[int64]` 恢复租户，现有 Tenant 插件无需修改。
-- 操作人 ID 恢复到 `CtxContextKey1`，现有 `CtxGetter[int64](CtxContextKey1)` 自动填充配置无需修改。
-
-`x-gorm-plus-tenant-id` 和 `x-gorm-plus-operator-id` 是工具库内部使用的跨进程 metadata key，不是业务 context key，常规项目无需配置或感知。
-
-只有需要强制租户、自定义 ID 类型，或额外传递操作人姓名、部门 ID 等字段时，才需要使用高级配置：
-
-```go
-propagationConfig := gormplus.DefaultInt64ContextPropagationConfig()
-propagationConfig.RequireTenant = true
-propagationConfig.Fields = append(
-	propagationConfig.Fields,
-	gormplus.NewContextMetadataField[string](
-		"x-gorm-plus-operator-name",
-		gormplus.CtxContextKey2,
-	),
-	gormplus.NewContextMetadataField[int64](
-		"x-gorm-plus-department-id",
-		gormplus.CtxContextKey3,
-	),
-)
-```
-
-客户端和服务端必须使用相同配置及字段类型。metadata 值经过 JSON 和 Base64URL 编码，可安全传递字符串、中文和常见标量类型。租户及操作人 metadata 只能在可信的内部 RPC 链路中使用；RPC 服务对外暴露时，还应通过认证、mTLS 或网关策略防止客户端伪造身份信息。
+metadata 值经过 JSON 和 Base64URL 编码，可安全传递字符串、中文和常见标量类型。租户及操作人 metadata 只能在可信的内部 RPC 链路中使用；RPC 服务对外暴露时，还应通过认证、mTLS 或网关策略防止客户端伪造身份信息。
 
 #### 全局与局部使用
 
@@ -669,7 +600,7 @@ propagationConfig.Fields = append(
 - **局部**：只给需要租户或操作人的 RPC Client 注册拦截器，公共 Client 不注册。
 - **按请求**：即使 Client 已全局注册，也只会透传当前 context 中实际存在的字段。
 
-租户和操作人互相独立，可以只存在其中一个。`RequireTenant` 默认为 `false`；只有明确要求所有请求必须携带租户时才设置为 `true`。
+租户和操作人互相独立，可以只声明或只存在其中一个。必须强制租户的接口，应在 API 认证中间件或业务鉴权逻辑中校验，不再通过 Context 透传配置控制。
 
 ---
 
