@@ -4,11 +4,41 @@ import (
 	"context"
 	"testing"
 
+	validate "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	"buf.build/go/protovalidate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+func TestValidationMessageUsesChineseStandardRuleMessage(t *testing.T) {
+	violation := &protovalidate.Violation{Proto: &validate.Violation{
+		RuleId:  proto.String("string.max_len"),
+		Message: proto.String("value length must be at most 32 characters"),
+	}}
+	if got, want := validationMessage(violation), "长度不能超过规定值"; got != want {
+		t.Fatalf("validationMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestValidationMessageFallsBackToOriginalMessage(t *testing.T) {
+	violation := &protovalidate.Violation{Proto: &validate.Violation{
+		RuleId:  proto.String("string.date_format"),
+		Message: proto.String("日期格式必须为 YYYY-MM-DD"),
+	}}
+	if got, want := validationMessage(violation), "日期格式必须为 YYYY-MM-DD"; got != want {
+		t.Fatalf("validationMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestValidationMessageUsesDefaultMessage(t *testing.T) {
+	violation := &protovalidate.Violation{Proto: &validate.Violation{RuleId: proto.String("custom.unknown")}}
+	if got, want := validationMessage(violation), "参数不符合要求"; got != want {
+		t.Fatalf("validationMessage() = %q, want %q", got, want)
+	}
+}
 
 func TestUnaryValidationInterceptorRejectsNonProtoRequest(t *testing.T) {
 	called := false

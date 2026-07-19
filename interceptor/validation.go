@@ -13,6 +13,26 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// validationMessages 统一维护 Protovalidate 标准规则的中文提示。
+// 未配置的规则会回退到 Protovalidate 原始错误信息。
+var validationMessages = map[string]string{
+	"required":           "不能为空",
+	"string.min_len":     "长度不能小于规定值",
+	"string.max_len":     "长度不能超过规定值",
+	"string.len":         "长度不符合要求",
+	"string.pattern":     "格式不符合要求",
+	"string.email":       "邮箱格式不正确",
+	"string.uuid":        "UUID格式不正确",
+	"int64.gt":           "必须大于规定值",
+	"int64.gte":          "不能小于规定值",
+	"int64.lt":           "必须小于规定值",
+	"int64.lte":          "不能大于规定值",
+	"int64.in":           "不在允许的取值范围内",
+	"repeated.min_items": "至少需要一项数据",
+	"repeated.max_items": "数据项数量超过限制",
+	"repeated.unique":    "数据项不能重复",
+}
+
 // UnaryValidationInterceptor 在业务 Handler 执行前统一校验所有带 Protovalidate 规则的请求。
 //
 // 校验采用 Fail Fast 模式，只将第一个违规字段作为 gRPC InvalidArgument 错误返回；
@@ -48,10 +68,21 @@ func validationStatusError(err error) error {
 
 	grpcStatus := status.New(
 		codes.InvalidArgument,
-		fmt.Sprintf("参数 %s 错误：%s", field, violation.Proto.GetMessage()),
+		fmt.Sprintf("字段【%s】:%s", field, validationMessage(violation)),
 	)
 	if statusWithDetails, detailErr := grpcStatus.WithDetails(validationErr.ToProto()); detailErr == nil {
 		return statusWithDetails.Err()
 	}
 	return grpcStatus.Err()
+}
+
+// validationMessage 根据规则 ID 返回中文提示，未配置时保留原始错误信息。
+func validationMessage(violation *protovalidate.Violation) string {
+	if message, ok := validationMessages[violation.Proto.GetRuleId()]; ok {
+		return message
+	}
+	if message := violation.Proto.GetMessage(); message != "" {
+		return message
+	}
+	return "参数不符合要求"
 }
