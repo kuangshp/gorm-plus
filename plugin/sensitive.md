@@ -6,6 +6,8 @@
 
 ## 一、数据库字段
 
+可直接执行的 MySQL 示例文件：[sensitive_example.sql](sensitive_example.sql)。
+
 推荐使用两个数据库字段：
 
 ```sql
@@ -36,6 +38,7 @@ cfg := &gormplus.GeneratorConfig{
 		Type:        "phone",
 		CipherField: "phone_cipher",
 		IndexField:  "phone_index",
+		EncryptAtRest: false,
 	}},
 }
 
@@ -53,13 +56,25 @@ sensitive_fields:
     type: phone
     cipher_field: phone_cipher
     index_field: phone_index
+    encrypt_at_rest: false
 ```
 
 生成器会在实体中增加业务字段：
 
 ```go
-Phone string `gorm:"-" json:"phone" gormplus:"type:phone;cipher:phone_cipher;index:phone_index"`
+Phone string `gorm:"-" json:"phone" gormplus:"type:phone;cipher:phone_cipher;index:phone_index;encrypt:false"`
 ```
+
+同时会把数据库存储字段自动设置为 `json:"-"`：
+
+```go
+PhoneCipher string `gorm:"column:phone_cipher" json:"-"`
+PhoneIndex  string `gorm:"column:phone_index" json:"-"`
+```
+
+因此 `phoneCipher` 和 `phoneIndex` 不会出现在返回给前端的 JSON 中。
+
+生成 API、Proto、DTO、VO 和 Mapper 时也会自动过滤这两个内部字段，对外只生成 `phone`。Repository 和 DAO 仍会保留 `PhoneCipher`、`PhoneIndex`，因为数据库持久化及索引查询需要它们。
 
 其中 `gorm:"-"` 表示该字段只用于业务输入输出，不会在数据库增加 `phone` 列。数据库仍然只有 `phone_cipher` 和 `phone_index`。
 
@@ -100,6 +115,79 @@ if err != nil {
 ```
 
 插件会从生成实体的 tag 自动读取 `Phone`、`phone_cipher` 和 `phone_index`。
+
+### 数据库存储开关
+
+`EncryptAtRest` 是字段级开关，默认为 `false`。数据库保存规范化后的明文，但接口仍然默认返回脱敏值：
+
+```go
+gormplus.SensitiveConfig{
+	Key: secretKey,
+	Fields: []gormplus.SensitiveFieldConfig{{
+		PlainField:     "Phone",
+		CipherField:    "PhoneCipher",
+		IndexField:     "PhoneIndex",
+		IndexColumn:    "phone_index",
+		EncryptAtRest: false,
+		ReturnMode:     gormplus.SensitiveReturnMasked,
+	}},
+}
+```
+
+```text
+数据库存储：13800138000
+接口默认返回：138****8000
+明文权限返回：13800138000
+```
+
+需要数据库加密时开启：
+
+```go
+gormplus.SensitiveConfig{
+	Key: secretKey,
+	Fields: []gormplus.SensitiveFieldConfig{{
+		PlainField:     "Phone",
+		CipherField:    "PhoneCipher",
+		IndexField:     "PhoneIndex",
+		IndexColumn:    "phone_index",
+		EncryptAtRest: true,
+		ReturnMode:     gormplus.SensitiveReturnMasked,
+	}},
+}
+```
+
+```text
+数据库存储：AES-GCM 随机密文
+接口默认返回：138****8000
+明文权限返回：解密后的 13800138000
+```
+
+该开关只影响当前字段的数据库存储形式，不影响 `PhoneEq`、查询索引和返回脱敏逻辑。关闭加密时建议把 `cipher_field` 配成中性列名，例如 `phone_value`；继续使用 `phone_cipher` 也可以正常工作，但名称容易产生误解。
+
+不同字段可以使用不同策略：
+
+```go
+Fields: []gormplus.SensitiveFieldConfig{
+	{
+		PlainField:     "Phone",
+		CipherField:    "PhoneCipher",
+		IndexField:     "PhoneIndex",
+		IndexColumn:    "phone_index",
+		EncryptAtRest: false, // 手机号数据库存明文，接口默认脱敏
+		ReturnMode:     gormplus.SensitiveReturnMasked,
+	},
+	{
+		PlainField:     "IDCard",
+		CipherField:    "IDCardCipher",
+		IndexField:     "IDCardIndex",
+		IndexColumn:    "id_card_index",
+		EncryptAtRest: true, // 身份证数据库存密文
+		ReturnMode:     gormplus.SensitiveReturnMasked,
+	},
+}
+```
+
+已有数据的生产环境不能直接切换该开关。明文与密文模式互相切换时必须迁移存储列，否则旧数据会按错误模式读取。
 
 没有使用生成器或需要覆盖默认规则时，可以显式配置 `PhoneField("Phone")`：
 
@@ -190,18 +278,187 @@ WHERE phone_index = ?
 fmt.Println(user.Phone) // 138****8000
 ```
 
-普通列表查询不需要额外处理，查询后插件会逐条设置 `Phone`：
+### 使用 gorm-gen Repository 查询
+
+`Phone` 使用了 `gorm:"-"`，不是数据库列，因此不会出现在 `dao.SysUserEntity` 中。DAO 中只会出现真实数据库字段 `PhoneCipher` 和 `PhoneIndex`，这是正常行为。
+
+不能强行生成并使用：
 
 ```go
-var users []User
-if err := db.WithContext(ctx).Find(&users).Error; err != nil {
+// 不存在，也不能直接把手机号明文用于 SQL 条件。
+dao.SysUserEntity.Phone.Eq(phone)
+```
+
+使用插件的 `PhoneEq` 可以一行完成手机号规范化、HMAC 索引计算和 `PhoneIndex` 查询。下面是完整的 Gin Handler 示例，查询结果默认返回脱敏手机号：
+
+```go
+func (a *SysUser) GetTest1Api(ctx *gin.Context) {
+	phone := ctx.Query("phone")
+	if phone == "" {
+		a.Fail(ctx, "手机号不能为空", nil)
+		return
+	}
+
+	list, err := a.SysUserRepository.FindList(
+		ctx,
+		gormplus.QueryOpt().Where(
+			a.SensitivePlugin.PhoneEq(dao.SysUserEntity.PhoneIndex, phone),
+		).Build(),
+	)
+	if err != nil || len(list) == 0 {
+		a.Fail(ctx, "查询失败", err)
+		return
+	}
+
+	a.Success(ctx, list)
+}
+```
+
+如果当前接口已完成明文查看权限校验，可以把查询 Context 改为：
+
+```go
+list, err := a.SysUserRepository.FindList(
+	gormplus.WithSensitivePlaintext(ctx),
+	gormplus.QueryOpt().Where(
+		a.SensitivePlugin.PhoneEq(dao.SysUserEntity.PhoneIndex, phone),
+	).Build(),
+)
+```
+
+其中 `a.SensitivePlugin` 是注册插件时保存的实例：
+
+```go
+sensitive, err := gormplus.RegisterSensitive(db, gormplus.SensitiveConfig{
+	Key: []byte(os.Getenv("SENSITIVE_MASTER_KEY")),
+})
+if err != nil {
 	return err
 }
 
-// users[i].Phone 默认是类似 138****8000 的脱敏值。
+svcCtx.SensitivePlugin = sensitive
+```
+
+也可以分两步构造条件：
+
+```go
+phoneIndex := a.SensitivePlugin.IndexValue("Phone", phone)
+
+list, err := a.SysUserRepository.FindList(
+	ctx,
+	gormplus.QueryOpt().Where(
+		dao.SysUserEntity.PhoneIndex.Eq(phoneIndex),
+	).Build(),
+)
+```
+
+普通列表查询不需要额外处理，查询后插件会逐条设置 `Phone`：
+
+```go
+func (a *SysUser) GetListApi(ctx *gin.Context) {
+	list, err := a.SysUserRepository.FindList(ctx)
+	if err != nil || len(list) == 0 {
+		a.Fail(ctx, "查询失败", err)
+		return
+	}
+
+	// Phone 默认返回类似 138****8000 的脱敏值。
+	a.Success(ctx, list)
+}
+```
+
+如果当前接口已经完成查看手机号明文的权限校验，可以使用 `WithSensitivePlaintext`：
+
+```go
+func (a *SysUser) GetTest2Api(ctx *gin.Context) {
+	list, err := a.SysUserRepository.FindList(
+		gormplus.WithSensitivePlaintext(ctx),
+	)
+	if err != nil || len(list) == 0 {
+		a.Fail(ctx, "查询失败", err)
+		return
+	}
+
+	// Phone 返回完整明文，例如 13800138000。
+	a.Success(ctx, list)
+}
 ```
 
 ## 六、控制返回内容
+
+gorm-plus 根包导出了插件类型和三种返回模式：
+
+```go
+type SensitivePlugin = plugin.SensitivePlugin
+
+const (
+	SensitiveReturnMasked = plugin.SensitiveReturnMasked // 返回脱敏值
+	SensitiveReturnPlain  = plugin.SensitiveReturnPlain  // 返回完整明文
+	SensitiveReturnCipher = plugin.SensitiveReturnCipher // 返回数据库密文
+)
+```
+
+注册成功后返回的 `sensitive` 类型就是 `*gormplus.SensitivePlugin`，建议保存在 ServiceContext 中供 Repository 查询使用：
+
+```go
+type ServiceContext struct {
+	DB              *gorm.DB
+	SensitivePlugin *gormplus.SensitivePlugin
+}
+
+sensitive, err := gormplus.RegisterSensitive(db, gormplus.SensitiveConfig{
+	Key: []byte(os.Getenv("SENSITIVE_MASTER_KEY")),
+})
+if err != nil {
+	return err
+}
+
+svcCtx := &ServiceContext{
+	DB:              db,
+	SensitivePlugin: sensitive,
+}
+```
+
+`SensitiveReturnMasked`、`SensitiveReturnPlain`、`SensitiveReturnCipher` 主要用于字段级高级配置：
+
+```go
+sensitive, err := gormplus.RegisterSensitive(db, gormplus.SensitiveConfig{
+	Key: []byte(os.Getenv("SENSITIVE_MASTER_KEY")),
+	Fields: []gormplus.SensitiveFieldConfig{{
+		PlainField:  "Phone",
+		CipherField: "PhoneCipher",
+		IndexField:  "PhoneIndex",
+		IndexColumn: "phone_index",
+		EncryptAtRest: false,
+		ReturnMode:  gormplus.SensitiveReturnMasked,
+		Mask: gormplus.SensitiveMaskConfig{
+			Prefix:      3,
+			Suffix:      4,
+			Replacement: "*",
+		},
+	}},
+})
+```
+
+对应结果：
+
+| 返回模式 | `Phone` 内容 | 适用场景 |
+|---|---|---|
+| `SensitiveReturnMasked` | `138****8000` | 普通列表、详情，推荐默认值 |
+| `SensitiveReturnPlain` | `13800138000` | 已完成敏感数据查看权限校验 |
+| `SensitiveReturnCipher` | 数据库存储原值 | 内部审计、迁移等特殊场景；关闭加密时该值就是明文 |
+
+如果配置了 `ReturnModeResolver`，还可以根据请求 Context 动态返回：
+
+```go
+ReturnModeResolver: func(ctx context.Context) gormplus.SensitiveReturnMode {
+	if canViewPlainPhone(ctx) {
+		return gormplus.SensitiveReturnPlain
+	}
+	return gormplus.SensitiveReturnMasked
+},
+```
+
+大多数业务不需要显式填写 `ReturnMode`，直接使用下面的 Context 方法更简单。
 
 ### 默认返回脱敏值
 

@@ -15,14 +15,22 @@ func TestSensitiveModelGenerationConfig(t *testing.T) {
 		CipherField: "phone_cipher",
 		IndexField:  "phone_index",
 	}}
-	if got := len(sensitiveModelOpts("sys_user", configs)); got != 1 {
-		t.Fatalf("sensitive model opts = %d, want 1", got)
+	if got := len(sensitiveModelOpts("sys_user", configs)); got != 3 {
+		t.Fatalf("sensitive model opts = %d, want 3", got)
 	}
 	if got := len(sensitiveModelOpts("other_table", configs)); got != 0 {
 		t.Fatalf("other table sensitive model opts = %d, want 0", got)
 	}
-	if got := sensitiveFieldTagValue("phone", "phone_cipher", "phone_index"); got != "type:phone;cipher:phone_cipher;index:phone_index" {
+	if got := sensitiveFieldTagValue("phone", "phone_cipher", "phone_index", true); got != "type:phone;cipher:phone_cipher;index:phone_index;encrypt:true" {
 		t.Fatalf("sensitive tag = %q", got)
+	}
+	public := sensitivePublicColumns("sys_user", []ColumnInfo{
+		{Name: "id", FieldName: "ID", FieldType: "int64"},
+		{Name: "phone_cipher", FieldName: "PhoneCipher", FieldType: "string"},
+		{Name: "phone_index", FieldName: "PhoneIndex", FieldType: "string"},
+	}, configs)
+	if len(public) != 2 || public[0].Name != "id" || public[1].Name != "phone" {
+		t.Fatalf("public sensitive columns = %#v", public)
 	}
 }
 

@@ -1100,6 +1100,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		return
 	}
 	modelName := Case2Camel(strings.ToUpper(tbl[:1]) + tbl[1:])
+	publicColumns := sensitivePublicColumns(tbl, columns, cfg.SensitiveFields)
 
 	// Proto .proto（go-zero RPC 描述文件，已存在则跳过）
 	if cfg.ProtoPath != "" {
@@ -1120,7 +1121,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 				}
 			}
 		}
-		if content, err := generateProtoFile(tbl, columns, modelName, db, protoTmplPath, protoPackage, baseProtoImport); err != nil {
+		if content, err := generateProtoFile(tbl, publicColumns, modelName, db, protoTmplPath, protoPackage, baseProtoImport); err != nil {
 			fmt.Printf("[%s] 生成 proto 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
@@ -1165,7 +1166,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 				}
 			}
 		}
-		if content, err := generateApiFile(tbl, columns, modelName, db, apiTmplPath); err != nil {
+		if content, err := generateApiFile(tbl, publicColumns, modelName, db, apiTmplPath); err != nil {
 			fmt.Printf("[%s] 生成 api 失败: %v\n", tbl, err)
 		} else {
 			apiFile := fmt.Sprintf("%s/%s.api", cfg.ApiPath, LowerCamelCase(Case2Camel(tbl)))
@@ -1190,7 +1191,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 
 	// VO（非 go-zero 模式，已存在则跳过）
 	if cfg.VoPath != "" && cfg.ApiPath == "" {
-		if content, err := generateVoFile(tbl, columns, modelName, db, voTmplPath); err != nil {
+		if content, err := generateVoFile(tbl, publicColumns, modelName, db, voTmplPath); err != nil {
 			fmt.Printf("[%s] 生成 VO 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
@@ -1202,7 +1203,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 
 	// DTO（非 go-zero 模式，已存在则跳过）
 	if cfg.DtoPath != "" && cfg.ApiPath == "" {
-		if content, err := generateDtoFile(tbl, columns, modelName, db, dtoTmplPath); err != nil {
+		if content, err := generateDtoFile(tbl, publicColumns, modelName, db, dtoTmplPath); err != nil {
 			fmt.Printf("[%s] 生成 DTO 失败: %v\n", tbl, err)
 		} else {
 			writeFileIfNotExist(
@@ -1220,7 +1221,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 				dtoPkg = pathToPkg(cfg.DtoPath)
 				voPkg = pathToPkg(cfg.VoPath)
 			}
-			data := buildMapperData(tbl, columns, modelName, db,
+			data := buildMapperData(tbl, publicColumns, modelName, db,
 				cfg.Package, pathToPkg(cfg.ModelPkgPath), dtoPkg, voPkg, cfg.ApiPath != "")
 			if content, err := renderTemplate(mapperTmplPath, data); err != nil {
 				fmt.Printf("[%s] 生成 mapper 失败: %v\n", tbl, err)
@@ -1242,7 +1243,7 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 			if cfg.ApiPath != "" {
 				apiTypesPkgPath = pathToPkg(filepath.Join(filepath.Dir(cfg.ApiPath), "internal", "types"))
 			}
-			data := buildProtoMapperData(tbl, columns, modelName, db,
+			data := buildProtoMapperData(tbl, publicColumns, modelName, db,
 				cfg.Package, pathToPkg(cfg.ModelPkgPath), protoPkgPath, apiTypesPkgPath)
 			if content, err := renderTemplate(entityProtoMapperTmplPath, data); err != nil {
 				fmt.Printf("[%s] 生成 Entity/Proto mapper 失败: %v\n", tbl, err)
@@ -1472,16 +1473,59 @@ func sensitiveModelOpts(table string, configs []SensitiveFieldConfig) []gen.Mode
 		if sensitiveType == "" {
 			sensitiveType = "phone"
 		}
-		tagValue := sensitiveFieldTagValue(sensitiveType, cipherColumn, indexColumn)
+		tagValue := sensitiveFieldTagValue(sensitiveType, cipherColumn, indexColumn, cfg.EncryptAtRest)
 		opts = append(opts, gen.FieldNew(logicalName, "string", field.Tag{
 			"gorm":     "-",
 			"json":     LowerCamelCase(logicalName),
 			"gormplus": tagValue,
 		}))
+		// 密文和查询索引仅供数据库与插件内部使用，禁止 JSON 序列化到前端。
+		opts = append(opts,
+			gen.FieldJSONTag(cipherColumn, "-"),
+			gen.FieldJSONTag(indexColumn, "-"),
+		)
 	}
 	return opts
 }
 
-func sensitiveFieldTagValue(sensitiveType, cipherColumn, indexColumn string) string {
-	return fmt.Sprintf("type:%s;cipher:%s;index:%s", sensitiveType, cipherColumn, indexColumn)
+func sensitiveFieldTagValue(sensitiveType, cipherColumn, indexColumn string, encryptAtRest bool) string {
+	return fmt.Sprintf("type:%s;cipher:%s;index:%s;encrypt:%t", sensitiveType, cipherColumn, indexColumn, encryptAtRest)
+}
+
+// sensitivePublicColumns 将内部密文/索引列替换成对外业务字段。
+// Repository/DAO 仍使用原始数据库列；API、Proto、DTO、VO、Mapper 只暴露业务字段。
+func sensitivePublicColumns(table string, columns []ColumnInfo, configs []SensitiveFieldConfig) []ColumnInfo {
+	result := append([]ColumnInfo(nil), columns...)
+	for _, cfg := range configs {
+		if !strings.EqualFold(strings.TrimSpace(cfg.Table), strings.TrimSpace(table)) || strings.TrimSpace(cfg.Field) == "" {
+			continue
+		}
+		logicalColumn := strings.TrimSpace(cfg.Field)
+		cipherColumn := strings.TrimSpace(cfg.CipherField)
+		if cipherColumn == "" {
+			cipherColumn = logicalColumn + "_cipher"
+		}
+		indexColumn := strings.TrimSpace(cfg.IndexField)
+		if indexColumn == "" {
+			indexColumn = logicalColumn + "_index"
+		}
+		filtered := result[:0]
+		for _, column := range result {
+			if strings.EqualFold(column.Name, cipherColumn) || strings.EqualFold(column.Name, indexColumn) {
+				continue
+			}
+			filtered = append(filtered, column)
+		}
+		result = append(filtered, ColumnInfo{
+			Name:       logicalColumn,
+			Type:       "varchar(32)",
+			FieldName:  Case2Camel(logicalColumn),
+			FieldType:  "string",
+			CanNull:    false,
+			Comment:    "敏感字段（仅用于业务输入输出）",
+			JsonTag:    LowerCamelCase(Case2Camel(logicalColumn)),
+			JsonTagOpt: "",
+		})
+	}
+	return result
 }

@@ -13,6 +13,8 @@ import (
 	"reflect"
 	"strings"
 
+	"gorm.io/gen"
+	"gorm.io/gen/field"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -41,8 +43,11 @@ type SensitiveFieldConfig struct {
 	IndexField  string
 	// IndexColumn 是查询使用的数据库列名；为空时根据 IndexField 自动转为 snake_case。
 	IndexColumn string
-	Normalize   func(string) string
-	ReturnMode  SensitiveReturnMode
+	// EncryptAtRest 控制当前字段在数据库中是否使用 AES-GCM 加密。
+	// 默认 false 保存规范化明文；true 保存随机密文。
+	EncryptAtRest bool
+	Normalize     func(string) string
+	ReturnMode    SensitiveReturnMode
 	// ReturnModeResolver 可按当前请求权限动态决定返回明文、密文或脱敏值，优先于 ReturnMode。
 	ReturnModeResolver func(context.Context) SensitiveReturnMode
 	Mask               SensitiveMaskConfig
@@ -171,6 +176,22 @@ func (p *SensitivePlugin) BlindIndex(indexField, value string) (string, error) {
 	return blindIndex(p.cfg.IndexKey, field.Normalize(value)), nil
 }
 
+// IndexValue 返回适合 gorm-gen PhoneIndex.Eq 使用的查询索引。
+// 使用生成器 tag 的默认字段时无需再在 SensitiveConfig.Fields 中重复配置。
+func (p *SensitivePlugin) IndexValue(field, value string) string {
+	if configured, ok := p.byKey[field]; ok {
+		return blindIndex(p.cfg.IndexKey, configured.Normalize(value))
+	}
+	defaultField := PhoneField(field)
+	return blindIndex(p.cfg.IndexKey, defaultField.Normalize(value))
+}
+
+// PhoneEq 为 gorm-gen 构造手机号等值条件。
+// 使用方式：sensitive.PhoneEq(dao.SysUserEntity.PhoneIndex, phone)。
+func (p *SensitivePlugin) PhoneEq(column field.String, phone string) gen.Condition {
+	return column.Eq(p.IndexValue("Phone", phone))
+}
+
 // WhereSensitiveEqual 为敏感字段添加等值查询条件。
 func (p *SensitivePlugin) WhereSensitiveEqual(db *gorm.DB, indexField, value string) (*gorm.DB, error) {
 	index, err := p.BlindIndex(indexField, value)
@@ -186,7 +207,7 @@ func (p *SensitivePlugin) WhereSensitiveEqual(db *gorm.DB, indexField, value str
 func (p *SensitivePlugin) WhereEqual(db *gorm.DB, field, value string) *gorm.DB {
 	if _, ok := p.byKey[field]; !ok {
 		defaultField := PhoneField(field)
-		index := blindIndex(p.cfg.IndexKey, defaultField.Normalize(value))
+		index := p.IndexValue(field, value)
 		return db.Where(clause.Eq{Column: clause.Column{Name: defaultField.IndexColumn}, Value: index})
 	}
 	query, err := p.WhereSensitiveEqual(db, field, value)
@@ -208,11 +229,15 @@ func (p *SensitivePlugin) beforeWrite(db *gorm.DB) {
 				continue
 			}
 			plain = field.Normalize(plain)
-			ciphertext, err := p.encrypt(plain)
-			if err != nil {
-				return err
+			storedValue := plain
+			if field.EncryptAtRest {
+				var err error
+				storedValue, err = p.encrypt(plain)
+				if err != nil {
+					return err
+				}
 			}
-			if err := setStringField(value, field.CipherField, ciphertext); err != nil {
+			if err := setStringField(value, field.CipherField, storedValue); err != nil {
 				return err
 			}
 			if err := setStringField(value, field.IndexField, blindIndex(p.cfg.IndexKey, plain)); err != nil {
@@ -245,9 +270,13 @@ func (p *SensitivePlugin) afterQuery(db *gorm.DB) {
 			}
 			output := ciphertext
 			if mode != SensitiveReturnCipher {
-				plain, err := p.decrypt(ciphertext)
-				if err != nil {
-					return err
+				plain := ciphertext
+				if field.EncryptAtRest {
+					var err error
+					plain, err = p.decrypt(ciphertext)
+					if err != nil {
+						return err
+					}
 				}
 				output = plain
 				if mode == SensitiveReturnMasked {
@@ -296,6 +325,7 @@ func (p *SensitivePlugin) fieldsForValue(value reflect.Value) []SensitiveFieldCo
 		field.CipherField = cipherColumn
 		field.IndexField = indexColumn
 		field.IndexColumn = indexColumn
+		field.EncryptAtRest = strings.EqualFold(options["encrypt"], "true")
 		fields = append(fields, field)
 	}
 	return fields

@@ -166,6 +166,8 @@ gorm-plus/
 
 ```go
 import (
+	"os"
+
 	gormplus "github.com/kuangshp/gorm-plus"
 	"gorm.io/driver/mysql" // 按需替换为 postgres / sqlite / sqlserver
 )
@@ -212,7 +214,26 @@ func main() {
 		},
 	}))
 
-	// ⑦ 慢查询监控
+	// ⑦ 敏感字段插件（Key 必须为 16/24/32 字节，生产环境应从 KMS/Vault 读取）
+	sensitivePlugin, err := gormplus.NewSensitivePlugin(gormplus.SensitiveConfig{
+		Key: []byte(os.Getenv("SENSITIVE_MASTER_KEY")),
+		Fields: []gormplus.SensitiveFieldConfig{{
+			PlainField:     "Phone",
+			CipherField:    "PhoneCipher",
+			IndexField:     "PhoneIndex",
+			IndexColumn:    "phone_index",
+			EncryptAtRest: false,
+			ReturnMode:     gormplus.SensitiveReturnMasked,
+		}},
+	})
+	if err != nil {
+		log.Fatalf("创建敏感字段插件失败: %v", err)
+	}
+	if err := db.Use(sensitivePlugin); err != nil {
+		log.Fatalf("注册敏感字段插件失败: %v", err)
+	}
+
+	// ⑧ 慢查询监控
 	gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
 		Threshold: 200 * time.Millisecond,
 		Logger: func(ctx context.Context, info gormplus.SlowQueryInfo) {
@@ -220,7 +241,7 @@ func main() {
 		},
 	})
 
-	// ⑧ 优雅退出
+	// ⑨ 优雅退出
 	defer gormplus.StopSFCache()
 	defer gormplus.DS.Close()
 
@@ -1834,10 +1855,33 @@ gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
 代码生成器支持通过 `GeneratorConfig.SensitiveFields` 指定表和字段，并自动生成类似下面的业务字段 tag：
 
 ```go
-Phone string `gorm:"-" json:"phone" gormplus:"type:phone;cipher:phone_cipher;index:phone_index"`
+Phone string `gorm:"-" json:"phone" gormplus:"type:phone;cipher:phone_cipher;index:phone_index;encrypt:false"`
 ```
 
 生成配置和完整 CRUD 示例见 [plugin/sensitive.md](plugin/sensitive.md)。
+
+gorm-gen Repository 按手机号查询使用：
+
+```go
+list, err := a.SysUserRepository.FindList(
+	ctx,
+	gormplus.QueryOpt().Where(
+		a.SensitivePlugin.PhoneEq(dao.SysUserEntity.PhoneIndex, phone),
+	).Build(),
+)
+```
+
+默认返回脱敏手机号；完成权限校验后，可将第一个参数换成 `gormplus.WithSensitivePlaintext(ctx)` 返回明文。
+
+无条件列表查询并返回明文：
+
+```go
+list, err := a.SysUserRepository.FindList(
+	gormplus.WithSensitivePlaintext(ctx),
+)
+```
+
+`WithSensitivePlaintext` 必须在服务端确认当前用户具有查看敏感数据明文的权限后使用。
 
 模型建议将业务展示字段排除在数据库映射之外，并隐藏密文和索引字段：
 
@@ -1857,7 +1901,14 @@ sensitive, err := gormplus.RegisterSensitive(db, gormplus.SensitiveConfig{
 	// 应从 KMS、Vault 或安全环境变量读取，不要写死在源码中。
 	Key: secretKey,
 	Fields: []gormplus.SensitiveFieldConfig{
-		gormplus.PhoneField("Phone"),
+		{
+			PlainField:     "Phone",
+			CipherField:    "PhoneCipher",
+			IndexField:     "PhoneIndex",
+			IndexColumn:    "phone_index",
+			EncryptAtRest: false, // 当前字段默认保存明文
+			ReturnMode:     gormplus.SensitiveReturnMasked,
+		},
 	},
 })
 if err != nil {
@@ -1866,6 +1917,8 @@ if err != nil {
 ```
 
 `PhoneField("Phone")` 默认使用 `PhoneCipher`、`PhoneIndex` 和数据库列 `phone_index`，自动清理手机号中的空格、横线及 `+86`，查询后默认返回 `138****8000`。
+
+`EncryptAtRest` 位于每个 `SensitiveFieldConfig` 中，默认为 `false`。因此可以让手机号保存明文、身份证号保存 AES-GCM 密文。已有数据的生产环境不能直接切换字段模式，必须先迁移存储数据。
 
 ### 插入数据
 
@@ -1959,6 +2012,15 @@ Context 返回策略：
 - 默认或 `WithSensitiveMasked(ctx)`：返回 `138****8000`。
 - `WithSensitivePlaintext(ctx)`：返回完整明文。
 - `WithSensitiveCiphertext(ctx)`：返回数据库密文。
+
+字段级高级配置也可以直接使用返回模式常量：
+
+```go
+ReturnMode: gormplus.SensitiveReturnMasked
+// 可选值：SensitiveReturnMasked、SensitiveReturnPlain、SensitiveReturnCipher
+```
+
+注册返回值类型为 `*gormplus.SensitivePlugin`，建议保存到 ServiceContext，供 `PhoneEq`、`IndexValue` 等查询方法复用。
 
 需要自定义字段名、手机号规范化、掩码长度或按权限动态判断时，仍可直接填写 `SensitiveFieldConfig` 的高级配置。
 

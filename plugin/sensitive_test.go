@@ -18,7 +18,7 @@ type sensitiveUser struct {
 
 type generatedSensitiveUser struct {
 	ID          uint
-	Phone       string `gorm:"-" json:"phone" gormplus:"type:phone;cipher:phone_cipher;index:phone_index"`
+	Phone       string `gorm:"-" json:"phone" gormplus:"type:phone;cipher:phone_cipher;index:phone_index;encrypt:false"`
 	PhoneCipher string `gorm:"column:phone_cipher"`
 	PhoneIndex  string `gorm:"column:phone_index;uniqueIndex"`
 }
@@ -36,9 +36,10 @@ func TestSensitivePluginEncryptQueryAndReturnModes(t *testing.T) {
 		EncryptionKey: []byte("0123456789abcdef0123456789abcdef"),
 		IndexKey:      []byte("index-key-must-be-kept-separate-32"),
 		Fields: []SensitiveFieldConfig{{
-			PlainField:  "Phone",
-			CipherField: "PhoneCipher",
-			IndexField:  "phone_index",
+			PlainField:    "Phone",
+			CipherField:   "PhoneCipher",
+			IndexField:    "phone_index",
+			EncryptAtRest: true,
 			Normalize: func(value string) string {
 				return strings.ReplaceAll(strings.TrimSpace(value), " ", "")
 			},
@@ -176,5 +177,12 @@ func TestSensitivePluginReadsGeneratedTags(t *testing.T) {
 	}
 	if user.Phone != "138****8000" {
 		t.Fatalf("generated tag phone = %q", user.Phone)
+	}
+	if user.PhoneCipher != "13800138000" {
+		t.Fatalf("default stored phone = %q, want plaintext", user.PhoneCipher)
+	}
+	index := p.IndexValue("Phone", "+86 138-0013-8000")
+	if index == "" || index != user.PhoneIndex {
+		t.Fatalf("generated tag index = %q, database index = %q", index, user.PhoneIndex)
 	}
 }

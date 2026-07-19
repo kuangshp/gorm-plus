@@ -51,6 +51,8 @@ type SensitiveFieldConfig struct {
 	Type        string `yaml:"type"`         // 敏感类型，例如 phone；为空默认 phone
 	CipherField string `yaml:"cipher_field"` // 密文列；为空默认 {field}_cipher
 	IndexField  string `yaml:"index_field"`  // 索引列；为空默认 {field}_index
+	// EncryptAtRest 默认 false 保存明文；true 保存 AES-GCM 密文。
+	EncryptAtRest bool `yaml:"encrypt_at_rest"`
 }
 
 // LoadConfig 从YAML文件加载配置
