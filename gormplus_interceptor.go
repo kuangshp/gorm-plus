@@ -25,9 +25,14 @@ func PropagateContextKey[T any](key any) ContextMetadataField {
 	return interceptor.PropagateContextKey[T](key)
 }
 
-// PropagateTenantID 声明 Tenant 插件使用的租户 ID 透传字段。
-func PropagateTenantID[T comparable]() ContextMetadataField {
-	return interceptor.PropagateTenantID[T]()
+// PropagateTenantID 声明 Tenant 插件使用的租户 ID；传值时使用固定值，否则从 context 读取。
+func PropagateTenantID[T comparable](fixedValue ...T) ContextMetadataField {
+	return interceptor.PropagateTenantID(fixedValue...)
+}
+
+// PropagateOperatorID 声明 AutoFill 插件默认使用的操作人 ID；传值时使用固定值。
+func PropagateOperatorID[T any](fixedValue ...T) ContextMetadataField {
+	return interceptor.PropagateOperatorID(fixedValue...)
 }
 
 // PropagateContextValue 声明一个固定值透传字段，不读取当前 context。

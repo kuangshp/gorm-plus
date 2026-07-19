@@ -61,12 +61,20 @@ func PropagateContextKey[T any](key any) ContextMetadataField {
 }
 
 // PropagateTenantID 声明 Tenant 插件使用的租户 ID 透传字段。
-// 客户端通过 plugin.DefaultGetTenantID 读取，RPC 服务端通过 plugin.WithTenantID 恢复。
-func PropagateTenantID[T comparable]() ContextMetadataField {
+// 不传值时从当前 context 读取；传值时固定使用该租户 ID。
+// RPC 服务端统一通过 plugin.WithTenantID 恢复。
+func PropagateTenantID[T comparable](fixedValue ...T) ContextMetadataField {
 	field := ContextMetadataField{
 		contextKey: struct{}{},
 		wireKey:    "gormplus.tenant",
 		valueKind:  reflect.TypeOf((*T)(nil)).Elem().Kind(),
+	}
+	if len(fixedValue) > 0 {
+		field.extract = func(context.Context) (string, bool, error) {
+			encoded, err := encodeMetadataValue(fixedValue[0])
+			return encoded, true, err
+		}
+		return field
 	}
 	field.extract = func(ctx context.Context) (string, bool, error) {
 		value, ok := plugin.DefaultGetTenantID[T](ctx)
@@ -77,6 +85,15 @@ func PropagateTenantID[T comparable]() ContextMetadataField {
 		return encoded, true, err
 	}
 	return field
+}
+
+// PropagateOperatorID 声明 AutoFill 插件默认使用的操作人 ID 透传字段。
+// 不传值时从 plugin.CtxOperatorKey1 读取；传值时固定使用该操作人 ID。
+func PropagateOperatorID[T any](fixedValue ...T) ContextMetadataField {
+	if len(fixedValue) > 0 {
+		return PropagateContextValue(plugin.CtxOperatorKey1, fixedValue[0])
+	}
+	return PropagateContextKey[T](plugin.CtxOperatorKey1)
 }
 
 // PropagateContextValue 声明一个固定值透传字段。

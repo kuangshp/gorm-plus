@@ -145,3 +145,47 @@ func TestFixedContextValueRoundTrip(t *testing.T) {
 		t.Fatalf("server interceptor: %v", err)
 	}
 }
+
+func TestFixedTenantIDRoundTrip(t *testing.T) {
+	clientInterceptor := NewUnaryContextClientInterceptor(PropagateTenantID[int64](10))
+	var outgoingMD metadata.MD
+	err := clientInterceptor(context.Background(), "/site.Site/Create", nil, nil, nil, func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
+		outgoingMD, _ = metadata.FromOutgoingContext(ctx)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("client interceptor: %v", err)
+	}
+
+	_, err = UnaryContextServerInterceptor(metadata.NewIncomingContext(context.Background(), outgoingMD), nil, nil, func(ctx context.Context, _ any) (any, error) {
+		if got := plugin.TenantIDFromCtx[int64](ctx); got != 10 {
+			t.Fatalf("tenant ID = %d, want 10", got)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("server interceptor: %v", err)
+	}
+}
+
+func TestFixedOperatorIDRoundTrip(t *testing.T) {
+	clientInterceptor := NewUnaryContextClientInterceptor(PropagateOperatorID[int64](20))
+	var outgoingMD metadata.MD
+	err := clientInterceptor(context.Background(), "/site.Site/Create", nil, nil, nil, func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
+		outgoingMD, _ = metadata.FromOutgoingContext(ctx)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("client interceptor: %v", err)
+	}
+
+	_, err = UnaryContextServerInterceptor(metadata.NewIncomingContext(context.Background(), outgoingMD), nil, nil, func(ctx context.Context, _ any) (any, error) {
+		if got := plugin.CtxGetter[int64](plugin.CtxOperatorKey1)(ctx); got != int64(20) {
+			t.Fatalf("operator ID = %v, want 20", got)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("server interceptor: %v", err)
+	}
+}

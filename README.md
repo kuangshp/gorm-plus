@@ -527,7 +527,7 @@ API middleware
 ```go
 contextFields := []gormplus.ContextMetadataField{
 	gormplus.PropagateTenantID[int64](), // Tenant 插件租户 ID
-	gormplus.PropagateContextKey[int64](gormplus.CtxContextKey1), // 操作人 ID
+	gormplus.PropagateOperatorID[int64](), // AutoFill 插件操作人 ID
 	gormplus.PropagateContextKey[string](gormplus.CtxContextKey2), // 操作人姓名
 	gormplus.PropagateContextKey[string]("loginUserId"),
 	// 固定值：不读取当前 ctx，每次 RPC 调用都传递该值。
@@ -541,6 +541,18 @@ rpcClient := zrpc.MustNewClient(
 	),
 )
 ```
+
+测试或固定租户场景可以直接传入租户 ID，不需要再包一层客户端拦截器：
+
+```go
+contextFields := []gormplus.ContextMetadataField{
+	gormplus.PropagateTenantID[int64](10),
+	gormplus.PropagateOperatorID[int64](20),
+	gormplus.PropagateContextValue[int64]("company_id", 12),
+}
+```
+
+`PropagateTenantID[int64]()` 从当前 Context 读取租户，`PropagateTenantID[int64](10)` 固定传递租户 `10`；`PropagateOperatorID[int64]()` 从 `CtxContextKey1` 读取操作人，`PropagateOperatorID[int64](20)` 固定传递操作人 `20`。它们在 RPC 服务端都会恢复成对应插件可以直接识别的 Context。
 
 RPC 服务端只需注册一个通用恢复拦截器，不需要重复声明字段和类型：
 
