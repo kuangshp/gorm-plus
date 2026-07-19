@@ -382,8 +382,7 @@ validationInterceptor := gormplus.NewUnaryValidationInterceptor(
 		// 覆盖内置提示
 		"required": "此字段必须填写",
 		// 增加业务自定义规则提示
-		"string.date_format":      "日期格式必须为 YYYY-MM-DD",
-		"string.date_time_format": "时间格式必须为 YYYY-MM-DD HH:mm:ss",
+		"sys_user.keyword.length": "用户名或者邮箱长度不正确",
 	}),
 )
 
@@ -431,6 +430,8 @@ var validationMessages = map[string]string{
 	"string.pattern":     "格式不符合要求",
 	"string.email":       "邮箱格式不正确",
 	"string.uuid":        "UUID格式不正确",
+	"string.date_format": "日期格式必须为 YYYY-MM-DD",
+	"string.date_time_format": "时间格式必须为 YYYY-MM-DD HH:mm:ss",
 	"int64.gt":           "必须大于规定值",
 	"int64.gte":          "不能小于规定值",
 	"int64.lt":           "必须小于规定值",

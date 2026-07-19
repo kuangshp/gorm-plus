@@ -16,21 +16,23 @@ import (
 // validationMessages 统一维护 Protovalidate 标准规则的中文提示。
 // 未配置的规则会回退到 Protovalidate 原始错误信息。
 var validationMessages = map[string]string{
-	"required":           "不能为空",
-	"string.min_len":     "长度不能小于规定值",
-	"string.max_len":     "长度不能超过规定值",
-	"string.len":         "长度不符合要求",
-	"string.pattern":     "格式不符合要求",
-	"string.email":       "邮箱格式不正确",
-	"string.uuid":        "UUID格式不正确",
-	"int64.gt":           "必须大于规定值",
-	"int64.gte":          "不能小于规定值",
-	"int64.lt":           "必须小于规定值",
-	"int64.lte":          "不能大于规定值",
-	"int64.in":           "不在允许的取值范围内",
-	"repeated.min_items": "至少需要一项数据",
-	"repeated.max_items": "数据项数量超过限制",
-	"repeated.unique":    "数据项不能重复",
+	"required":                "不能为空",
+	"string.min_len":          "长度不能小于规定值",
+	"string.max_len":          "长度不能超过规定值",
+	"string.len":              "长度不符合要求",
+	"string.pattern":          "格式不符合要求",
+	"string.email":            "邮箱格式不正确",
+	"string.uuid":             "UUID格式不正确",
+	"string.date_format":      "日期格式必须为 YYYY-MM-DD",
+	"string.date_time_format": "时间格式必须为 YYYY-MM-DD HH:mm:ss",
+	"int64.gt":                "必须大于规定值",
+	"int64.gte":               "不能小于规定值",
+	"int64.lt":                "必须小于规定值",
+	"int64.lte":               "不能大于规定值",
+	"int64.in":                "不在允许的取值范围内",
+	"repeated.min_items":      "至少需要一项数据",
+	"repeated.max_items":      "数据项数量超过限制",
+	"repeated.unique":         "数据项不能重复",
 }
 
 type validationInterceptorConfig struct {

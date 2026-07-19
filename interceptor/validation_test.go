@@ -25,11 +25,27 @@ func TestValidationMessageUsesChineseStandardRuleMessage(t *testing.T) {
 
 func TestValidationMessageFallsBackToOriginalMessage(t *testing.T) {
 	violation := &protovalidate.Violation{Proto: &validate.Violation{
-		RuleId:  proto.String("string.date_format"),
-		Message: proto.String("日期格式必须为 YYYY-MM-DD"),
+		RuleId:  proto.String("business.custom_rule"),
+		Message: proto.String("业务自定义错误信息"),
 	}}
-	if got, want := validationMessage(violation), "日期格式必须为 YYYY-MM-DD"; got != want {
+	if got, want := validationMessage(violation), "业务自定义错误信息"; got != want {
 		t.Fatalf("validationMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestValidationMessageIncludesDefaultDateMessages(t *testing.T) {
+	tests := []struct {
+		ruleID string
+		want   string
+	}{
+		{ruleID: "string.date_format", want: "日期格式必须为 YYYY-MM-DD"},
+		{ruleID: "string.date_time_format", want: "时间格式必须为 YYYY-MM-DD HH:mm:ss"},
+	}
+	for _, tt := range tests {
+		violation := &protovalidate.Violation{Proto: &validate.Violation{RuleId: proto.String(tt.ruleID)}}
+		if got := validationMessage(violation); got != tt.want {
+			t.Errorf("rule %s: got %q, want %q", tt.ruleID, got, tt.want)
+		}
 	}
 }
 
