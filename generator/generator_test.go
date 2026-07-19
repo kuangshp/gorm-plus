@@ -7,6 +7,25 @@ import (
 	"testing"
 )
 
+func TestSensitiveModelGenerationConfig(t *testing.T) {
+	configs := []SensitiveFieldConfig{{
+		Table:       "sys_user",
+		Field:       "phone",
+		Type:        "phone",
+		CipherField: "phone_cipher",
+		IndexField:  "phone_index",
+	}}
+	if got := len(sensitiveModelOpts("sys_user", configs)); got != 1 {
+		t.Fatalf("sensitive model opts = %d, want 1", got)
+	}
+	if got := len(sensitiveModelOpts("other_table", configs)); got != 0 {
+		t.Fatalf("other table sensitive model opts = %d, want 0", got)
+	}
+	if got := sensitiveFieldTagValue("phone", "phone_cipher", "phone_index"); got != "type:phone;cipher:phone_cipher;index:phone_index" {
+		t.Fatalf("sensitive tag = %q", got)
+	}
+}
+
 func TestGenerateValidateRuleBuildsOneofFromChineseEnumComment(t *testing.T) {
 	rule := generateValidateRule(ColumnInfo{
 		Name:    "status",

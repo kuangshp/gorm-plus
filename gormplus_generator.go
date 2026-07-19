@@ -8,6 +8,7 @@ import (
 
 // GeneratorConfig 代码生成器配置，通过 YAML 文件加载或直接构造。
 type GeneratorConfig = generator.Config
+type GeneratorSensitiveField = generator.SensitiveFieldConfig
 
 // LoadGeneratorConfig 从 YAML 文件加载代码生成器配置。
 //

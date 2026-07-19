@@ -1411,7 +1411,9 @@ func Generate(cfg *Config) error {
 	// ③ 统一生成（含所有历史表 + 新表）
 	allModels := make([]interface{}, 0, len(modelTables))
 	for _, tbl := range modelTables {
-		allModels = append(allModels, g.GenerateModel(tbl, fieldOpts...))
+		tableFieldOpts := append([]gen.ModelOpt{}, fieldOpts...)
+		tableFieldOpts = append(tableFieldOpts, sensitiveModelOpts(tbl, cfg.SensitiveFields)...)
+		allModels = append(allModels, g.GenerateModel(tbl, tableFieldOpts...))
 	}
 	g.ApplyBasic(allModels...)
 	g.Execute()
@@ -1448,4 +1450,38 @@ func Generate(cfg *Config) error {
 
 	fmt.Println("\n全部生成完成！")
 	return nil
+}
+
+func sensitiveModelOpts(table string, configs []SensitiveFieldConfig) []gen.ModelOpt {
+	var opts []gen.ModelOpt
+	for _, cfg := range configs {
+		if !strings.EqualFold(strings.TrimSpace(cfg.Table), strings.TrimSpace(table)) || strings.TrimSpace(cfg.Field) == "" {
+			continue
+		}
+		logicalColumn := strings.TrimSpace(cfg.Field)
+		logicalName := Case2Camel(logicalColumn)
+		cipherColumn := strings.TrimSpace(cfg.CipherField)
+		if cipherColumn == "" {
+			cipherColumn = logicalColumn + "_cipher"
+		}
+		indexColumn := strings.TrimSpace(cfg.IndexField)
+		if indexColumn == "" {
+			indexColumn = logicalColumn + "_index"
+		}
+		sensitiveType := strings.TrimSpace(cfg.Type)
+		if sensitiveType == "" {
+			sensitiveType = "phone"
+		}
+		tagValue := sensitiveFieldTagValue(sensitiveType, cipherColumn, indexColumn)
+		opts = append(opts, gen.FieldNew(logicalName, "string", field.Tag{
+			"gorm":     "-",
+			"json":     LowerCamelCase(logicalName),
+			"gormplus": tagValue,
+		}))
+	}
+	return opts
+}
+
+func sensitiveFieldTagValue(sensitiveType, cipherColumn, indexColumn string) string {
+	return fmt.Sprintf("type:%s;cipher:%s;index:%s", sensitiveType, cipherColumn, indexColumn)
 }

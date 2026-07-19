@@ -38,6 +38,19 @@ type Config struct {
 
 	// ExcludeTables 不执行代码生成的表名列表（不区分大小写）。
 	ExcludeTables []string `yaml:"exclude_tables"`
+
+	// SensitiveFields 为指定表生成敏感业务字段及 gormplus tag。
+	// 数据库需存在对应的密文列和索引列，例如 phone_cipher、phone_index。
+	SensitiveFields []SensitiveFieldConfig `yaml:"sensitive_fields"`
+}
+
+// SensitiveFieldConfig 配置代码生成器中的敏感字段。
+type SensitiveFieldConfig struct {
+	Table       string `yaml:"table"`        // 数据库表名
+	Field       string `yaml:"field"`        // 业务字段名或列名，例如 phone
+	Type        string `yaml:"type"`         // 敏感类型，例如 phone；为空默认 phone
+	CipherField string `yaml:"cipher_field"` // 密文列；为空默认 {field}_cipher
+	IndexField  string `yaml:"index_field"`  // 索引列；为空默认 {field}_index
 }
 
 // LoadConfig 从YAML文件加载配置
