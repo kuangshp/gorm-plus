@@ -507,8 +507,6 @@ func validationMessage(violation *protovalidate.Violation) string {
 }
 ```
 
-</details>
-
 ### RPC Context 透传
 
 工具库提供成对的 gRPC 客户端和服务端拦截器，用于把 API context 中的租户 ID、操作人 ID 等信息通过 metadata 传递到 RPC，并恢复成数据库插件可以直接读取的 context 值：
@@ -523,6 +521,45 @@ API middleware
   → db.WithContext(ctx)
   → Tenant / AutoFill plugin
 ```
+
+最简单的方式是在 API 创建 RPC Client 时声明需要透传的字符串 Context Key：
+
+```go
+contextFields := []gormplus.ContextMetadataField{
+	gormplus.PropagateContextKey[int64]("tenantId"),
+	gormplus.PropagateContextKey[int64](gormplus.CtxContextKey1), // 操作人 ID
+	gormplus.PropagateContextKey[string](gormplus.CtxContextKey2), // 操作人姓名
+	gormplus.PropagateContextKey[string]("loginUserId"),
+}
+
+rpcClient := zrpc.MustNewClient(
+	c.SiteRpc,
+	zrpc.WithUnaryClientInterceptor(
+		gormplus.NewUnaryContextClientInterceptor(contextFields...),
+	),
+)
+```
+
+RPC 服务端只需注册一个通用恢复拦截器，不需要重复声明字段和类型：
+
+```go
+s.AddUnaryInterceptors(
+	interceptor.UnaryJaegerTraceInterceptor,
+	gormplus.UnaryContextServerInterceptor,
+	gormplus.UnaryValidationInterceptor,
+)
+```
+
+之后在 RPC Logic 中使用相同 key 读取：
+
+```go
+tenantID, _ := l.ctx.Value("tenantId").(int64)
+operatorID := gormplus.CtxGetter[int64](gormplus.CtxContextKey1)(l.ctx)
+operatorName := gormplus.CtxGetter[string](gormplus.CtxContextKey2)(l.ctx)
+loginUserID, _ := l.ctx.Value("loginUserId").(string)
+```
+
+API 只需声明并写入需要透传的字段，RPC 端会根据载荷携带的基础类型自动恢复。目前支持 `string`、`bool`、各类整数和浮点数。字段不存在时自动跳过，不会阻止 RPC 调用；业务项目无需另外创建 `context_propagation.go`。
 
 API 中间件先把认证结果写入请求 context：
 
@@ -540,13 +577,10 @@ func TenantOperatorMiddleware(next http.HandlerFunc) http.HandlerFunc {
 API 服务创建 RPC 客户端时注册客户端拦截器。后续 Logic 调用 RPC 时必须继续传递 `l.ctx`：
 
 ```go
-propagationConfig := gormplus.DefaultInt64ContextPropagationConfig()
-propagationConfig.RequireTenant = true
-
 rpcClient := zrpc.MustNewClient(
 	c.SiteRpc,
 	zrpc.WithUnaryClientInterceptor(
-		gormplus.UnaryContextPropagationClientInterceptor(propagationConfig),
+		gormplus.UnaryInt64ContextPropagationClientInterceptor,
 	),
 )
 
@@ -559,12 +593,30 @@ resp, err := siteClient.CreateSite(l.ctx, request)
 RPC 服务端注册 context 恢复拦截器和参数校验拦截器。context 恢复拦截器应放在参数校验和业务 Logic 之前：
 
 ```go
-propagationConfig := gormplus.DefaultInt64ContextPropagationConfig()
-propagationConfig.RequireTenant = true
-
 s.AddUnaryInterceptors(
-	gormplus.UnaryContextPropagationServerInterceptor(propagationConfig),
+	gormplus.UnaryInt64ContextPropagationServerInterceptor,
 	gormplus.UnaryValidationInterceptor,
+)
+```
+
+与 Jaeger 等其他 Unary 拦截器组合时，推荐顺序为“链路追踪 → Context 恢复 → 参数校验 → 业务 Logic”：
+
+```go
+s.AddUnaryInterceptors(
+	interceptor.UnaryJaegerTraceInterceptor,
+	gormplus.UnaryInt64ContextPropagationServerInterceptor,
+	gormplus.UnaryValidationInterceptor,
+)
+```
+
+服务端注册 Context 恢复拦截器后，API 侧对应的 RPC Client 也必须注册客户端透传拦截器，否则服务端收不到租户和操作人 metadata：
+
+```go
+rpcClient := zrpc.MustNewClient(
+	c.SiteRpc,
+	zrpc.WithUnaryClientInterceptor(
+		gormplus.UnaryInt64ContextPropagationClientInterceptor,
+	),
 )
 ```
 
@@ -587,10 +639,13 @@ func (l *CreateSiteLogic) CreateSite(req *site.CreateSiteReq) (*site.EmptyRespon
 - RPC 服务端使用 `WithTenantID[int64]` 恢复租户，现有 Tenant 插件无需修改。
 - 操作人 ID 恢复到 `CtxContextKey1`，现有 `CtxGetter[int64](CtxContextKey1)` 自动填充配置无需修改。
 
-如需传递操作人姓名、部门 ID 等字段，可以扩展配置：
+`x-gorm-plus-tenant-id` 和 `x-gorm-plus-operator-id` 是工具库内部使用的跨进程 metadata key，不是业务 context key，常规项目无需配置或感知。
+
+只有需要强制租户、自定义 ID 类型，或额外传递操作人姓名、部门 ID 等字段时，才需要使用高级配置：
 
 ```go
 propagationConfig := gormplus.DefaultInt64ContextPropagationConfig()
+propagationConfig.RequireTenant = true
 propagationConfig.Fields = append(
 	propagationConfig.Fields,
 	gormplus.NewContextMetadataField[string](
