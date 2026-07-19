@@ -8,6 +8,14 @@ import (
 // UnaryValidationInterceptor 在 gRPC 业务 Handler 执行前统一执行 Protovalidate 参数校验。
 var UnaryValidationInterceptor = interceptor.UnaryValidationInterceptor
 
+type ValidationInterceptorOption = interceptor.ValidationInterceptorOption
+
+var WithValidationMessages = interceptor.WithValidationMessages
+
+func NewUnaryValidationInterceptor(options ...ValidationInterceptorOption) grpc.UnaryServerInterceptor {
+	return interceptor.NewUnaryValidationInterceptor(options...)
+}
+
 const (
 	TenantIDMetadataKey   = interceptor.TenantIDMetadataKey
 	OperatorIDMetadataKey = interceptor.OperatorIDMetadataKey

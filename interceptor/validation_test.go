@@ -33,10 +33,50 @@ func TestValidationMessageFallsBackToOriginalMessage(t *testing.T) {
 	}
 }
 
+func TestValidationMessageUsesCustomCELMessage(t *testing.T) {
+	violation := &protovalidate.Violation{Proto: &validate.Violation{
+		RuleId:  proto.String("sys_user.keyword.length"),
+		Message: proto.String("用户名或者邮箱长度必须在5到190个字符之间"),
+	}}
+	if got, want := validationMessage(violation), "用户名或者邮箱长度必须在5到190个字符之间"; got != want {
+		t.Fatalf("validationMessage() = %q, want %q", got, want)
+	}
+}
+
 func TestValidationMessageUsesDefaultMessage(t *testing.T) {
 	violation := &protovalidate.Violation{Proto: &validate.Violation{RuleId: proto.String("custom.unknown")}}
 	if got, want := validationMessage(violation), "参数不符合要求"; got != want {
 		t.Fatalf("validationMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestWithValidationMessagesExtendsAndOverridesDefaults(t *testing.T) {
+	customMessages := map[string]string{
+		"required":           "此字段必须填写",
+		"string.date_format": "日期格式不正确",
+	}
+	cfg := newValidationInterceptorConfig(WithValidationMessages(customMessages))
+	customMessages["required"] = "修改后不应生效"
+
+	tests := []struct {
+		ruleID string
+		want   string
+	}{
+		{ruleID: "required", want: "此字段必须填写"},
+		{ruleID: "string.date_format", want: "日期格式不正确"},
+		{ruleID: "string.max_len", want: "长度不能超过规定值"},
+	}
+	for _, tt := range tests {
+		violation := &protovalidate.Violation{Proto: &validate.Violation{RuleId: proto.String(tt.ruleID)}}
+		if got := validationMessageWithMessages(violation, cfg.messages); got != tt.want {
+			t.Errorf("rule %s: got %q, want %q", tt.ruleID, got, tt.want)
+		}
+	}
+}
+
+func TestNewUnaryValidationInterceptorWithoutOptionsUsesDefaults(t *testing.T) {
+	if interceptor := NewUnaryValidationInterceptor(); interceptor == nil {
+		t.Fatal("NewUnaryValidationInterceptor() returned nil")
 	}
 }
 

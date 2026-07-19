@@ -322,6 +322,39 @@ message PageSiteReq {
 }
 ```
 
+#### 业务自定义 CEL 校验
+
+数据库字段规则无法覆盖的业务语义，可以直接在业务 Proto 中增加自定义 CEL。例如用户名或邮箱关键字要求长度在 5～190 个字符之间：
+
+```proto
+message SysUserKeywordReq {
+  string keyword = 1 [
+    (buf.validate.field).string = {min_len: 5, max_len: 190},
+    (buf.validate.field).cel = {
+      id: "sys_user.keyword.length"
+      message: "用户名或者邮箱长度必须在5到190个字符之间"
+      expression: "this.size() >= 5 && this.size() <= 190"
+    }
+  ]; // 用户名或者邮箱
+}
+```
+
+自定义 CEL 的 `id` 应在项目内保持唯一，建议采用 `{模块}.{字段}.{规则}` 格式。`message` 应填写可直接展示给用户的业务提示。
+
+全局校验拦截器处理提示信息时遵循以下顺序：
+
+1. Rule ID 存在于默认或自定义 `validationMessages` 时，使用映射后的提示。
+2. Rule ID 未配置时，直接使用 CEL 中声明的 `message`。
+3. 两者都没有时，返回“参数不符合要求”。
+
+因此上面的校验失败时会直接返回：
+
+```text
+字段【keyword】:用户名或者邮箱长度必须在5到190个字符之间
+```
+
+`SysUserKeywordReq` 属于业务专用消息，应添加到对应业务 Proto 中；生成器只自动维护能从数据库结构稳定推导出的通用 CRUD 校验，避免为所有数据表生成不适用的关键字查询消息。
+
 时间字段在请求和响应中的约定不同：Create、Modify、Page 请求使用字符串；响应 Model 使用 Unix 秒 `int64`。字符串到数据库时间类型的解析由业务方处理，生成的 mapper 不规定时区或解析方式。
 
 使用生成的校验注解前，需要在 RPC 项目中引入 Protovalidate：
@@ -340,6 +373,30 @@ import gormplus "github.com/kuangshp/gorm-plus"
 // 在进入业务 Logic 前统一执行 Proto 参数校验。
 s.AddUnaryInterceptors(gormplus.UnaryValidationInterceptor)
 ```
+
+需要扩展或覆盖默认中文提示时，创建自定义拦截器：
+
+```go
+validationInterceptor := gormplus.NewUnaryValidationInterceptor(
+	gormplus.WithValidationMessages(map[string]string{
+		// 覆盖内置提示
+		"required": "此字段必须填写",
+		// 增加业务自定义规则提示
+		"string.date_format":      "日期格式必须为 YYYY-MM-DD",
+		"string.date_time_format": "时间格式必须为 YYYY-MM-DD HH:mm:ss",
+	}),
+)
+
+s.AddUnaryInterceptors(validationInterceptor)
+```
+
+不传任何 Option 时仍使用全部内置提示：
+
+```go
+s.AddUnaryInterceptors(gormplus.NewUnaryValidationInterceptor())
+```
+
+自定义 map 会与默认提示合并：相同 Rule ID 覆盖默认值，新 Rule ID 作为扩展；创建拦截器时会复制 map，之后修改原 map 不会影响运行中的拦截器。
 
 也可以按独立子包引用：
 
