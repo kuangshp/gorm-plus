@@ -267,6 +267,246 @@ if err := gormplus.Generate(cfg); err != nil {
 
 > **注意**：数据模型（Model）每次都会重新生成覆盖；Repository / API / Proto / VO / DTO 文件已存在时自动跳过，不会覆盖已有的自定义代码。
 
+### Proto 生成与参数校验
+
+配置 `proto_path` 后，生成器会为每张表生成业务 Proto，并在该目录首次生成 `base.proto`。业务 Proto 会自动引入公共定义和 Protovalidate：
+
+```proto
+import "proto/base.proto";
+import "buf/validate/validate.proto";
+```
+
+其中 `proto/base.proto` 的 `proto` 会根据 `proto_path` 最后一级目录动态生成。例如 `proto_path: ./apps/rpc/desc` 会生成 `import "desc/base.proto";`。
+
+生成器会根据数据库字段自动添加校验规则：
+
+- 非空字段：Create 请求生成 `required`。
+- `varchar(n)`：生成 `string.max_len = n`。
+- `char(n)`：生成 `string.len = n`。
+- 字段注释中的数字枚举：生成 `in` 校验，例如 `1、正常，2、禁用`。
+- `decimal`：生成 `double.finite = true`，拒绝 `NaN` 和正负无穷值。
+- `date`：使用 `base.proto` 中的 `date_format`，格式为 `YYYY-MM-DD`。
+- `datetime`、`timestamp`：使用 `date_time_format`，格式为 `YYYY-MM-DD HH:mm:ss`。
+- ID：必须大于 0；批量 ID 列表不能为空且每个 ID 必须大于 0。
+- 分页请求：`page` 必填；查询条件均为 `optional`。
+
+生成结果示例：
+
+```proto
+message PageSiteReq {
+  PageRequest page = 1 [(buf.validate.field).required = true];
+
+  optional string siteCode = 2 [
+    (buf.validate.field).string.max_len = 32
+  ];
+
+  optional string currency = 3 [
+    (buf.validate.field).string.len = 3
+  ];
+
+  optional int64 status = 4 [
+    (buf.validate.field).int64 = {in: [1, 2]}
+  ];
+
+  optional string businessDate = 5 [
+    (buf.validate.field).string.(date_format) = true
+  ];
+
+  optional string lastLoginAt = 6 [
+    (buf.validate.field).string.(date_time_format) = true
+  ];
+
+  optional double balance = 7 [
+    (buf.validate.field).double.finite = true
+  ];
+}
+```
+
+时间字段在请求和响应中的约定不同：Create、Modify、Page 请求使用字符串；响应 Model 使用 Unix 秒 `int64`。字符串到数据库时间类型的解析由业务方处理，生成的 mapper 不规定时区或解析方式。
+
+使用生成的校验注解前，需要在 RPC 项目中引入 Protovalidate：
+
+```bash
+go get buf.build/go/protovalidate
+```
+
+#### gRPC 全局参数校验拦截器
+
+工具库已经内置统一 Unary 拦截器，在进入业务 Logic 前校验所有带 Protovalidate 规则的请求。go-zero RPC 服务可以直接注册：
+
+```go
+import gormplus "github.com/kuangshp/gorm-plus"
+
+// 在进入业务 Logic 前统一执行 Proto 参数校验。
+s.AddUnaryInterceptors(gormplus.UnaryValidationInterceptor)
+```
+
+也可以按独立子包引用：
+
+```go
+import "github.com/kuangshp/gorm-plus/interceptor"
+
+s.AddUnaryInterceptors(interceptor.UnaryValidationInterceptor)
+```
+
+内置拦截器的实现如下，如需定制错误消息或校验策略，可以在业务项目中参考该实现：
+
+```go
+package interceptor
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"buf.build/go/protovalidate"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+)
+
+// UnaryValidationInterceptor 在业务 Logic 执行前统一校验所有带 Protovalidate 规则的请求。
+func UnaryValidationInterceptor(
+	ctx context.Context,
+	req any,
+	_ *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler,
+) (any, error) {
+	message, ok := req.(proto.Message)
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "请求参数类型错误")
+	}
+	if err := protovalidate.Validate(message, protovalidate.WithFailFast()); err != nil {
+		return nil, validationStatusError(err)
+	}
+	return handler(ctx, req)
+}
+
+// validationStatusError 将 Protovalidate 错误转换为包含字段路径的 gRPC 错误。
+func validationStatusError(err error) error {
+	var validationErr *protovalidate.ValidationError
+	if !errors.As(err, &validationErr) || len(validationErr.Violations) == 0 {
+		return status.Error(codes.InvalidArgument, "请求参数校验失败")
+	}
+
+	violation := validationErr.Violations[0]
+	field := protovalidate.FieldPathString(violation.Proto.GetField())
+	if field == "" {
+		field = "request"
+	}
+
+	grpcStatus := status.New(
+		codes.InvalidArgument,
+		fmt.Sprintf("参数 %s 错误：%s", field, violation.Proto.GetMessage()),
+	)
+	// 同时附加结构化 Violations，支持客户端按字段和规则 ID 精确处理。
+	if statusWithDetails, detailErr := grpcStatus.WithDetails(validationErr.ToProto()); detailErr == nil {
+		return statusWithDetails.Err()
+	}
+	return grpcStatus.Err()
+}
+```
+
+拦截器使用 Fail Fast 模式，只返回第一个违规字段，并将完整的结构化 `Violations` 放入 gRPC Status Details。客户端既可以直接展示错误消息，也可以按字段路径和规则 ID 做精确处理。
+
+#### API → RPC 租户与操作人 Context 透传
+
+工具库提供成对的 gRPC 客户端和服务端拦截器，用于把 API context 中的租户 ID、操作人 ID 等信息通过 metadata 传递到 RPC，并恢复成数据库插件可以直接读取的 context 值：
+
+```text
+API middleware
+  → context（租户、操作人）
+  → gRPC client interceptor
+  → metadata
+  → gRPC server interceptor
+  → RPC context
+  → db.WithContext(ctx)
+  → Tenant / AutoFill plugin
+```
+
+API 中间件先把认证结果写入请求 context：
+
+```go
+func TenantOperatorMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// tenantID、operatorID 来自已验证的登录凭证。
+		ctx := gormplus.WithTenantID(r.Context(), tenantID)
+		ctx = context.WithValue(ctx, gormplus.CtxContextKey1, operatorID)
+		next(w, r.WithContext(ctx))
+	}
+}
+```
+
+API 服务创建 RPC 客户端时注册客户端拦截器。后续 Logic 调用 RPC 时必须继续传递 `l.ctx`：
+
+```go
+propagationConfig := gormplus.DefaultInt64ContextPropagationConfig()
+propagationConfig.RequireTenant = true
+
+rpcClient := zrpc.MustNewClient(
+	c.SiteRpc,
+	zrpc.WithUnaryClientInterceptor(
+		gormplus.UnaryContextPropagationClientInterceptor(propagationConfig),
+	),
+)
+
+// API Logic：使用当前请求 ctx 调用 RPC。
+resp, err := siteClient.CreateSite(l.ctx, request)
+```
+
+租户和操作人是两个独立字段，不要求同时存在：只有租户时仅透传租户，只有操作人时仅透传操作人，两者都没有时直接调用 RPC。只有设置 `RequireTenant = true` 后，缺少租户才会返回 `Unauthenticated`；不要求每个接口都有租户时请保持默认值 `false`。
+
+RPC 服务端注册 context 恢复拦截器和参数校验拦截器。context 恢复拦截器应放在参数校验和业务 Logic 之前：
+
+```go
+propagationConfig := gormplus.DefaultInt64ContextPropagationConfig()
+propagationConfig.RequireTenant = true
+
+s.AddUnaryInterceptors(
+	gormplus.UnaryContextPropagationServerInterceptor(propagationConfig),
+	gormplus.UnaryValidationInterceptor,
+)
+```
+
+RPC Logic 执行数据库操作时继续使用收到的 context：
+
+```go
+func (l *CreateSiteLogic) CreateSite(req *site.CreateSiteReq) (*site.EmptyResponse, error) {
+	entity := mapper.CreateReqToEntity(req)
+	if err := l.svcCtx.DB.WithContext(l.ctx).Create(entity).Error; err != nil {
+		return nil, err
+	}
+	return &site.EmptyResponse{}, nil
+}
+```
+
+默认配置约定：
+
+- 租户 ID 类型为 `int64`，metadata key 为 `x-gorm-plus-tenant-id`。
+- 操作人 ID 类型为 `int64`，从 `CtxContextKey1` 读取，metadata key 为 `x-gorm-plus-operator-id`。
+- RPC 服务端使用 `WithTenantID[int64]` 恢复租户，现有 Tenant 插件无需修改。
+- 操作人 ID 恢复到 `CtxContextKey1`，现有 `CtxGetter[int64](CtxContextKey1)` 自动填充配置无需修改。
+
+如需传递操作人姓名、部门 ID 等字段，可以扩展配置：
+
+```go
+propagationConfig := gormplus.DefaultInt64ContextPropagationConfig()
+propagationConfig.Fields = append(
+	propagationConfig.Fields,
+	gormplus.NewContextMetadataField[string](
+		"x-gorm-plus-operator-name",
+		gormplus.CtxContextKey2,
+	),
+	gormplus.NewContextMetadataField[int64](
+		"x-gorm-plus-department-id",
+		gormplus.CtxContextKey3,
+	),
+)
+```
+
+客户端和服务端必须使用相同配置及字段类型。metadata 值经过 JSON 和 Base64URL 编码，可安全传递字符串、中文和常见标量类型。租户及操作人 metadata 只能在可信的内部 RPC 链路中使用；RPC 服务对外暴露时，还应通过认证、mTLS 或网关策略防止客户端伪造身份信息。
+
 ---
 
 ---
