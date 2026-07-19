@@ -83,6 +83,25 @@ func PropagateContextKey[T any](key any) ContextMetadataField {
 	return field
 }
 
+// PropagateContextValue 声明一个固定值透传字段。
+// 客户端不读取当前 context，每次 RPC 调用都会将 value 写入 metadata，服务端恢复到指定 key。
+func PropagateContextValue[T any](key any, value T) ContextMetadataField {
+	wireKey, restoredKey, ok := contextKeyForWire(key)
+	field := NewContextMetadataField[T](contextKeyMetadataName(wireKey), key)
+	if !ok {
+		field.contextKey = nil
+		return field
+	}
+	field.contextKey = restoredKey
+	field.wireKey = wireKey
+	field.valueKind = reflect.TypeOf((*T)(nil)).Elem().Kind()
+	field.extract = func(context.Context) (string, bool, error) {
+		encoded, err := encodeMetadataValue(value)
+		return encoded, true, err
+	}
+	return field
+}
+
 // NewUnaryContextClientInterceptor 创建任意 Context Key 的客户端透传拦截器。
 // fields 只描述实际需要透传的字段，未出现在 context 中的字段会自动跳过。
 func NewUnaryContextClientInterceptor(fields ...ContextMetadataField) grpc.UnaryClientInterceptor {

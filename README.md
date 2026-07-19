@@ -530,6 +530,8 @@ contextFields := []gormplus.ContextMetadataField{
 	gormplus.PropagateContextKey[int64](gormplus.CtxContextKey1), // 操作人 ID
 	gormplus.PropagateContextKey[string](gormplus.CtxContextKey2), // 操作人姓名
 	gormplus.PropagateContextKey[string]("loginUserId"),
+	// 固定值：不读取当前 ctx，每次 RPC 调用都传递该值。
+	gormplus.PropagateContextValue[string]("serviceSource", "admin-api"),
 }
 
 rpcClient := zrpc.MustNewClient(

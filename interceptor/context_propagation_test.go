@@ -155,6 +155,35 @@ func TestBuiltInOperatorContextKeyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFixedContextValueRoundTrip(t *testing.T) {
+	fields := []ContextMetadataField{
+		PropagateContextValue[string]("serviceSource", "admin-api"),
+		PropagateContextValue[int64]("defaultSiteId", 1001),
+	}
+	clientInterceptor := NewUnaryContextClientInterceptor(fields...)
+	var outgoingMD metadata.MD
+	err := clientInterceptor(context.Background(), "/site.Site/Create", nil, nil, nil, func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
+		outgoingMD, _ = metadata.FromOutgoingContext(ctx)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("client interceptor: %v", err)
+	}
+
+	_, err = UnaryContextServerInterceptor(metadata.NewIncomingContext(context.Background(), outgoingMD), nil, nil, func(ctx context.Context, _ any) (any, error) {
+		if got := ctx.Value("serviceSource"); got != "admin-api" {
+			t.Fatalf("serviceSource = %#v, want admin-api", got)
+		}
+		if got := ctx.Value("defaultSiteId"); got != int64(1001) {
+			t.Fatalf("defaultSiteId = %#v, want 1001", got)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("server interceptor: %v", err)
+	}
+}
+
 func roundTripPropagationContext[T comparable](t *testing.T, apiCtx context.Context, cfg ContextPropagationConfig[T]) context.Context {
 	t.Helper()
 	clientInterceptor := UnaryContextPropagationClientInterceptor(cfg)

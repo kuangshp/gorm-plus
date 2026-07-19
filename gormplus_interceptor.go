@@ -42,6 +42,11 @@ func PropagateContextKey[T any](key any) ContextMetadataField {
 	return interceptor.PropagateContextKey[T](key)
 }
 
+// PropagateContextValue 声明一个固定值透传字段，不读取当前 context。
+func PropagateContextValue[T any](key any, value T) ContextMetadataField {
+	return interceptor.PropagateContextValue(key, value)
+}
+
 // NewUnaryContextClientInterceptor 创建任意 Context Key 的客户端透传拦截器。
 func NewUnaryContextClientInterceptor(fields ...ContextMetadataField) grpc.UnaryClientInterceptor {
 	return interceptor.NewUnaryContextClientInterceptor(fields...)
