@@ -59,7 +59,8 @@ func resolveConfigPaths(cfg *Config) error {
 	cfg.ProtoPath = resolve(cfg.ProtoPath)
 	cfg.VoPath = resolve(cfg.VoPath)
 	cfg.DtoPath = resolve(cfg.DtoPath)
-	cfg.MapperPath = resolve(cfg.MapperPath)
+	cfg.APIMapperPath = resolve(cfg.APIMapperPath)
+	cfg.ProtoMapperPath = resolve(cfg.ProtoMapperPath)
 	return nil
 }
 
@@ -1213,9 +1214,9 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 		}
 	}
 
-	// Mapper（已存在则跳过）。没有 ProtoPath 时保持原来的 DTO/VO ↔ Entity mapper。
-	if cfg.MapperPath != "" {
-		if cfg.ProtoPath == "" {
+	// Mapper（已存在则跳过）。API mapper 与 Proto mapper 使用独立输出目录。
+	if cfg.ProtoPath == "" {
+		if cfg.APIMapperPath != "" {
 			dtoPkg, voPkg := "", ""
 			if cfg.ApiPath == "" {
 				dtoPkg = pathToPkg(cfg.DtoPath)
@@ -1227,17 +1228,13 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 				fmt.Printf("[%s] 生成 mapper 失败: %v\n", tbl, err)
 			} else {
 				writeFileIfNotExist(
-					fmt.Sprintf("%s/%sMapper.go", cfg.MapperPath, LowerCamelCase(Case2Camel(tbl))),
+					fmt.Sprintf("%s/%sMapper.go", cfg.APIMapperPath, LowerCamelCase(Case2Camel(tbl))),
 					content, "mapper",
 				)
 			}
-		} else {
-			entityProtoMapperPath := filepath.Join(cfg.MapperPath, "entityproto")
-			apiProtoMapperPath := filepath.Join(cfg.MapperPath, "apiproto")
-			ensureDir(entityProtoMapperPath)
-			if cfg.ApiPath != "" {
-				ensureDir(apiProtoMapperPath)
-			}
+		}
+	} else {
+		if cfg.ProtoMapperPath != "" || (cfg.ApiPath != "" && cfg.APIMapperPath != "") {
 			protoPkgPath := filepath.Join(pathToPkg(cfg.ProtoPath), getProtoPackage(cfg.Package))
 			apiTypesPkgPath := ""
 			if cfg.ApiPath != "" {
@@ -1245,20 +1242,22 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 			}
 			data := buildProtoMapperData(tbl, publicColumns, modelName, db,
 				cfg.Package, pathToPkg(cfg.ModelPkgPath), protoPkgPath, apiTypesPkgPath)
-			if content, err := renderTemplate(entityProtoMapperTmplPath, data); err != nil {
-				fmt.Printf("[%s] 生成 Entity/Proto mapper 失败: %v\n", tbl, err)
-			} else {
-				writeFileIfNotExist(
-					fmt.Sprintf("%s/%sMapper.go", entityProtoMapperPath, LowerCamelCase(Case2Camel(tbl))),
-					content, "Entity/Proto mapper",
-				)
+			if cfg.ProtoMapperPath != "" {
+				if content, err := renderTemplate(entityProtoMapperTmplPath, data); err != nil {
+					fmt.Printf("[%s] 生成 Entity/Proto mapper 失败: %v\n", tbl, err)
+				} else {
+					writeFileIfNotExist(
+						fmt.Sprintf("%s/%sMapper.go", cfg.ProtoMapperPath, LowerCamelCase(Case2Camel(tbl))),
+						content, "Entity/Proto mapper",
+					)
+				}
 			}
-			if cfg.ApiPath != "" {
+			if cfg.ApiPath != "" && cfg.APIMapperPath != "" {
 				if content, err := renderTemplate(apiProtoMapperTmplPath, data); err != nil {
 					fmt.Printf("[%s] 生成 API/Proto mapper 失败: %v\n", tbl, err)
 				} else {
 					writeFileIfNotExist(
-						fmt.Sprintf("%s/%sMapper.go", apiProtoMapperPath, LowerCamelCase(Case2Camel(tbl))),
+						fmt.Sprintf("%s/%sMapper.go", cfg.APIMapperPath, LowerCamelCase(Case2Camel(tbl))),
 						content, "API/Proto mapper",
 					)
 				}
@@ -1430,7 +1429,8 @@ func Generate(cfg *Config) error {
 	ensureDir(cfg.ProtoPath)
 	ensureDir(cfg.VoPath)
 	ensureDir(cfg.DtoPath)
-	ensureDir(cfg.MapperPath)
+	ensureDir(cfg.APIMapperPath)
+	ensureDir(cfg.ProtoMapperPath)
 
 	var step2Tables []string
 	if isSingleTable {

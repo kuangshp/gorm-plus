@@ -33,12 +33,13 @@ repo_path: ./internal/dal/repository
 api_path: ./apps/admin/desc
 proto_path: ./apps/rpc
 # go-zero 项目:配置 api_path 后不生成 vo/dto
-# 未配置 proto_path 时生成 DTO/VO ↔ Entity mapper。
-# 配置 proto_path 时生成到 mapper/entityproto；同时配置 api_path 时再生成到 mapper/apiproto。
-# mapper 生成后可按项目分层挪到对应目录
+# api_mapper_path: 未配置 proto_path 时生成 DTO/VO ↔ Entity mapper；
+# 配置 proto_path 和 api_path 时生成 API types ↔ Proto mapper。
+# proto_mapper_path: 配置 proto_path 时生成 Entity ↔ Proto mapper。
 vo_path: ./internal/dal/vo
 dto_path: ./internal/dal/dto
-mapper_path: ./internal/dal/mapper
+api_mapper_path: ./internal/mapper/api
+proto_mapper_path: ./internal/mapper/proto
 package: gin-admin-api
 exclude_tables:
   - sys_config

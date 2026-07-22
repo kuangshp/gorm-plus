@@ -24,14 +24,15 @@ type Config struct {
 	Database string `yaml:"database"` // 数据库名(sqlite 时为文件路径,如 "./data.db")
 
 	// 生成路径配置
-	OutPath      string `yaml:"out_path"`       // dao输出路径，如 "./query/dao"
-	ModelPkgPath string `yaml:"model_pkg_path"` // model包路径，如 "./query/model"
-	RepoPath     string `yaml:"repo_path"`      // repository输出路径，如 "./query/repository"
-	ApiPath      string `yaml:"api_path"`       // api desc路径，如 "./apps/admin/desc"
-	ProtoPath    string `yaml:"proto_path"`     // proto文件输出路径，如 "./apps/rpc"
-	VoPath       string `yaml:"vo_path"`        // vo输出路径，如 "./query/vo"
-	DtoPath      string `yaml:"dto_path"`       // dto输出路径，如 "./apps/admin/dto"
-	MapperPath   string `yaml:"mapper_path"`    // mapper输出路径，如 "./query/mapper"
+	OutPath         string `yaml:"out_path"`          // dao输出路径，如 "./query/dao"
+	ModelPkgPath    string `yaml:"model_pkg_path"`    // model包路径，如 "./query/model"
+	RepoPath        string `yaml:"repo_path"`         // repository输出路径，如 "./query/repository"
+	ApiPath         string `yaml:"api_path"`          // api desc路径，如 "./apps/admin/desc"
+	ProtoPath       string `yaml:"proto_path"`        // proto文件输出路径，如 "./apps/rpc"
+	VoPath          string `yaml:"vo_path"`           // vo输出路径，如 "./query/vo"
+	DtoPath         string `yaml:"dto_path"`          // dto输出路径，如 "./apps/admin/dto"
+	APIMapperPath   string `yaml:"api_mapper_path"`   // API types/DTO/VO mapper输出路径，如 "./query/mapper/api"
+	ProtoMapperPath string `yaml:"proto_mapper_path"` // Entity/Proto mapper输出路径，如 "./query/mapper/proto"
 
 	// 项目包名
 	Package string `yaml:"package"` // 项目包名，如 "esim-api"

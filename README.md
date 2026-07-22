@@ -155,7 +155,7 @@ gorm-plus/
         └── api_proto_mapper_template.txt # API types ↔ Proto 映射
 ```
 
-配置 `proto_path` 后，mapper 分别输出到 `mapper/entityproto` 和 `mapper/apiproto`；未配置时仍输出到原 `mapper` 目录。
+Mapper 使用两个独立输出路径：`proto_mapper_path` 输出 Entity ↔ Proto 映射，`api_mapper_path` 输出 API types ↔ Proto 映射；未配置 `proto_path` 时，`api_mapper_path` 输出 DTO/VO ↔ Entity 映射。
 
 > **顶层 `gormplus_*.go` 文件**只做类型别名 + 函数转发,把分包的 API 聚合到 `gormplus` 命名空间。业务方一律用 `gormplus.XXX` 调用,不需要直接 import 子包(`sf`/`query`/`plugin`/`dal` 等)。
 
@@ -272,7 +272,8 @@ api_path: ./apps/admin/desc
 proto_path: ./apps/rpc/proto
 vo_path: ./api/vo
 dto_path: ./api/dto
-mapper_path: ./internal/mapper
+api_mapper_path: ./internal/mapper/api
+proto_mapper_path: ./internal/mapper/proto
 package: your_package
 exclude_tables:
   - sys_config
