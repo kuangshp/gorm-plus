@@ -102,6 +102,50 @@ func TestGenWrapperNilInputsAreSkipped(t *testing.T) {
 	}
 }
 
+func TestGenWrapperConditionalLikeHelpers(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	w := &GenWrapper[*wrapperTestDO]{
+		do:    &wrapperTestDO{db: db.Table("companies")},
+		ctx:   context.Background(),
+		group: newCondGroup(),
+	}
+	sql := w.
+		LikeIf(false, field.NewString("", "skip_like"), "x").
+		LLikeIf(false, field.NewString("", "skip_llike"), "x").
+		RLikeIf(false, field.NewString("", "skip_rlike"), "x").
+		OrLikeIf(false, field.NewString("", "skip_or_like"), "x").
+		OrLLikeIf(false, field.NewString("", "skip_or_llike"), "x").
+		OrRLikeIf(false, field.NewString("", "skip_or_rlike"), "x").
+		LikeIf(true, field.NewString("", "name"), "acme").
+		LLikeIf(true, field.NewString("", "code"), "AC").
+		RLikeIf(true, field.NewString("", "prefix"), "P").
+		OrLikeIf(true, field.NewString("", "alias"), "corp").
+		OrLLikeIf(true, field.NewString("", "suffix"), "end").
+		OrRLikeIf(true, field.NewString("", "number"), "ORD").
+		LikeIf(true, field.NewString("", "skip_empty"), "").
+		ToSQL()
+
+	for _, want := range []string{
+		"`name` LIKE \"%acme%\"",
+		"`code` LIKE \"%AC\"",
+		"`prefix` LIKE \"P%\"",
+		"`alias` LIKE \"%corp%\"",
+		"`suffix` LIKE \"%end\"",
+		"`number` LIKE \"ORD%\"",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected %q in SQL: %s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "skip_") {
+		t.Fatalf("expected disabled and empty conditional LIKEs to be skipped, got SQL: %s", sql)
+	}
+}
+
 func TestGenWrapperBetweenIfNotZeroSkipsZeroTime(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DryRun: true})
 	if err != nil {

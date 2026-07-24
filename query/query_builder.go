@@ -75,10 +75,16 @@ type IQueryBuilder interface {
 	//   .Like("username", "admin") => WHERE username LIKE '%admin%'
 	Like(col string, val string) IQueryBuilder
 
+	// LikeIf condition 为 true 时执行双侧模糊查询；condition 为 false 或 val 为空时跳过。
+	LikeIf(condition bool, col string, val string) IQueryBuilder
+
 	// LLike 左侧模糊：WHERE col LIKE '%val'，val 为空时跳过。
 	//
 	//   .LLike("username", "admin") => WHERE username LIKE '%admin'
 	LLike(col string, val string) IQueryBuilder
+
+	// LLikeIf condition 为 true 时执行左侧模糊查询；condition 为 false 或 val 为空时跳过。
+	LLikeIf(condition bool, col string, val string) IQueryBuilder
 
 	// RLike 右侧模糊：WHERE col LIKE 'val%'，val 为空时跳过。
 	// 可利用前缀索引，性能优于全模糊。
@@ -86,14 +92,26 @@ type IQueryBuilder interface {
 	//   .RLike("order_no", "ORD2024") => WHERE order_no LIKE 'ORD2024%'
 	RLike(col string, val string) IQueryBuilder
 
+	// RLikeIf condition 为 true 时执行右侧模糊查询；condition 为 false 或 val 为空时跳过。
+	RLikeIf(condition bool, col string, val string) IQueryBuilder
+
 	// OrLike 双侧模糊，以 OR 追加；val 为空时跳过。
 	OrLike(col string, val string) IQueryBuilder
+
+	// OrLikeIf condition 为 true 时以 OR 追加双侧模糊查询；condition 为 false 或 val 为空时跳过。
+	OrLikeIf(condition bool, col string, val string) IQueryBuilder
 
 	// OrLLike 左侧模糊，以 OR 追加；val 为空时跳过。
 	OrLLike(col string, val string) IQueryBuilder
 
+	// OrLLikeIf condition 为 true 时以 OR 追加左侧模糊查询；condition 为 false 或 val 为空时跳过。
+	OrLLikeIf(condition bool, col string, val string) IQueryBuilder
+
 	// OrRLike 右侧模糊，以 OR 追加；val 为空时跳过。
 	OrRLike(col string, val string) IQueryBuilder
+
+	// OrRLikeIf condition 为 true 时以 OR 追加右侧模糊查询；condition 为 false 或 val 为空时跳过。
+	OrRLikeIf(condition bool, col string, val string) IQueryBuilder
 
 	// -------- 范围查询 --------
 
@@ -284,20 +302,38 @@ func quoteIdentPath(col string) string {
 func (b *Builder) Like(col string, val string) IQueryBuilder {
 	return b.WhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val+"%")
 }
+func (b *Builder) LikeIf(condition bool, col string, val string) IQueryBuilder {
+	return b.WhereIf(condition && val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val+"%")
+}
 func (b *Builder) LLike(col string, val string) IQueryBuilder {
 	return b.WhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val)
+}
+func (b *Builder) LLikeIf(condition bool, col string, val string) IQueryBuilder {
+	return b.WhereIf(condition && val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val)
 }
 func (b *Builder) RLike(col string, val string) IQueryBuilder {
 	return b.WhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), val+"%")
 }
+func (b *Builder) RLikeIf(condition bool, col string, val string) IQueryBuilder {
+	return b.WhereIf(condition && val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), val+"%")
+}
 func (b *Builder) OrLike(col string, val string) IQueryBuilder {
 	return b.OrWhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val+"%")
+}
+func (b *Builder) OrLikeIf(condition bool, col string, val string) IQueryBuilder {
+	return b.OrWhereIf(condition && val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val+"%")
 }
 func (b *Builder) OrLLike(col string, val string) IQueryBuilder {
 	return b.OrWhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val)
 }
+func (b *Builder) OrLLikeIf(condition bool, col string, val string) IQueryBuilder {
+	return b.OrWhereIf(condition && val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), "%"+val)
+}
 func (b *Builder) OrRLike(col string, val string) IQueryBuilder {
 	return b.OrWhereIf(val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), val+"%")
+}
+func (b *Builder) OrRLikeIf(condition bool, col string, val string) IQueryBuilder {
+	return b.OrWhereIf(condition && val != "", fmt.Sprintf("%s LIKE ?", quoteIdentPath(col)), val+"%")
 }
 
 func (b *Builder) BetweenIfNotZero(col string, min, max any) IQueryBuilder {

@@ -58,6 +58,41 @@ func TestQueryBuilderOptionalOrLikesSkipEmptyValues(t *testing.T) {
 	}
 }
 
+func TestQueryBuilderConditionalLikeHelpers(t *testing.T) {
+	sql := newDryRunBuilder(t).
+		WhereIf(true, "status = ?", 1).
+		LikeIf(false, "skip_like", "x").
+		LLikeIf(false, "skip_llike", "x").
+		RLikeIf(false, "skip_rlike", "x").
+		OrLikeIf(false, "skip_or_like", "x").
+		OrLLikeIf(false, "skip_or_llike", "x").
+		OrRLikeIf(false, "skip_or_rlike", "x").
+		LikeIf(true, "name", "acme").
+		LLikeIf(true, "code", "AC").
+		RLikeIf(true, "prefix", "P").
+		OrLikeIf(true, "alias", "corp").
+		OrLLikeIf(true, "suffix", "end").
+		OrRLikeIf(true, "number", "ORD").
+		LikeIf(true, "skip_empty", "").
+		ToSQL()
+
+	for _, want := range []string{
+		"`name` LIKE \"%acme%\"",
+		"`code` LIKE \"%AC\"",
+		"`prefix` LIKE \"P%\"",
+		"`alias` LIKE \"%corp%\"",
+		"`suffix` LIKE \"%end\"",
+		"`number` LIKE \"ORD%\"",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected %q in SQL: %s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "skip_") {
+		t.Fatalf("expected disabled and empty conditional LIKEs to be skipped, got SQL: %s", sql)
+	}
+}
+
 func TestQueryBuilderJoinColumnHelpersQuoteTableAlias(t *testing.T) {
 	sql := newDryRunBuilder(t).
 		Like("d.name", "sales").

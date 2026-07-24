@@ -202,11 +202,17 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   => WHERE username LIKE '%admin%'
 	Like(col field.Expr, val string) IGenWrapper[T]
 
+	// LikeIf condition 为 true 时执行双侧模糊查询；condition 为 false 或 val 为空时跳过。
+	LikeIf(condition bool, col field.Expr, val string) IGenWrapper[T]
+
 	// LLike 左侧模糊：WHERE col LIKE '%val'，val 为空时跳过。
 	//
 	//   .LLike(dao.AccountEntity.Username, "admin")
 	//   => WHERE username LIKE '%admin'
 	LLike(col field.Expr, val string) IGenWrapper[T]
+
+	// LLikeIf condition 为 true 时执行左侧模糊查询；condition 为 false 或 val 为空时跳过。
+	LLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T]
 
 	// RLike 右侧模糊：WHERE col LIKE 'val%'，val 为空时跳过。
 	//
@@ -214,14 +220,26 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   => WHERE username LIKE 'admin%'
 	RLike(col field.Expr, val string) IGenWrapper[T]
 
+	// RLikeIf condition 为 true 时执行右侧模糊查询；condition 为 false 或 val 为空时跳过。
+	RLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T]
+
 	// OrLike 双侧模糊，以 OR 追加；val 为空时跳过。
 	OrLike(col field.Expr, val string) IGenWrapper[T]
+
+	// OrLikeIf condition 为 true 时以 OR 追加双侧模糊查询；condition 为 false 或 val 为空时跳过。
+	OrLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T]
 
 	// OrLLike 左侧模糊，以 OR 追加；val 为空时跳过。
 	OrLLike(col field.Expr, val string) IGenWrapper[T]
 
+	// OrLLikeIf condition 为 true 时以 OR 追加左侧模糊查询；condition 为 false 或 val 为空时跳过。
+	OrLLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T]
+
 	// OrRLike 右侧模糊，以 OR 追加；val 为空时跳过。
 	OrRLike(col field.Expr, val string) IGenWrapper[T]
+
+	// OrRLikeIf condition 为 true 时以 OR 追加右侧模糊查询；condition 为 false 或 val 为空时跳过。
+	OrRLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T]
 
 	// BetweenIfNotZero 范围查询：WHERE col BETWEEN min AND max。
 	// min 或 max 任一为零值时整体跳过。
@@ -686,11 +704,23 @@ func (w *GenWrapper[T]) Like(col field.Expr, val string) IGenWrapper[T] {
 	}
 	return w
 }
+func (w *GenWrapper[T]) LikeIf(condition bool, col field.Expr, val string) IGenWrapper[T] {
+	if !condition {
+		return w
+	}
+	return w.Like(col, val)
+}
 func (w *GenWrapper[T]) LLike(col field.Expr, val string) IGenWrapper[T] {
 	if val != "" {
 		w.like(col, "%"+val, condAnd)
 	}
 	return w
+}
+func (w *GenWrapper[T]) LLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T] {
+	if !condition {
+		return w
+	}
+	return w.LLike(col, val)
 }
 func (w *GenWrapper[T]) RLike(col field.Expr, val string) IGenWrapper[T] {
 	if val != "" {
@@ -698,11 +728,23 @@ func (w *GenWrapper[T]) RLike(col field.Expr, val string) IGenWrapper[T] {
 	}
 	return w
 }
+func (w *GenWrapper[T]) RLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T] {
+	if !condition {
+		return w
+	}
+	return w.RLike(col, val)
+}
 func (w *GenWrapper[T]) OrLike(col field.Expr, val string) IGenWrapper[T] {
 	if val != "" {
 		w.like(col, "%"+val+"%", condOr)
 	}
 	return w
+}
+func (w *GenWrapper[T]) OrLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T] {
+	if !condition {
+		return w
+	}
+	return w.OrLike(col, val)
 }
 func (w *GenWrapper[T]) OrLLike(col field.Expr, val string) IGenWrapper[T] {
 	if val != "" {
@@ -710,11 +752,23 @@ func (w *GenWrapper[T]) OrLLike(col field.Expr, val string) IGenWrapper[T] {
 	}
 	return w
 }
+func (w *GenWrapper[T]) OrLLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T] {
+	if !condition {
+		return w
+	}
+	return w.OrLLike(col, val)
+}
 func (w *GenWrapper[T]) OrRLike(col field.Expr, val string) IGenWrapper[T] {
 	if val != "" {
 		w.like(col, val+"%", condOr)
 	}
 	return w
+}
+func (w *GenWrapper[T]) OrRLikeIf(condition bool, col field.Expr, val string) IGenWrapper[T] {
+	if !condition {
+		return w
+	}
+	return w.OrRLike(col, val)
 }
 
 func (w *GenWrapper[T]) BetweenIfNotZero(col field.Expr, min, max any) IGenWrapper[T] {
