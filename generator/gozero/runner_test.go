@@ -59,6 +59,9 @@ service demo-api {
 	if !strings.Contains(handler, "validation.Validate(&req)") {
 		t.Fatalf("generated handler does not validate its request:\n%s", handler)
 	}
+	if !strings.Contains(handler, "validation.HasRules(&req)") {
+		t.Fatalf("generated handler does not check for validation rules:\n%s", handler)
+	}
 }
 
 func TestHasTemplateHomeArgument(t *testing.T) {

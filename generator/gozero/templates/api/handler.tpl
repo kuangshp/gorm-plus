@@ -18,9 +18,11 @@ func {{.HandlerName}}(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 		// 校验请求数据。
-		if validateErr := validation.Validate(&req); validateErr != nil {
-			httpx.ErrorCtx(r.Context(), w, validateErr)
-			return
+		if validation.HasRules(&req) {
+			if validateErr := validation.Validate(&req); validateErr != nil {
+				httpx.ErrorCtx(r.Context(), w, validateErr)
+				return
+			}
 		}
 		{{end}}l := {{.LogicName}}.New{{.LogicType}}(r.Context(), svcCtx, r, w)
 		{{if .HasResp}}resp, {{end}}err := l.{{.Call}}({{if .HasRequest}}&req{{end}})
