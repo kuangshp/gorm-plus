@@ -141,6 +141,7 @@ gorm-plus/
     ├── dialector.go             # 多驱动支持(MySQL/Postgres/SQLite/SQLServer)
     ├── config.go                # YAML 配置
     ├── generator.example.yaml
+    ├── gozero/                  # 内嵌 goctl 模板与标准库执行器
     └── template/                # 代码模板
         ├── repository_gen_template.txt   # 自动生成(含缓存失效)
         ├── repository_template.txt       # 用户可改(自定义查询示例)
@@ -274,6 +275,8 @@ vo_path: ./api/vo
 dto_path: ./api/dto
 api_mapper_path: ./internal/mapper/api
 proto_mapper_path: ./internal/mapper/proto
+# 可选；为空时使用 gorm-plus 内嵌的 goctl 模板
+# goctl_template_home: ./tools/goctl
 package: your_package
 exclude_tables:
   - sys_config
@@ -297,6 +300,22 @@ if err := gormplus.Generate(cfg); err != nil {
 ```
 
 > **注意**：数据模型（Model）每次都会重新生成覆盖；Repository / API / Proto / VO / DTO 文件已存在时自动跳过，不会覆盖已有的自定义代码。
+
+### goctl 内嵌模板
+
+使用项目本地的 `goctl/` 模板目录：
+
+```bash
+goctl api go -api *.api --dir . --style=goZero --home ../../goctl
+```
+
+使用 gorm-plus 内嵌模板：
+
+```bash
+gormplus goctl api go -api *.api --dir . --style=goZero
+```
+
+两种命令生成方式一致；第二种会自动使用 gorm-plus 内嵌模板，不需要传递 `--home`。
 
 ### Proto 生成与参数校验
 

@@ -1,7 +1,10 @@
 package gormplus
 
 import (
+	"context"
+
 	"github.com/kuangshp/gorm-plus/generator"
+	"github.com/kuangshp/gorm-plus/generator/gozero"
 )
 
 // ================== 代码生成器 ==================
@@ -31,4 +34,17 @@ func LoadGeneratorConfig(path string) (*generator.Config, error) {
 //	}
 func Generate(cfg *generator.Config) error {
 	return generator.Generate(cfg)
+}
+
+// GoctlRunOptions 配置 goctl 可执行文件和可选的外部模板目录。
+type GoctlRunOptions = gozero.RunOptions
+
+// RunGoctl 使用 gorm-plus 内嵌模板执行 goctl，工具库本身不依赖 go-zero。
+func RunGoctl(ctx context.Context, options GoctlRunOptions, arguments ...string) ([]byte, error) {
+	return gozero.Run(ctx, options, arguments...)
+}
+
+// WriteGoctlTemplateHome 将内嵌模板导出到指定的 goctl --home 目录。
+func WriteGoctlTemplateHome(destination string) error {
+	return gozero.WriteTemplateHome(destination)
 }

@@ -3,17 +3,18 @@ package generator
 import (
 	"bufio"
 	"bytes"
+	"context"
 	_ "embed"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"text/template"
 	"unicode"
 
+	gozerogen "github.com/kuangshp/gorm-plus/generator/gozero"
 	"gorm.io/gen"
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
@@ -267,17 +268,6 @@ func filterExcludedTables(tables []string, excludeTables []string) []string {
 // ═══════════════════════════════════════════════════════════
 //  命名工具
 // ═══════════════════════════════════════════════════════════
-
-func getGoctlPath() string {
-	cmd := exec.Command("which", "go")
-	output, err := cmd.Output()
-	if err != nil {
-		return "goctl"
-	}
-	goPath := strings.TrimSpace(string(output))
-	goDir := goPath[:strings.LastIndex(goPath, "/")]
-	return goDir + "/goctl"
-}
 
 var acronymRe = regexp.MustCompile(`([A-Z])([A-Z]+)([a-z]|$)`)
 
@@ -1176,9 +1166,10 @@ func generateForTable(tbl string, cfg *Config, db *gorm.DB,
 					fmt.Printf("[%s] 写入 api 失败: %v\n", tbl, err)
 				} else {
 					fmt.Printf("已生成: %s\n", apiFile)
-					cmd := exec.Command(getGoctlPath(), "api", "go", "-api", apiFile,
-						"--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
-					if output, err := cmd.CombinedOutput(); err != nil {
+					output, err := gozerogen.Run(context.Background(), gozerogen.RunOptions{
+						TemplateHome: cfg.GoctlTemplateHome,
+					}, "api", "go", "-api", apiFile, "--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
+					if err != nil {
 						fmt.Printf("[%s] goctl 执行失败: %v\n%s\n", tbl, err, output)
 					} else {
 						fmt.Printf("[%s] go-zero 代码生成成功\n", tbl)

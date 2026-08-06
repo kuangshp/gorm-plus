@@ -40,6 +40,8 @@ vo_path: ./internal/dal/vo
 dto_path: ./internal/dal/dto
 api_mapper_path: ./internal/mapper/api
 proto_mapper_path: ./internal/mapper/proto
+# 为空时使用 gorm-plus 内嵌 goctl 模板；仅在项目需要覆盖模板时配置。
+# goctl_template_home: ./tools/goctl
 package: gin-admin-api
 exclude_tables:
   - sys_config

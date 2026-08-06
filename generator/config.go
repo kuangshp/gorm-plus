@@ -33,6 +33,8 @@ type Config struct {
 	DtoPath         string `yaml:"dto_path"`          // dto输出路径，如 "./apps/admin/dto"
 	APIMapperPath   string `yaml:"api_mapper_path"`   // API types/DTO/VO mapper输出路径，如 "./query/mapper/api"
 	ProtoMapperPath string `yaml:"proto_mapper_path"` // Entity/Proto mapper输出路径，如 "./query/mapper/proto"
+	// GoctlTemplateHome 可覆盖内嵌的 goctl 模板目录；为空时使用 gorm-plus 内嵌模板。
+	GoctlTemplateHome string `yaml:"goctl_template_home"`
 
 	// 项目包名
 	Package string `yaml:"package"` // 项目包名，如 "esim-api"
