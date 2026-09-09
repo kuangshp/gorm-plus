@@ -5,7 +5,8 @@ import (
 
 	"github.com/zeromicro/go-zero/rest/httpx"
 
-	{{if .HasRequest}}"github.com/kuangshp/go-utils/k/validation"{{end}}
+	{{if .HasRequest}}"github.com/kuangshp/go-utils/k/validation"
+ "github.com/kuangshp/gorm-plus/decimaljson"{{end}}
 	{{.ImportPackages}}
 )
 
@@ -13,7 +14,12 @@ import (
 func {{.HandlerName}}(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		{{if .HasRequest}}var req types.{{.RequestType}}
-		if err := httpx.Parse(r, &req); err != nil {
+		// 兼容小数字符串与数字，随后沿用 go-zero 的参数解析和校验。
+ if err := decimaljson.PrepareRequest(r, &req); err != nil {
+ httpx.ErrorCtx(r.Context(), w, err)
+ return
+ }
+ if err := httpx.Parse(r, &req); err != nil {
 			httpx.ErrorCtx(r.Context(), w, err)
 			return
 		}

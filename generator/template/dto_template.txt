@@ -1,5 +1,7 @@
 package dto
 
+import "github.com/kuangshp/gorm-plus/decimaljson"
+
 // Create{{.ModelName}}DTO 创建{{.TableComment}}请求
 type Create{{.ModelName}}DTO struct {
 {{- range .Columns}}
@@ -7,7 +9,7 @@ type Create{{.ModelName}}DTO struct {
 {{- $fieldName := lowerFirst .FieldName}}
 {{- $validate := .Validate}}
 {{- $comment := .Comment}}
-	{{.FieldName}} {{.FieldType}} {{if $validate}}`json:"{{$fieldName}}" validate:"{{$validate}}"`{{else}}`json:"{{$fieldName}}"`{{end}} // {{$comment}}
+	{{.FieldName}} {{.FieldType}} {{if $validate}}`json:"{{$fieldName}}" validate:"{{$validate}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{else}}`json:"{{$fieldName}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{end}} // {{$comment}}
 {{- end}}
 {{- end}}
 }
@@ -16,4 +18,26 @@ type Create{{.ModelName}}DTO struct {
 type Modify{{.ModelName}}DTO struct {
 	ID int64 `json:"id" validate:"required,number,gte=1"` // 主键id
 	Create{{.ModelName}}DTO
+}
+
+// UnmarshalJSON 兼容数字及字符串小数，保留输入精度。
+func (value *Create{{.ModelName}}DTO) UnmarshalJSON(data []byte) error {
+ type plain Create{{.ModelName}}DTO
+ return decimaljson.Unmarshal(data, (*plain)(value))
+}
+
+// UnmarshalJSON 显式解析修改请求，防止嵌入 DTO 的方法吞掉 ID。
+func (value *Modify{{.ModelName}}DTO) UnmarshalJSON(data []byte) error {
+ type plain Create{{.ModelName}}DTO
+ parsed := struct {
+  ID int64 `json:"id"`
+  plain
+ }{
+  ID: value.ID,
+  plain: plain(value.Create{{.ModelName}}DTO),
+ }
+ if err := decimaljson.Unmarshal(data, &parsed); err != nil {return err}
+ value.ID = parsed.ID
+ value.Create{{.ModelName}}DTO = Create{{.ModelName}}DTO(parsed.plain)
+ return nil
 }

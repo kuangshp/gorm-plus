@@ -591,6 +591,12 @@ func getGoTypeForApiDto(sqlType string) string {
 	return getGoType(sqlType)
 }
 
+// isDecimalInputSQLType identifies SQL fields exposed as decimal strings.
+func isDecimalInputSQLType(sqlType string) bool {
+	s := strings.ToLower(sqlType)
+	return strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double")
+}
+
 func isTimeSQLType(sqlType string) bool {
 	s := strings.ToLower(sqlType)
 	return strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
@@ -884,7 +890,8 @@ func buildApiColumns(columns []ColumnInfo) []ColumnInfo {
 		columnData[i] = ColumnInfo{
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForApiDto(col.Type),
-			JsonTag: LowerCamelCase(Case2Camel(col.Name)), JsonTagOpt: jsonTagOpt,
+			IsDecimalType: isDecimalInputSQLType(col.Type),
+			JsonTag:       LowerCamelCase(Case2Camel(col.Name)), JsonTagOpt: jsonTagOpt,
 			CanNull: col.CanNull, IsKey: col.IsKey, Extra: col.Extra, Comment: col.Comment,
 			Validate: generateValidateRule(ColumnInfo{
 				CanNull: col.CanNull, IsKey: col.IsKey,
@@ -977,7 +984,8 @@ func generateDtoFile(tableName string, columns []ColumnInfo, modelName string, d
 		columnData[i] = ColumnInfo{
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForApiDto(col.Type),
-			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
+			IsDecimalType: isDecimalInputSQLType(col.Type),
+			CanNull:       col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 			Validate: generateValidateRule(col),
 		}
 	}

@@ -317,6 +317,46 @@ gormplus goctl api go -api *.api --dir . --style=goZero
 
 两种命令生成方式一致；第二种会自动使用 gorm-plus 内嵌模板，不需要传递 `--home`。
 
+### 小数入参同时支持 JSON 数字和字符串
+
+普通 DTO 和内嵌 go-zero Handler 模板已接入 `github.com/kuangshp/gorm-plus/decimaljson`，不依赖 HTTP 框架。数据库 `decimal`、`float`、`double` 字段仍生成 Go `string`，并自动标记 `decimal:"true"`：
+
+```go
+Amount string `json:"amount" decimal:"true"`
+```
+
+前端提交 `{"amount":12.345678}` 或 `{"amount":"12.345678"}`，解析后 `Amount` 都为字符串 `"12.345678"`，不在入参阶段舍入、补零。非法小数、空字符串、NaN、Inf 和超出 float64 范围的值会返回解析错误；缺失/null 的必填判断仍交给原有校验。
+
+- **普通 DTO**：生成 `Create...DTO.UnmarshalJSON` 和 `Modify...DTO.UnmarshalJSON`，使用 `encoding/json` 的框架自动调用。修改请求单独解析，避免嵌入的 Create DTO 吞掉 ID。
+- **go-zero**：生成的 Handler 先调用 `decimaljson.PrepareRequest(r, &req)`，再调用原有 `httpx.Parse` 与 `validation.Validate`，保留路径、表单、请求头解析和校验。单独使用 `json.Unmarshal` 解码 goctl 生成的 types 不会启用 Handler 的兼容步骤。
+- **手写 `.api`**：对字符串小数加 `decimal:"true"`，或使用已有的 `validate:"decimal"` 规则。普通字符串不自动接受数字；原有 `float32/float64` 字段自动兼容数值字符串，解析后仍是浮点类型。
+- **嵌套数据**：支持嵌入结构体、对象、数组、切片和字符串键 map；整数、日期、普通文本和响应格式不变。
+
+手写 `.api` 示例：
+
+```go
+type SavePriceReq {
+    Amount string `json:"amount" decimal:"true"`
+    Rate string `json:"rate" validate:"required,decimal"`
+}
+```
+
+生成方式：
+
+```bash
+gormplus goctl api go -api price.api --dir . --style=goZero
+# 使用自己维护的 --home 时，先导出新版模板：
+gormplus export-goctl-templates --output ./tools/goctl
+```
+
+业务项目需使用包含 `decimaljson` 的 gorm-plus 版本，并更新本地 `gormplus` 命令。未发布时可在业务项目用 `go mod edit -replace` 指向当前 gorm-plus 源码。生成器会跳过已有 DTO，goctl 也不会覆盖已有 Handler；已有文件需手动接入上述方法，或在保留业务逻辑后重新生成，单独升级依赖不会自动改写旧代码。
+
+测试真实 goctl 与 go-zero 参数解析（需安装 goctl）：
+
+```bash
+GORMPLUS_GOCTL_INTEGRATION=1 go test ./decimaljson ./generator/...
+```
+
 ### Proto 生成与参数校验
 
 配置 `proto_path` 后，生成器会为每张表生成业务 Proto，并在该目录首次生成 `base.proto`。业务 Proto 会自动引入公共定义和 Protovalidate：
