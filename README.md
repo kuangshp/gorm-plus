@@ -424,6 +424,274 @@ gormplus goctl api go -api *.api --dir . --style=goZero
 
 两种命令生成方式一致；第二种会自动使用 gorm-plus 内嵌模板，不需要传递 `--home`。
 
+### go-zero 文件日志管理
+
+新服务的 YAML 默认包含以下配置；`Log` 控制日志级别、格式及 go-zero 统计日志，`LogRotation` 控制文件存储和归档：
+
+```yaml
+Log:
+  ServiceName: my-service
+  Mode: console
+  Path: ./logs/my-service # LogRotation 关闭且 Mode 为 file/volume 时生效
+  Encoding: json # json 每行一个 JSON 对象；plain 可读文本
+  Level: info # debug、info、error、severe
+  Stat: true
+  MaxContentLength: 0 # logx 日志内容最大字节数；0 不限制
+
+LogRotation:
+  Enabled: true
+  Path: ./logs/my-service
+  Rotation: daily # daily 按天，hourly 按小时
+  CompressAfterDays: 3 # 0 禁用压缩
+  KeepDays: 30 # 0 永久保留
+  CheckIntervalMinutes: 60
+```
+
+生成入口将 `logx`、`slog` 和标准库 `log` 接入同一个文件 Writer。启用 `LogRotation` 后，`Log.Mode` 的输出目标由该 Writer 接管；`Log.Encoding` 和 `Log.Level` 同时应用于 `logx` 与 `slog`，标准库 `log` 通过默认 `slog` Handler 按 INFO 级别记录，遵循相同格式和级别过滤。`json` 为每行一个 JSON 对象，便于日志平台采集；`plain` 为可读文本。两种格式的文件扩展名均为 `.log`，压缩后为 `.log.gz`；各日志库保留自己的字段名称。关闭 `LogRotation` 时沿用 go-zero 原生 `Log` 配置。`logrotate` 包只依赖标准库，不引入 go-zero 依赖。
+
+启动入口在读取配置后统一调用 `logx.MustSetup`，复制完整的 `c.Log`，保留 `Stat`、`MaxContentLength` 及其他原生字段。`Log.ServiceName` 未配置时使用顶层 `Name`；启用 `LogRotation` 时使用 `LogRotation.Path` 存储文件，关闭后原生文件日志使用 `Log.Path`。
+
+目录自动创建，相对路径以进程工作目录为基准，每个进程应配置独立目录。使用进程本地时区，按天生成 `app-2026-10-15.log`，按小时生成 `app-2026-10-15-09.log`。同一时段重启后继续追加，每次写入及定期检查会切换到当前时段。
+
+压缩和删除期限从日志所属时段结束后计算，一天按 24 小时计；例如 `CompressAfterDays: 3` 表示日/小时日志所属时段结束超过 72 小时后压缩为 `.log.gz`。启动时及每隔 `CheckIntervalMinutes` 分钟在后台检查归档，即使没有新日志也会执行。超过 `KeepDays` 的原日志及压缩文件自动删除，删除优先于压缩，压缩不会重新计算保留期限。压缩完整写入成功后才删除源文件。
+
+仅管理当前目录中本包生成的 `app-日期.log`、`app-日期-小时.log` 及对应 `.gz` 文件；切换按天/按小时分割后，已有文件仍按期限归档。配置天数允许 0–36500，检查间隔允许 1–1440 分钟。已有项目使用这项功能时，需要同步 YAML、Config 中的 `LogRotation logrotate.Config` 及生成入口中的日志初始化代码。
+
+### 通用 HTTP 响应、CORS 与静态文件
+
+内嵌 goctl 模板默认接入 `httpresponse` 统一响应和 `httpcors` 跨域配置，并提供默认关闭的 `httpstatic` 本机静态文件访问。三个包都只依赖 Go 标准库，供业务项目独立引用；生成的 go-zero 入口负责注册对应功能。
+
+新服务的 YAML 会包含以下配置，项目可以自行调整或将对应的 `Enabled` 设为 `false`：
+
+```yaml
+ResponseConfig:
+  Enabled: true
+  # 跳过统一 code/message/result 包装的路径，例如健康检查、下载接口。
+  # 成功数据原样返回，无返回值接口保持空响应；失败返回原始错误文本，默认 HTTP 400。
+  # 精确匹配实际 URL 路径（包含路由前缀，不含查询参数），不支持前缀或通配符匹配。
+  # 例如 ["/health", "/api/v1/files/download"]；[] 表示不跳过任何路径，仅 Enabled=true 时生效。
+  # 此配置只控制响应格式，认证、参数校验和 CORS 仍按原配置执行。
+  BypassPaths: []
+
+CorsConfig:
+  Enabled: true
+  Origins:
+    - "*" # 按项目需要改为具体来源，例如 https://admin.example.com
+  AllowHeaders: [] # 在 go-zero 内置请求头上追加，例如 ["X-Client-ID"]
+  # 允许前端 JavaScript 在跨域请求中读取的额外响应头；[] 表示不额外暴露。
+  # 例如导出 Excel：后端设置 Content-Disposition: attachment; filename="report.xlsx"。
+  # 前端需要读取下载文件名时，配置为 ["Content-Disposition"]，再调用：
+  # const response = await fetch(downloadUrl);
+  # const disposition = response.headers.get("Content-Disposition");
+  # disposition 是完整头部值，需再提取 filename / filename*；此配置不会自动设置文件名。
+  ExposeHeaders: []
+
+# 本机公开文件访问，独立于 CORS；按需开启。
+StaticConfig:
+  Enabled: false
+  Prefix: /uploads # URL 路径前缀。
+  Directory: ./uploads # 已存在的本机目录，相对路径以进程工作目录为基准。
+# ./uploads/a.png 对应 http://服务地址/uploads/a.png。
+```
+
+统一成功响应：
+
+```json
+{"code":0,"message":"请求成功","result":{"id":1}}
+```
+
+默认失败响应（HTTP 200，业务状态通过 `code` 判断）：
+
+```json
+{"code":1,"message":"操作失败"}
+```
+
+`result` 为 nil 时省略。无返回值接口成功时也会返回 `{"code":0,"message":"请求成功"}`；关闭统一响应或将路径加入 `BypassPaths` 后，无返回值接口保持空响应。已返回 `httpresponse.Response` 或 `*httpresponse.Response` 的结果不会重复包装。下载、流式输出等自定义响应接口应使用自己的 Handler，或将其精确路径加入 `BypassPaths`。
+
+项目可以自定义业务错误码及 HTTP 状态码，包装过的错误也能识别：
+
+```go
+import (
+    "net/http"
+
+    "github.com/kuangshp/gorm-plus/httpresponse"
+)
+
+// 在返回 error 的业务方法中使用，错误码由项目自行约定。
+err := httpresponse.NewError(10001, "无操作权限")
+err.HTTPStatus = http.StatusForbidden // 可选；未设置时使用 HTTP 200
+return nil, err
+```
+
+上述错误输出 HTTP 403，响应体为 `{"code":10001,"message":"无操作权限"}`。普通 `error` 默认使用 code 1 和 `err.Error()`；日志通过标准库 `slog` 记录服务名和原始错误，项目可配置自己的 slog logger 或替换错误回调。跳过包装的路径返回原始成功数据或原始错误，错误默认使用 HTTP 400，设置了自定义 HTTP 状态码时沿用该状态码。
+
+已有服务可手动接入以下代码（示例中的 `c` 为服务配置）：
+
+```go
+// 配置结构增加：
+// ResponseConfig httpresponse.Config
+// CorsConfig     httpcors.Config
+// StaticConfig   httpstatic.Config
+
+var options []rest.RunOption
+if c.StaticConfig.Enabled {
+    files, err := c.StaticConfig.Open()
+    if err != nil {
+        log.Fatal(err) // 使用标准库 log；目录不存在等配置错误会在启动时提示。
+    }
+    defer files.Close()
+    options = append(options, rest.WithNotFoundHandler(files))
+}
+if c.CorsConfig.Enabled {
+    options = append(options, rest.WithCustomCors(
+        c.CorsConfig.AddHeaders, nil, c.CorsConfig.Origins...,
+    ))
+}
+server := rest.MustNewServer(c.RestConf, options...)
+defer server.Stop()
+
+if c.ResponseConfig.Enabled {
+    httpx.SetOkHandler(httpresponse.OkHandler)
+    httpx.SetErrorHandlerCtx(httpresponse.ErrHandler(c.Name))
+    server.Use(httpresponse.BypassMiddleware(c.ResponseConfig.BypassPaths...))
+}
+```
+
+CORS 的来源匹配和 OPTIONS 预检由 go-zero 处理；`httpcors.Config.AddHeaders` 追加允许/暴露的请求头，保留已有头部并去重。`Origins` 为空时沿用 go-zero 的允许所有来源行为。响应回调是 go-zero 的进程级设置，应在启动时统一注册；业务项目可替换为自己的同签名回调。
+
+#### ExposeHeaders：跨域读取 Excel 下载文件名
+
+后端导出 Excel 时，可通过 `Content-Disposition` 响应头指定下载文件名：
+
+```http
+Content-Disposition: attachment; filename="report.xlsx"
+```
+
+跨域前端需要通过 JavaScript 读取该头时，在 `CorsConfig` 中设置：
+
+```yaml
+ExposeHeaders: ["Content-Disposition"]
+```
+
+前端读取示例（在 async 函数或支持顶层 await 的模块中使用）：
+
+```javascript
+const response = await fetch(downloadUrl);
+const disposition = response.headers.get("Content-Disposition");
+// 例如得到 'attachment; filename="report.xlsx"'，再从 filename / filename* 提取文件名。
+```
+
+`ExposeHeaders` 只允许读取响应头，不会替后端设置 `Content-Disposition` 或生成文件名。跨域时未暴露该头，即使网络面板能看到它，JavaScript 也读不到；响应未携带该头时读取结果同样为 null。仅使用 `<img src="图片地址">` 展示图片时，通常保持 `ExposeHeaders: []` 即可。
+
+#### 本机静态文件：通过 URL 访问上传图片
+
+静态目录与 CORS 是独立配置。文件上传和落盘由业务接口负责；`StaticConfig` 负责将已保存的公开文件映射为 URL：
+
+```yaml
+StaticConfig:
+  Enabled: true
+  Prefix: /uploads
+  Directory: ./uploads
+```
+
+例如在服务的启动工作目录中创建 `uploads`，将图片保存为 `./uploads/avatar.png`，前端即可通过 `http://localhost:8888/uploads/avatar.png` 访问。子目录同样保留映射关系：`./uploads/2026/10/a.png` 对应 `/uploads/2026/10/a.png`。端口、域名和前缀按项目实际值调整。
+
+`Directory` 也可以使用绝对路径，例如 `/srv/shop/uploads`；启用时目录必须已经存在。相对目录以**进程工作目录**为基准，不是相对于 YAML 文件，也不会自动定位项目根目录。上传接口保存文件时使用的目录应与这里一致。
+
+文件服务通过 `rest.WithNotFoundHandler` 挂载，业务路由优先匹配。图片直接返回文件内容和对应 MIME 类型，不经过 `code/message/result` 包装，不需要为每个文件配置 `BypassPaths`。支持 GET、HEAD、Range 及条件请求；不缓存文件是否存在，首次访问返回 404 的文件上传后也可立即读取。CORS 配置同样作用于静态文件。
+
+启用后该目录中的普通文件通过公开 URL 提供，不走业务路由上的认证逻辑，应只放公开资源；目录列表、隐藏路径以及指向目录外的符号链接目标不提供访问。该功能默认关闭，也不创建上传接口。需要鉴权的附件由业务 Handler 处理。
+
+#### 自定义认证错误及额外响应字段
+
+新项目统一使用 `httpresponse.NewError` 返回认证错误，由业务码识别错误分类，未匹配的错误交给 `httpresponse.ErrHandler`。下面的完整代码可保存为业务项目的 `common/response/response.go`；`10024`、`AUTH_SESSION_INVALID` 和恢复动作都是该项目自行约定的值，不是 gorm-plus 的默认规则。
+
+```go
+package response
+
+import (
+	"context"
+	"errors"
+	"net/http"
+
+	"github.com/kuangshp/gorm-plus/httpresponse"
+	"github.com/zeromicro/go-zero/core/logx"
+	"github.com/zeromicro/go-zero/core/trace"
+)
+
+const (
+	AuthSessionInvalidCode      int64 = 10024                  // 项目约定的会话失效业务码。
+	ErrorCodeAuthSessionInvalid       = "AUTH_SESSION_INVALID" // 供前端判断的稳定错误分类。
+	RecoveryRestartLogin              = "restartLogin"         // 前端收到后重新登录。
+)
+
+// AuthErrorResponse 嵌入通用响应结构，按项目需要追加错误分类、恢复动作和链路标识。
+type AuthErrorResponse struct {
+	*httpresponse.Response
+	ErrorCode string `json:"errorCode,omitempty"`
+	Recovery  string `json:"recovery,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+}
+
+// ErrHandler 先处理项目认证错误，其他错误继续使用 gorm-plus 的默认处理。
+func ErrHandler(name string) func(context.Context, error) (int, any) {
+	fallback := httpresponse.ErrHandler(name)
+	return func(ctx context.Context, err error) (int, any) {
+		// 保留默认的空错误处理，以及健康检查、下载等路径的跳过包装规则。
+		if err == nil || httpresponse.IsBypassed(ctx) {
+			return fallback(ctx, err)
+		}
+
+		var business *httpresponse.Error
+		// 根据稳定业务码分类，errors.As 也能识别 fmt.Errorf("...: %w", err) 的包装。
+		if errors.As(err, &business) && business != nil &&
+			business.Code == AuthSessionInvalidCode {
+			logx.WithContext(ctx).Infof("【%s】认证错误: %v", name, err)
+			return http.StatusOK, &AuthErrorResponse{
+				Response: &httpresponse.Response{
+					Code:    AuthSessionInvalidCode,
+					Message: business.Message,
+				},
+				ErrorCode: ErrorCodeAuthSessionInvalid,
+				Recovery:  RecoveryRestartLogin,
+				RequestID: trace.TraceIDFromContext(ctx), // 没有 traceId 时为空，JSON 中省略。
+			}
+		}
+		return fallback(ctx, err)
+	}
+}
+```
+
+在项目启动入口导入 `customresponse "你的module/common/response"`，将默认的错误回调替换为自己的回调，成功响应和跳过路径中间件继续复用：
+
+```go
+if c.ResponseConfig.Enabled {
+    httpx.SetOkHandler(httpresponse.OkHandler)
+    httpx.SetErrorHandlerCtx(customresponse.ErrHandler(c.Name))
+    server.Use(httpresponse.BypassMiddleware(c.ResponseConfig.BypassPaths...))
+}
+```
+
+认证失败时可以输出 HTTP 200 和以下结构（有链路标识时额外携带 `requestId`）：
+
+```json
+{"code":10024,"message":"请先登录","errorCode":"AUTH_SESSION_INVALID","recovery":"restartLogin"}
+```
+
+在返回 error 的业务方法中，统一使用项目定义的业务码常量：
+
+```go
+return httpresponse.NewError(response.AuthSessionInvalidCode, "请先登录")
+```
+
+示例中的 `response` 为业务项目的 `common/response` 包。同一类认证错误可以使用不同提示文案，例如“token过期”，分类始终按 `AuthSessionInvalidCode` 判断。通过 `%w` 包装后仍能识别业务码，响应提示使用原始的 `business.Message`。认证分支使用项目的 go-zero `logx` 记录日志，其他错误交给默认处理器，仍使用 `slog`。
+
+已有 main、Config、YAML 和 Handler 不会因升级库自动重写。使用包含这些包和模板的 gorm-plus 版本、更新 `gormplus` 命令后，新服务会自动接入；已有服务需合并上面的启动配置，并按需要调整无返回值 Handler。自定义 `--home` 的项目需同步模板。完整生成、编译及 HTTP 测试可运行：
+
+```bash
+GORMPLUS_GOCTL_INTEGRATION=1 go test ./httpresponse ./httpcors ./httpstatic ./generator/gozero
+```
+
 ### 整数、小数入参同时支持 JSON 数字和字符串
 
 普通 DTO 和内嵌 go-zero Handler 模板已接入 `github.com/kuangshp/gorm-plus/decimaljson`，不依赖 HTTP 框架。数据库 `decimal`、`float`、`double` 字段仍生成 Go `string`，并自动标记 `decimal:"true"`：

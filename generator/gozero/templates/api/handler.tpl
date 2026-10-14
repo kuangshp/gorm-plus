@@ -5,6 +5,8 @@ import (
 
 	"github.com/zeromicro/go-zero/rest/httpx"
 
+    {{if not .HasResp}}"github.com/kuangshp/gorm-plus/httpresponse"{{end}}
+
 	{{if .HasRequest}}"github.com/kuangshp/go-utils/k/validation"
  "github.com/kuangshp/gorm-plus/decimaljson"{{end}}
 	{{.ImportPackages}}
@@ -34,8 +36,13 @@ func {{.HandlerName}}(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		{{if .HasResp}}resp, {{end}}err := l.{{.Call}}({{if .HasRequest}}&req{{end}})
 		if err != nil {
 			httpx.ErrorCtx(r.Context(), w, err)
-		}{{if .HasResp}} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
-		}{{end}}
+		} else {
+            {{if .HasResp}}httpx.OkJsonCtx(r.Context(), w, resp){{else}}
+            if svcCtx.Config.ResponseConfig.Enabled && !httpresponse.IsBypassed(r.Context()) {
+                httpx.OkJsonCtx(r.Context(), w, nil)
+            } else {
+                httpx.Ok(w)
+            }{{end}}
+        }
 	}
 }
