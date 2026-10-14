@@ -258,6 +258,113 @@ func main() {
 
 ### 配置与运行
 
+#### 复用业务配置：根目录 generator.go
+
+将下面的代码复制到业务项目根目录的 `generator.go`，修改 `Package` 为该项目 `go.mod` 中的 module，并按项目结构调整输出目录。示例使用 Viper 读取业务 YAML 的 `dataSource` 节点；项目未引入 Viper 时先安装：
+
+```bash
+go get github.com/spf13/viper
+```
+
+```go
+//go:build ignore
+
+// 在项目根目录运行：go run generator.go（默认读取 application.dev.yml）。
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+
+	"github.com/kuangshp/gorm-plus"
+	"github.com/spf13/viper"
+)
+
+func main() {
+	env := flag.String("envString", "dev", "配置环境：dev、test、prod")
+	configFile := flag.String("config", "", "指定业务 YAML 文件，优先于按环境选择的配置文件")
+	flag.Parse()
+	if err := generate(*env, *configFile); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func generate(env, configFile string) error {
+	if env != "dev" && env != "test" && env != "prod" {
+		return fmt.Errorf("配置环境必须是 dev、test 或 prod")
+	}
+	if configFile == "" {
+		configFile = "application." + env + ".yml"
+	}
+	cfg := viper.New()
+	cfg.SetConfigFile(configFile)
+	if err := cfg.ReadInConfig(); err != nil {
+		return fmt.Errorf("读取数据库配置失败: %w", err)
+	}
+	source := cfg.Sub("dataSource")
+	if source == nil {
+		return fmt.Errorf("配置缺少 dataSource")
+	}
+	if source.GetString("host") == "" || source.GetInt("port") <= 0 ||
+		source.GetString("username") == "" || source.GetString("database") == "" {
+		return fmt.Errorf("dataSource 的 host、port、username、database 不能为空")
+	}
+	// 当前库的生成器不支持传递 TLS 参数，避免静默忽略连接要求。
+	if tls := source.GetString("tls"); tls != "" && tls != "false" {
+		return fmt.Errorf("当前 gorm-plus 生成器不支持 dataSource.tls")
+	}
+	return gormplus.Generate(&gormplus.GeneratorConfig{
+		DBType:        source.GetString("driver"),    // 数据库类型。
+		Host:          source.GetString("host"),      // 数据库地址。
+		Port:          source.GetInt("port"),         // 数据库端口。
+		Username:      source.GetString("username"),  // 数据库账号。
+		Password:      source.GetString("password"),  // 数据库密码。
+		Database:      source.GetString("database"),  // 业务数据库名。
+		DtoPath:       "internal/dal/dto",            // DTO 输出目录。
+		VoPath:        "internal/dal/vo",             // VO 输出目录。
+		OutPath:       "internal/dal/dao",            // DAO 输出目录。
+		ModelPkgPath:  "internal/dal/entity",         // 实体输出目录。
+		RepoPath:      "internal/dal/repository",     // Repository 输出目录。
+		Package:       "ai-interview-assistant/api",  // 改为业务项目 go.mod 的 module。
+		ExcludeTables: []string{"schema_migrations"}, // 排除迁移记录表。
+	})
+}
+```
+
+业务配置示例（其他业务节点可以保留）：
+
+```yaml
+# application.dev.yml
+dataSource:
+  driver: mysql
+  host: localhost
+  port: 3306
+  username: your_username
+  password: "your_password"
+  database: your_database
+  tls: false
+```
+
+在业务项目根目录运行：
+
+```bash
+# 默认读取 application.dev.yml
+go run generator.go
+
+# 读取 application.test.yml
+go run generator.go -envString test
+
+# 直接指定业务配置文件（相对路径或绝对路径）
+go run generator.go -config ./etc/web-api.yaml
+```
+
+`-config` 指定后直接读取该文件，未指定时按 `-envString` 选择 `application.<env>.yml`。如果业务配置使用 `MysqlConfig` 节点和 `driverName` 字段，将示例中的 `cfg.Sub("dataSource")` 改为 `cfg.Sub("MysqlConfig")`，`DBType` 改为读取 `source.GetString("driverName")`，并相应调整错误提示。当前生成器不接收业务 YAML 中的 `charset`、`loc`，MySQL 连接固定使用 `utf8mb4`、`parseTime=True`、`loc=Local`。
+
+#### 独立生成器配置
+
+也可以继续使用独立的 `generator.yaml`，通过 `gormplus.LoadGeneratorConfig` 加载生成器自己的平铺配置。上面的 `-config` 示例读取的是业务 YAML，两者的配置结构不同。
+
 ```yaml
 # generator.yaml
 db_type: mysql
