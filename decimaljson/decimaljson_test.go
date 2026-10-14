@@ -39,8 +39,8 @@ func TestUnmarshalDecimalInputs(t *testing.T) {
 	if err := Unmarshal([]byte(`{"name":12}`), &got); err == nil {
 		t.Fatal("ordinary text fields must stay strict")
 	}
-	if err := Unmarshal([]byte(`{"count":"12"}`), &got); err == nil {
-		t.Fatal("integer fields must stay strict")
+	if err := Unmarshal([]byte(`{"count":"12"}`), &got); err != nil || got.Count != 12 {
+		t.Fatalf("integer string was not accepted: count=%d, err=%v", got.Count, err)
 	}
 	if err := Unmarshal([]byte(`{"small":"1e50"}`), &got); err == nil {
 		t.Fatal("float32 overflow accepted")

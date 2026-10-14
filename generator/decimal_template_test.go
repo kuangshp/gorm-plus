@@ -38,12 +38,15 @@ import ("encoding/json"; "testing")
 func TestRoundTrip(t *testing.T) {
  for _, body := range []string{
   "{\"id\":17,\"amount\":12.345678,\"rate\":1.25,\"name\":\"test\"}",
-  "{\"id\":17,\"amount\":\"12.345678\",\"rate\":\"1.25\",\"name\":\"test\"}",
+  "{\"id\":\"17\",\"amount\":\"12.345678\",\"rate\":\"1.25\",\"name\":\"test\"}",
  } {
   var req ModifyPriceDTO
   if err:=json.Unmarshal([]byte(body),&req);err!=nil {t.Fatal(err)}
   if req.ID!=17 || req.Amount!="12.345678" || req.Rate!="1.25" || req.Name!="test" {t.Fatalf("lost fields: %+v",req)}
  }
+ var modified ModifyPriceDTO
+ if err:=json.Unmarshal([]byte("{\"id\":\"9223372036854775807\"}"),&modified);err!=nil || modified.ID!=9223372036854775807 {t.Fatalf("integer precision: %+v, %v",modified,err)}
+ if err:=json.Unmarshal([]byte("{\"id\":\"9223372036854775808\"}"),&modified);err==nil {t.Fatal("accepted integer overflow")}
  var req CreatePriceDTO
  if err:=json.Unmarshal([]byte("{\"amount\":\"abc\"}"),&req);err==nil {t.Fatal("accepted invalid amount")}
 }

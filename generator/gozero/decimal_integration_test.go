@@ -23,7 +23,7 @@ func TestGoctlDecimalIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	spec := "syntax = \"v1\"\ntype Item {\n Amount string `json:\"amount\" decimal:\"true\"`\n}\ntype Input {\n ID int64 `path:\"id\"`\n Amount string `json:\"amount\" decimal:\"true\"`\n Legacy float64 `json:\"legacy\"`\n Items []Item `json:\"items\"`\n}\nservice decimal-api {\n @handler Check\n post /check/:id (Input) returns (Item)\n}\n"
+	spec := "syntax = \"v1\"\ntype Item {\n Amount string `json:\"amount\" decimal:\"true\"`\n Quantity int64 `json:\"quantity\"`\n}\ntype Input {\n ID int64 `path:\"id\"`\n Count int64 `json:\"count\"`\n QuotedCount int64 `json:\"quotedCount,string\"`\n Amount string `json:\"amount\" decimal:\"true\"`\n Legacy float64 `json:\"legacy\"`\n Items []Item `json:\"items\"`\n}\nservice decimal-api {\n @handler Check\n post /check/:id (Input) returns (Item)\n}\n"
 	if err := os.WriteFile(filepath.Join(dir, "decimal.api"), []byte(spec), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -53,8 +53,8 @@ import (
 )
 func TestActualParser(t *testing.T) {
  for _, body:=range []string{
-  "{\"amount\":12.345678,\"legacy\":\"1.25\",\"items\":[{\"amount\":3.5}]}",
-  "{\"amount\":\"12.345678\",\"legacy\":1.25,\"items\":[{\"amount\":\"3.5\"}]}",
+  "{\"count\":9223372036854775807,\"quotedCount\":17,\"amount\":12.345678,\"legacy\":\"1.25\",\"items\":[{\"amount\":3.5,\"quantity\":9007199254740993}]}",
+  "{\"count\":\"9223372036854775807\",\"quotedCount\":\"17\",\"amount\":\"12.345678\",\"legacy\":1.25,\"items\":[{\"amount\":\"3.5\",\"quantity\":\"9007199254740993\"}]}",
  } {
   r:=httptest.NewRequest("POST","/check/17",strings.NewReader(body))
   r.Header.Set("Content-Type","application/json")
@@ -62,7 +62,13 @@ func TestActualParser(t *testing.T) {
   var req Input
   if err:=decimaljson.PrepareRequest(r,&req);err!=nil {t.Fatal(err)}
   if err:=httpx.Parse(r,&req);err!=nil {t.Fatal(err)}
-  if req.ID!=17 || req.Amount!="12.345678" || req.Legacy!=1.25 || req.Items[0].Amount!="3.5" {t.Fatalf("bad request: %+v",req)}
+  if req.ID!=17 || req.Count!=9223372036854775807 || req.QuotedCount!=17 || req.Amount!="12.345678" || req.Legacy!=1.25 || req.Items[0].Amount!="3.5" || req.Items[0].Quantity!=9007199254740993 {t.Fatalf("bad request: %+v",req)}
+ }
+ for _, body:=range []string{"{\"count\":\"1.5\"}","{\"count\":\"9223372036854775808\"}"} {
+  r:=httptest.NewRequest("POST","/check/17",strings.NewReader(body))
+  r.Header.Set("Content-Type","application/json")
+  var req Input
+  if err:=decimaljson.PrepareRequest(r,&req);err==nil {t.Fatalf("accepted invalid integer: %s",body)}
  }
 }
 `

@@ -17,7 +17,7 @@ import (
 var decimalText = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
 
 // Unmarshal accepts numbers for string fields tagged decimal:"true" or
-// validate:"decimal", and numeric strings for float fields.
+// validate:"decimal", and numeric strings for integer and float fields.
 // Generated DTOs call it with an alias that has no UnmarshalJSON method.
 func Unmarshal(data []byte, target any) error {
 	normalized, err := Normalize(data, target)
@@ -90,6 +90,9 @@ func normalize(data []byte, typ reflect.Type, decimal bool, path string) ([]byte
 	// Custom scalar types (time.Time, decimal.Decimal, etc.) own their JSON format.
 	if reflect.PointerTo(typ).Implements(reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()) {
 		return data, nil
+	}
+	if integerKind(typ.Kind()) {
+		return normalizeInteger(data, typ, path)
 	}
 	if (typ.Kind() == reflect.String && decimal) || typ.Kind() == reflect.Float32 || typ.Kind() == reflect.Float64 {
 		text := string(data)
@@ -166,6 +169,35 @@ func normalize(data []byte, typ reflect.Type, decimal bool, path string) ([]byte
 	return data, nil
 }
 
+func integerKind(kind reflect.Kind) bool {
+	return (kind >= reflect.Int && kind <= reflect.Int64) ||
+		(kind >= reflect.Uint && kind <= reflect.Uint64)
+}
+
+// normalizeInteger parses at the destination width without losing precision to float64.
+func normalizeInteger(data []byte, typ reflect.Type, path string) ([]byte, error) {
+	text := string(data)
+	if len(data) > 0 && data[0] == '"' {
+		if err := json.Unmarshal(data, &text); err != nil {
+			return nil, fmt.Errorf("%s: invalid integer", path)
+		}
+	} else if !json.Valid(data) {
+		return nil, fmt.Errorf("%s: invalid integer", path)
+	}
+	if typ.Kind() >= reflect.Int && typ.Kind() <= reflect.Int64 {
+		number, err := strconv.ParseInt(text, 10, typ.Bits())
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid integer or out of range", path)
+		}
+		return []byte(strconv.FormatInt(number, 10)), nil
+	}
+	number, err := strconv.ParseUint(text, 10, typ.Bits())
+	if err != nil {
+		return nil, fmt.Errorf("%s: invalid unsigned integer or out of range", path)
+	}
+	return []byte(strconv.FormatUint(number, 10)), nil
+}
+
 // normalizeFields includes embedded request structs such as Modify/Create DTOs.
 func normalizeFields(values map[string]json.RawMessage, typ reflect.Type, path string) error {
 	for i := 0; i < typ.NumField(); i++ {
@@ -198,7 +230,8 @@ func normalizeFields(values map[string]json.RawMessage, typ reflect.Type, path s
 		if err != nil {
 			return err
 		}
-		if fieldType.Kind() == reflect.Float32 || fieldType.Kind() == reflect.Float64 {
+		if (fieldType.Kind() == reflect.Float32 || fieldType.Kind() == reflect.Float64 || integerKind(fieldType.Kind())) &&
+			!reflect.PointerTo(fieldType).Implements(reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()) {
 			for _, option := range strings.Split(field.Tag.Get("json"), ",")[1:] {
 				if option == "string" && !bytes.Equal(normalized, []byte("null")) {
 					normalized, err = json.Marshal(string(normalized))
