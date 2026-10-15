@@ -168,6 +168,20 @@ func TestConditionalWritesInvalidateTable(t *testing.T) {
 `), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// 保留已有业务扩展后，WithTx 仍必须返回完整业务接口并保留依赖。
+	customSource := strings.Replace(string(custom), "*defaultItemsRepository", "*defaultItemsRepository\n\tdependency *int", 1)
+	customSource = strings.Replace(customSource, "iDefaultItemsRepository", "iDefaultItemsRepository\n\tDependency() *int", 1)
+	customSource += "\nfunc (r *customerItemsRepository) Dependency() *int { return r.dependency }\n"
+	if err := os.WriteFile(extension, []byte(customSource), 0600); err != nil {
+		t.Fatal(err)
+	}
+	txTests, err := os.ReadFile(filepath.Join(root, "generator/testdata/repository_transactions_test.go.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "repository/transactions_test.go"), txTests, 0600); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command("go", "test", "-mod=mod", "./...")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")

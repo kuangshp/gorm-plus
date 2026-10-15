@@ -3,7 +3,9 @@ package gormplus
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
+	"gorm.io/gen"
 	"gorm.io/gorm"
 )
 
@@ -18,7 +20,7 @@ import (
 //   1. Transaction      → 通用版本,fn 拿到 *gorm.DB,需要在内部自行 dao.Use(tx)
 //   2. TransactionAs    → 泛型版本,fn 直接拿到用户期望的类型(如 *dao.Query)
 //
-// gorm-gen 自动生成的 Use 函数签名固定为 func Use(db *gorm.DB) *Query,
+// gorm-gen 自动生成的 Use 函数签名为 func Use(db *gorm.DB, opts ...gen.DOOption) *Query,
 // TransactionAs 利用这一点用泛型推断 Q 类型,业务侧调用最优雅。
 
 // Transaction 执行 gorm 事务,fn 返回 nil 时提交,返回 error 时回滚。
@@ -45,13 +47,13 @@ import (
 //
 // opts 可选,传递隔离级别等参数(同 gorm.DB.Transaction)。
 func Transaction(db *gorm.DB, fn func(tx *gorm.DB) error, opts ...*sql.TxOptions) error {
-	return db.Transaction(fn, opts...)
+	return transactionWithScope(db, fn, opts...)
 }
 
 // TransactionAs 执行 gorm 事务,fn 直接拿到指定类型的查询对象(如 *dao.Query)。
 //
 // Q 类型由 useFn 决定:传入 dao.Use 时 Q 自动推断为 *dao.Query。
-// useFn 是 gorm-gen 自动生成的 Use 函数,签名固定为 func(*gorm.DB) Q,
+// useFn 是 gorm-gen 自动生成的 Use 函数,签名为 func(*gorm.DB, ...gen.DOOption) Q,
 // 框架在事务内部用 tx 调一次 useFn 把 Q 构造好喂给 fn。
 //
 // 示例:
@@ -75,11 +77,14 @@ func Transaction(db *gorm.DB, fn func(tx *gorm.DB) error, opts ...*sql.TxOptions
 // opts 可选,传递隔离级别等参数。
 func TransactionAs[Q any](
 	db *gorm.DB,
-	useFn func(*gorm.DB) Q,
+	useFn func(*gorm.DB, ...gen.DOOption) Q,
 	fn func(tx Q) error,
 	opts ...*sql.TxOptions,
 ) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+	if useFn == nil || fn == nil {
+		return fmt.Errorf("事务转换函数和回调不能为空")
+	}
+	return Transaction(db, func(tx *gorm.DB) error {
 		return fn(useFn(tx))
 	}, opts...)
 }
@@ -102,7 +107,11 @@ func TransactionCtx(
 	fn func(tx *gorm.DB) error,
 	opts ...*sql.TxOptions,
 ) error {
-	return db.WithContext(ctx).Transaction(fn, opts...)
+	ctx, err := transactionContext(ctx, db)
+	if err != nil {
+		return err
+	}
+	return Transaction(db.WithContext(ctx), fn, opts...)
 }
 
 // TransactionAsCtx 是 TransactionAs 的带 context 版本。
@@ -118,11 +127,14 @@ func TransactionCtx(
 func TransactionAsCtx[Q any](
 	ctx context.Context,
 	db *gorm.DB,
-	useFn func(*gorm.DB) Q,
+	useFn func(*gorm.DB, ...gen.DOOption) Q,
 	fn func(tx Q) error,
 	opts ...*sql.TxOptions,
 ) error {
-	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if useFn == nil || fn == nil {
+		return fmt.Errorf("事务转换函数和回调不能为空")
+	}
+	return TransactionCtx(ctx, db, func(tx *gorm.DB) error {
 		return fn(useFn(tx))
 	}, opts...)
 }

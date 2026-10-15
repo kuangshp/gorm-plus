@@ -28,16 +28,17 @@ type CacheOption struct {
 
 // QueryOption 查询参数结构体
 type QueryOption struct {
-	Cond       []gen.Condition         // 原生条件
-	Order      []field.Expr            // 排序字段
-	Select     []field.Expr            // 指定查询字段
-	OmitFields []field.Expr            // 排除字段
-	Clauses    []gormclause.Expression // GORM clauses，如 hints、locking、dbresolver
-	ForUpdate  bool                    // 启用 FOR UPDATE 悲观行锁；查询和修改必须绑定同一事务
-	Limit      *int                    // 查询条数
-	Unscoped   bool                    // 包含主表逻辑删除数据
-	SF         *SingleFlightOption     // 使用sf并发处理
-	Cache      *CacheOption            // 使用缓存
+	inTransaction bool                    // 绑定 SQL 事务时，禁止缓存和 SingleFlight。
+	Cond          []gen.Condition         // 原生条件
+	Order         []field.Expr            // 排序字段
+	Select        []field.Expr            // 指定查询字段
+	OmitFields    []field.Expr            // 排除字段
+	Clauses       []gormclause.Expression // GORM clauses，如 hints、locking、dbresolver
+	ForUpdate     bool                    // 启用 FOR UPDATE 悲观行锁；查询和修改必须绑定同一事务
+	Limit         *int                    // 查询条数
+	Unscoped      bool                    // 包含主表逻辑删除数据
+	SF            *SingleFlightOption     // 使用sf并发处理
+	Cache         *CacheOption            // 使用缓存
 }
 
 // QueryBuilder 链式构建器
@@ -782,6 +783,7 @@ func (q *QueryBuilder) Build() QueryOption {
 func MergeQueryOptions(opts ...QueryOption) QueryOption {
 	var result QueryOption
 	for _, opt := range opts {
+		result.inTransaction = result.inTransaction || opt.inTransaction
 		// Cond
 		if len(opt.Cond) > 0 {
 			result.Cond = append(

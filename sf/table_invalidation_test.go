@@ -68,3 +68,48 @@ func TestTableAndMethodInvalidation(t *testing.T) {
 		}
 	}
 }
+
+// 写后失效必须隔离还在运行的旧查询，防止新请求加入旧 singleflight 或旧值回填。
+func TestInvalidationFencesInflightQueries(t *testing.T) {
+	for _, mode := range []string{"exact", "prefix", "batch"} {
+		t.Run(mode, func(t *testing.T) {
+			resetCache(t)
+			started, release := make(chan struct{}), make(chan struct{})
+			oldDone := make(chan int, 1)
+			go func() {
+				result, _ := SFWithTTL(func() (int, error) { close(started); <-release; return 1, nil }, "users.FindById", nil, time.Minute)
+				oldDone <- result
+			}()
+			<-started
+			switch mode {
+			case "exact":
+				SFInvalidate("users.FindById", nil)
+			case "prefix":
+				SFInvalidatePrefix("users.")
+			case "batch":
+				SFInvalidatePrefixes([]string{"users.", "orders."})
+			}
+			fresh := make(chan int, 1)
+			go func() {
+				result, _ := SFWithTTL(func() (int, error) { return 2, nil }, "users.FindById", nil, time.Minute)
+				fresh <- result
+			}()
+			select {
+			case got := <-fresh:
+				if got != 2 {
+					t.Errorf("post-invalidation request received stale %d", got)
+				}
+			case <-time.After(2 * time.Second):
+				t.Error("new request joined old singleflight")
+			}
+			close(release)
+			if got := <-oldDone; got != 1 {
+				t.Fatalf("old request changed: %d", got)
+			}
+			got, err := SFWithTTL(func() (int, error) { return 3, nil }, "users.FindById", nil, time.Minute)
+			if err != nil || got != 2 {
+				t.Fatalf("late old query replaced cache: %d %v", got, err)
+			}
+		})
+	}
+}

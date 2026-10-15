@@ -34,10 +34,13 @@ func (opt QueryOption) withForUpdateClause() QueryOption {
 	return opt
 }
 
-// WithLockingFrom 将实际查询中的行锁子句同步到选项，供 Repository 决定是否使用缓存。
+// WithLockingFrom 同步实际查询的事务状态和行锁子句，事务/行锁查询跳过缓存和 SingleFlight。
 // 生成代码在执行查询前调用，兼容在 GenWrap 回调中设置 ForUpdate 的情况。
 func (opt QueryOption) WithLockingFrom(db *gorm.DB) QueryOption {
 	if db != nil && db.Statement != nil {
+		if _, ok := db.Statement.ConnPool.(gorm.TxCommitter); ok {
+			opt.inTransaction = true
+		}
 		if locking, ok := db.Statement.Clauses["FOR"]; ok {
 			// 新建切片，避免修改调用方原有的 Clauses 底层数组。
 			opt.Clauses = append(append([]gormclause.Expression(nil), opt.Clauses...), locking.Expression)

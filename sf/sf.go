@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -504,6 +505,18 @@ func StopSFCache() error {
 
 var sfg singleflight.Group
 
+// 失效与回填互斥，防止提交前的慢查询在提交后重新写回旧值。
+// 代次只用于当前进程的 singleflight 分组，不改变缓存键格式。
+var invalidationGate sync.RWMutex
+var invalidationEpoch uint64
+
+func invalidateDuring(fn func()) {
+	invalidationGate.Lock()
+	defer invalidationGate.Unlock()
+	invalidationEpoch++
+	fn()
+}
+
 // ================== 公开 SF 函数 ==================
 
 // SF 通用 singleflight + 缓存查询封装（最常用入口）。
@@ -529,7 +542,7 @@ func SFNoCache[T any](fn func() (T, error), fnName string, args map[string]any) 
 //	sf.SFInvalidate("sys_user.FindById", map[string]any{"id": int64(1)})
 func SFInvalidate(fnName string, args map[string]any) {
 	key := buildSFKey(fnName, args)
-	getCache().Del(key)
+	invalidateDuring(func() { getCache().Del(key) })
 }
 
 // SFInvalidatePrefix 按前缀批量失效缓存（前缀失效，不需要知道具体 args）。
@@ -562,7 +575,7 @@ func SFInvalidatePrefix(fnName string) {
 
 	c := getCache()
 	if pd, ok := c.(SFCachePrefixDeleter); ok {
-		pd.DelByPrefix(prefix)
+		invalidateDuring(func() { pd.DelByPrefix(prefix) })
 		return
 	}
 	// 未实现 SFCachePrefixDeleter 时静默忽略（保持向后兼容，业务可继续运行）。
@@ -628,15 +641,17 @@ func SFInvalidatePrefixes(fnNames []string) {
 
 	// 优先：批量接口
 	if bd, ok := c.(SFCachePrefixBatchDeleter); ok {
-		bd.DelByPrefixes(prefixes)
+		invalidateDuring(func() { bd.DelByPrefixes(prefixes) })
 		return
 	}
 
 	// 兜底：循环调用单个接口（Redis 用户没实现批量时的降级路径）
 	if pd, ok := c.(SFCachePrefixDeleter); ok {
-		for _, p := range prefixes {
-			pd.DelByPrefix(p)
-		}
+		invalidateDuring(func() {
+			for _, p := range prefixes {
+				pd.DelByPrefix(p)
+			}
+		})
 		return
 	}
 	reportPrefixInvalidateNoop(filtered)
@@ -656,6 +671,10 @@ func SFInvalidatePrefixes(fnNames []string) {
 func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, ttl time.Duration) (T, error) {
 	key := buildSFKey(fnName, args)
 	cache := getCache()
+	invalidationGate.RLock()
+	epoch := invalidationEpoch
+	invalidationGate.RUnlock()
+	flightKey := key + "/generation/" + strconv.FormatUint(epoch, 10)
 
 	// 步骤 1：缓存快速路径
 	if ttl > 0 {
@@ -671,7 +690,7 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 	}
 
 	// 步骤 2：singleflight 保护
-	raw, err, _ := sfg.Do(key, func() (any, error) {
+	raw, err, _ := sfg.Do(flightKey, func() (any, error) {
 		// Do 内部二次查缓存（防止等待期间已由其他 goroutine 写入）
 		if ttl > 0 {
 			if cached, ok := cache.Get(key); ok {
@@ -687,10 +706,16 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 		// 真正执行查询
 		result, err := fn()
 		if err == nil && ttl > 0 {
-			cache.Set(key, result, ttl)
+			func() {
+				invalidationGate.RLock()
+				defer invalidationGate.RUnlock()
+				if invalidationEpoch == epoch {
+					cache.Set(key, result, ttl)
+				}
+			}()
 		}
 		if ttl == 0 {
-			sfg.Forget(key)
+			sfg.Forget(flightKey)
 		}
 		return result, err
 	})

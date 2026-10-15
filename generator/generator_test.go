@@ -532,7 +532,7 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 		"FindById(ctx context.Context, sequenceId string, query ...gormplus.QueryOption)",
 		"tx = tx.Select(opt.Select...)",
 		"tx = tx.Omit(opt.OmitFields...)",
-		"dao.SequenceEntity.BizType.Eq(sequenceId)",
+		"r.source().SequenceEntity.BizType.Eq(sequenceId)",
 		`gormplus.BuildArgs("biz_type", sequenceId)`,
 		"deleteOpts := gormplus.ResolveDeleteOptions(opts)",
 		"if deleteOpts.Physical",
@@ -551,6 +551,8 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 	}
 
 	mustNotContain := []string{
+		"CreateTx(", "CreateBatchTx(", "DeleteByIdTx(", "DeleteByIdListTx(",
+		"DeleteByConditionTx(", "DeleteByWrapperTx(", "UpdateByIdTx(", "UpdateMapByIdTx(", "UpdateByWrapperTx(",
 		"Create(ctx context.Context, m *model.SequenceEntity, omitFields ...field.Expr) error",
 		"gorm.io/gen/field",
 		"columns ...field.AssignExpr",
@@ -581,13 +583,13 @@ func TestGenerateRepositoryFileUsesCompositePrimaryKeys(t *testing.T) {
 		"type SequencePrimaryKey struct",
 		"ID int64 `json:\"id\"`",
 		"BizType string `json:\"biz_type\"`",
-		"CreateTx(ctx context.Context, tx *dao.Query, m *model.SequenceEntity, opts ...gormplus.CreateOption) error",
-		"CreateBatchTx(ctx context.Context, tx *dao.Query, m []*model.SequenceEntity, opts ...gormplus.CreateOption) error",
+		"WithTx(tx *dao.Query) SequenceRepository",
+		"func (r *customerSequenceRepository) WithTx(tx *dao.Query) SequenceRepository",
 		"DeleteById(ctx context.Context, id int64, bizType string, opts ...gormplus.DeleteOption) error",
 		"DeleteByIdList(ctx context.Context, sequenceIds []SequencePrimaryKey, opts ...gormplus.DeleteOption) error",
 		"FindById(ctx context.Context, id int64, bizType string, query ...gormplus.QueryOption)",
-		"dao.SequenceEntity.ID.Eq(id)",
-		"dao.SequenceEntity.BizType.Eq(bizType)",
+		"r.source().SequenceEntity.ID.Eq(id)",
+		"r.source().SequenceEntity.BizType.Eq(bizType)",
 		`gormplus.BuildArgs("id", id, "biz_type", bizType)`,
 		"deleteOpts := gormplus.ResolveDeleteOptions(opts)",
 		"if deleteOpts.Physical",
@@ -602,6 +604,8 @@ func TestGenerateRepositoryFileUsesCompositePrimaryKeys(t *testing.T) {
 	}
 
 	mustNotContain := []string{
+		"CreateTx(", "CreateBatchTx(", "DeleteByIdTx(", "DeleteByIdListTx(",
+		"DeleteByConditionTx(", "DeleteByWrapperTx(", "UpdateByIdTx(", "UpdateMapByIdTx(", "UpdateByWrapperTx(",
 		"Where(dao.SequenceEntity.ID.Eq(sequenceId))",
 		`gormplus.BuildArgs("id", sequenceId)`,
 		"PhysicalDeleteById(",

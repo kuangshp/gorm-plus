@@ -1,0 +1,408 @@
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"generationfixture/dao"
+	"generationfixture/model"
+	gormplus "github.com/kuangshp/gorm-plus"
+	"github.com/kuangshp/gorm-plus/query"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+// 每个用例执行真实生成的 Repository，覆盖事务连接、缓存、扩展和复合主键。
+func transactionDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "tx.db") + "?_journal_mode=WAL&_busy_timeout=5000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	for _, ddl := range []string{
+		"CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(80) NOT NULL, amount NUMERIC(18,6), rate REAL, enabled BOOL, payload BLOB, attributes JSONB, created_at DATETIME)",
+		"CREATE TABLE notes (id INTEGER PRIMARY KEY, name TEXT)",
+		"CREATE TABLE memberships (tenant_id INTEGER, user_id INTEGER, name TEXT, PRIMARY KEY (tenant_id, user_id))",
+	} {
+		if err := db.Exec(ddl).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	dao.SetDefault(db)
+	gormplus.ForceReplaceCache(gormplus.NewMemoryCache())
+	t.Cleanup(func() { gormplus.StopSFCache() })
+	return db
+}
+
+func TestBoundRepositoryCommitAndRollback(t *testing.T) {
+	for _, rollback := range []bool{false, true} {
+		t.Run(map[bool]string{false: "commit", true: "rollback"}[rollback], func(t *testing.T) {
+			db := transactionDB(t)
+			ctx := context.Background()
+			repo, notes := NewItemsRepository(), NewNotesRepository()
+			cached := query.Query().WithCache(time.Minute).Build()
+			if count, err := repo.Count(ctx, cached); err != nil || count != 0 {
+				t.Fatalf("initial count %d: %v", count, err)
+			}
+			var escaped ItemsRepository
+			abort := errors.New("abort")
+			err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+				bound := repo.WithTx(tx)
+				escaped = bound
+				if err := bound.Create(ctx, &model.ItemsEntity{ID: 1, Name: "inside"}); err != nil {
+					return err
+				}
+				// 同一表连续写入也不能提前失效外层缓存。
+				if err := bound.CreateBatch(ctx, []*model.ItemsEntity{{ID: 2, Name: "batch"}}); err != nil {
+					return err
+				}
+				if err := notes.WithTx(tx).Create(ctx, &model.NotesEntity{ID: 1}); err != nil {
+					return err
+				}
+				inside, err := bound.Count(ctx, cached)
+				if err != nil || inside != 2 {
+					t.Fatalf("tx count=%d err=%v", inside, err)
+				}
+				outside, err := repo.Count(ctx, cached)
+				if err != nil || outside != 0 {
+					t.Fatalf("original repository joined tx/cache invalidated early: %d %v", outside, err)
+				}
+				// 直接从全局 DAO 查，不传缓存，验证原仓储仍使用事务外连接。
+				outside, err = repo.Count(ctx)
+				if err != nil || outside != 0 {
+					t.Fatalf("outside connection: %d %v", outside, err)
+				}
+				if rollback {
+					return abort
+				}
+				return nil
+			})
+			if rollback && !errors.Is(err, abort) || !rollback && err != nil {
+				t.Fatal(err)
+			}
+			want := int64(2)
+			if rollback {
+				want = 0
+			}
+			if count, err := repo.Count(ctx, cached); err != nil || count != want {
+				t.Fatalf("committed count %d want %d: %v", count, want, err)
+			}
+			noteCount, err := notes.Count(ctx)
+			if err != nil || noteCount != want/2 {
+				t.Fatalf("cross repo count %d: %v", noteCount, err)
+			}
+			if _, err := escaped.Count(ctx, cached); !errors.Is(err, sql.ErrTxDone) {
+				t.Fatalf("escaped transaction returned cached/default data: %v", err)
+			}
+			if err := escaped.CreateBatch(ctx, nil); !errors.Is(err, sql.ErrTxDone) {
+				t.Fatalf("empty batch reused closed tx: %v", err)
+			}
+		})
+	}
+}
+
+func TestBoundRepositoryReadsAndUpdates(t *testing.T) {
+	db := transactionDB(t)
+	ctx := context.Background()
+	repo := NewItemsRepository()
+	if err := repo.Create(ctx, &model.ItemsEntity{ID: 1, Name: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := query.Query().WithCache(time.Minute).Build()
+	if _, err := repo.FindById(ctx, 1, cached); err != nil {
+		t.Fatal(err)
+	}
+	abort := errors.New("abort")
+	err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+		bound := repo.WithTx(tx)
+		if err := bound.UpdateById(ctx, 1, gormplus.WithUpdateColumns(tx.ItemsEntity.Name.Value("updated"))); err != nil {
+			return err
+		}
+		checkName := func(name string) {
+			t.Helper()
+			one, err := bound.FindById(ctx, 1, cached)
+			if err != nil || one.Name != name {
+				t.Fatalf("tx detail %+v %v", one, err)
+			}
+			many, err := bound.FindByIdList(ctx, []int64{1}, cached)
+			if err != nil || len(many) != 1 || many[0].Name != name {
+				t.Fatalf("tx id list %+v %v", many, err)
+			}
+			single, err := bound.FindOne(ctx, cached)
+			if err != nil || single.Name != name {
+				t.Fatalf("tx one %+v %v", single, err)
+			}
+			single, err = bound.FindOneWrapper(ctx, nil, cached)
+			if err != nil || single.Name != name {
+				t.Fatalf("tx wrapper one %+v %v", single, err)
+			}
+			list, err := bound.FindList(ctx, cached)
+			if err != nil || len(list) != 1 || list[0].Name != name {
+				t.Fatalf("tx list %+v %v", list, err)
+			}
+			list, err = bound.FindListByWrapper(ctx, nil, cached)
+			if err != nil || len(list) != 1 || list[0].Name != name {
+				t.Fatalf("tx wrapper list %+v %v", list, err)
+			}
+			list, total, err := bound.FindPage(ctx, 1, 10, cached)
+			if err != nil || total != 1 || len(list) != 1 || list[0].Name != name {
+				t.Fatalf("tx page %+v %d %v", list, total, err)
+			}
+			list, total, err = bound.FindPageByWrapper(ctx, 1, 10, nil, cached)
+			if err != nil || total != 1 || len(list) != 1 || list[0].Name != name {
+				t.Fatalf("tx wrapper page %+v %d %v", list, total, err)
+			}
+			count, err := bound.CountByWrapper(ctx, nil, cached)
+			if err != nil || count != 1 {
+				t.Fatalf("tx count %d %v", count, err)
+			}
+			exists, err := bound.Exists(ctx, cached)
+			if err != nil || !exists {
+				t.Fatalf("tx exists %v %v", exists, err)
+			}
+			exists, err = bound.ExistsByWrapper(ctx, nil, cached)
+			if err != nil || !exists {
+				t.Fatalf("tx wrapper exists %v %v", exists, err)
+			}
+		}
+		checkName("updated")
+		if err := bound.UpdateMapById(ctx, 1, map[string]any{"name": "mapped"}); err != nil {
+			return err
+		}
+		checkName("mapped") // 第二次读不能复用事务内部之前的 SingleFlight/缓存。
+		where := func(w gormplus.IGenWrapper[dao.IItemsEntityDo]) { w.Where(tx.ItemsEntity.ID.Eq(1)) }
+		if err := bound.UpdateByWrapper(ctx, where, gormplus.WithUpdateColumns(tx.ItemsEntity.Name.Value("wrapped"))); err != nil {
+			return err
+		}
+		checkName("wrapped")
+		outside, err := repo.FindById(ctx, 1, cached)
+		if err != nil || outside.Name != "before" {
+			t.Fatalf("early detail invalidation %+v %v", outside, err)
+		}
+		return abort
+	})
+	if !errors.Is(err, abort) {
+		t.Fatal(err)
+	}
+	item, err := repo.FindById(ctx, 1, cached)
+	if err != nil || item.Name != "before" {
+		t.Fatalf("rollback detail %+v %v", item, err)
+	}
+	// 成功提交后必须清掉此前预热的详情缓存。
+	err = gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+		return repo.WithTx(tx).UpdateMapById(ctx, 1, map[string]any{"name": "committed"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err = repo.FindById(ctx, 1, cached)
+	if err != nil || item.Name != "committed" {
+		t.Fatalf("commit stale detail %+v %v", item, err)
+	}
+}
+
+func TestBoundRepositoryDeleteVariants(t *testing.T) {
+	for _, method := range []string{"id", "ids", "condition", "wrapper", "composite"} {
+		t.Run(method, func(t *testing.T) {
+			db := transactionDB(t)
+			ctx := context.Background()
+			repo := NewItemsRepository()
+			if err := repo.Create(ctx, &model.ItemsEntity{ID: 1, Name: "before"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Exec("INSERT INTO memberships(tenant_id,user_id,name) VALUES(1,2,'member')").Error; err != nil {
+				t.Fatal(err)
+			}
+			abort := errors.New("abort")
+			err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+				bound := repo.WithTx(tx)
+				var err error
+				switch method {
+				case "id":
+					err = bound.DeleteById(ctx, 1)
+				case "ids":
+					err = bound.DeleteByIdList(ctx, []int64{1})
+				case "condition":
+					err = bound.DeleteByCondition(ctx, tx.ItemsEntity.ID.Eq(1))
+				case "wrapper":
+					err = bound.DeleteByWrapper(ctx, func(w gormplus.IGenWrapper[dao.IItemsEntityDo]) { w.Where(tx.ItemsEntity.ID.Eq(1)) })
+				case "composite":
+					members := NewMembershipsRepository().WithTx(tx)
+					if _, err = members.FindById(ctx, 1, 2); err != nil {
+						return err
+					}
+					if _, err = members.FindByIdList(ctx, []MembershipsPrimaryKey{{TenantID: 1, UserID: 2}}); err != nil {
+						return err
+					}
+					err = members.DeleteByIdList(ctx, []MembershipsPrimaryKey{{TenantID: 1, UserID: 2}})
+					if err != nil {
+						return err
+					}
+					if n, err := members.Count(ctx); err != nil || n != 0 {
+						t.Fatalf("composite delete %d %v", n, err)
+					}
+					return abort
+				}
+				if err != nil {
+					return err
+				}
+				if n, err := bound.Count(ctx); err != nil || n != 0 {
+					t.Fatalf("tx delete %d %v", n, err)
+				}
+				return abort
+			})
+			if !errors.Is(err, abort) {
+				t.Fatal(err)
+			}
+			if n, err := repo.Count(ctx); err != nil || n != 1 {
+				t.Fatalf("delete escaped rollback %d %v", n, err)
+			}
+			if n, err := NewMembershipsRepository().Count(ctx); err != nil || n != 1 {
+				t.Fatalf("composite escaped rollback %d %v", n, err)
+			}
+		})
+	}
+}
+
+func TestBoundRepositoryInvalidTransactions(t *testing.T) {
+	db := transactionDB(t)
+	ctx := context.Background()
+	repo := NewItemsRepository()
+	raw := db.Begin()
+	defer raw.Rollback()
+	invalid := []ItemsRepository{repo.WithTx(nil), repo.WithTx(&dao.Query{}), repo.WithTx(dao.Use(db)), repo.WithTx(dao.Use(raw))}
+	for _, bound := range invalid {
+		if err := bound.Create(ctx, &model.ItemsEntity{Name: "bad"}); err == nil {
+			t.Fatal("invalid tx silently used default connection")
+		}
+		if _, err := bound.Count(ctx, query.Query().WithCache(time.Minute).Build()); err == nil {
+			t.Fatal("invalid tx returned cached count")
+		}
+	}
+	if n, err := repo.Count(ctx); err != nil || n != 0 {
+		t.Fatalf("original repository changed: %d %v", n, err)
+	}
+}
+
+func TestBoundRepositoryKeepsBusinessExtensions(t *testing.T) {
+	db := transactionDB(t)
+	ctx := context.Background()
+	repo := NewItemsRepository().(*customerItemsRepository)
+	dependency := 42
+	repo.dependency = &dependency
+	err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+		bound := repo.WithTx(tx)
+		if bound.Dependency() != repo.dependency {
+			t.Fatal("WithTx lost custom interface/dependency")
+		}
+		if bound.(*customerItemsRepository) == repo || bound.(*customerItemsRepository).defaultItemsRepository == repo.defaultItemsRepository {
+			t.Fatal("WithTx mutated shared repository")
+		}
+		return bound.Create(ctx, &model.ItemsEntity{Name: "custom"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.daoTx != nil || repo.txScope != nil {
+		t.Fatal("original repository was bound")
+	}
+}
+
+func TestBoundJoinFunctionsAndWrapper(t *testing.T) {
+	db := transactionDB(t)
+	ctx := context.Background()
+	cached := query.Query().WithCache(time.Minute).Build()
+	type row struct {
+		ID   int64
+		Name string
+	}
+	abort := errors.New("abort")
+	err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+		repo := NewItemsRepository().WithTx(tx)
+		build := func(ctx context.Context) dao.IItemsEntityDo {
+			return tx.ItemsEntity.WithContext(ctx).Select(tx.ItemsEntity.ID, tx.ItemsEntity.Name).LeftJoin(tx.NotesEntity, tx.NotesEntity.ID.EqCol(tx.ItemsEntity.ID))
+		}
+		// 即使显式要求缓存，两次泛型查询也必须看到本事务最新写入。
+		for _, name := range []string{"first", "second"} {
+			if name == "first" {
+				if err := repo.Create(ctx, &model.ItemsEntity{ID: 1, Name: name}); err != nil {
+					return err
+				}
+			} else if err := repo.UpdateMapById(ctx, 1, map[string]any{"name": name}); err != nil {
+				return err
+			}
+			rows, err := FindItemsJoinList[row](ctx, build, nil, cached)
+			if err != nil || len(rows) != 1 || rows[0].Name != name {
+				t.Fatalf("join list %+v %v", rows, err)
+			}
+			rows, total, err := FindItemsJoinPage[row](ctx, 1, 10, build, nil, cached)
+			if err != nil || total != 1 || len(rows) != 1 || rows[0].Name != name {
+				t.Fatalf("join page %+v %d %v", rows, total, err)
+			}
+			one, err := FindItemsJoinOne[row](ctx, build, nil, cached)
+			if err != nil || one.Name != name {
+				t.Fatalf("join one %+v %v", one, err)
+			}
+		}
+		// Wrapper 查询也必须从绑定仓储取主表连接。
+		rows, err := repo.FindListByWrapper(ctx, func(w gormplus.IGenWrapper[dao.IItemsEntityDo]) {
+			w.Where(tx.ItemsEntity.ID.Eq(1))
+		})
+		if err != nil || len(rows) != 1 || rows[0].Name != "second" {
+			t.Fatalf("wrapper join %+v %v", rows, err)
+		}
+		return abort
+	})
+	if !errors.Is(err, abort) {
+		t.Fatal(err)
+	}
+	if n, err := NewItemsRepository().Count(ctx); err != nil || n != 0 {
+		t.Fatalf("join transaction escaped: %d %v", n, err)
+	}
+}
+
+func TestBoundRepositoryWithoutGlobalDAOAndPreparedStatements(t *testing.T) {
+	for _, prepared := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ordinary", true: "prepared"}[prepared], func(t *testing.T) {
+			db := transactionDB(t).Session(&gorm.Session{PrepareStmt: prepared})
+			ctx := context.Background()
+			// 事务仓储不应从全局 DAO 取连接或字段。
+			saved := *dao.Q
+			*dao.Q = dao.Query{}
+			defer func() { *dao.Q = saved }()
+			type traceKey struct{}
+			ctx = context.WithValue(ctx, traceKey{}, "request-trace")
+			err := db.Callback().Query().Before("gorm:query").Register("check_context", func(q *gorm.DB) {
+				if q.Statement.Context.Value(traceKey{}) != "request-trace" {
+					t.Error("query lost request context")
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+				bound := NewItemsRepository().WithTx(tx)
+				if err := bound.Create(ctx, &model.ItemsEntity{ID: 1, Name: "independent"}); err != nil {
+					return err
+				}
+				if _, err := bound.FindById(ctx, 1); err != nil {
+					return err
+				}
+				_, err := bound.FindList(ctx)
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

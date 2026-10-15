@@ -198,3 +198,39 @@ func TestOrdinaryQueriesStillUseCache(t *testing.T) {
 		}
 	}
 }
+
+func TestTransactionQueriesBypassCacheAndSingleFlight(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		for _, opt := range []QueryOption{
+			Query().WithCache(time.Minute).Build().WithLockingFrom(tx),
+			Query().WithSingleFlight(time.Minute).Build().WithLockingFrom(tx),
+			MergeQueryOptions(Query().WithCache(time.Minute).Build().WithLockingFrom(tx), QueryOption{}),
+		} {
+			calls := 0
+			for want := 1; want <= 2; want++ {
+				value, err := ExecuteQuery(opt, t.Name(), nil, func() (int, error) { calls++; return calls, nil })
+				if err != nil || value != want {
+					t.Fatalf("tx reused result %d %v", value, err)
+				}
+			}
+			for want := 3; want <= 4; want++ {
+				rows, total, err := ExecutePage(opt, t.Name()+".page", nil, func() ([]int, int64, error) { calls++; return []int{calls}, int64(calls), nil })
+				if err != nil || total != int64(want) || len(rows) != 1 || rows[0] != want {
+					t.Fatalf("tx reused page %v %d %v", rows, total, err)
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

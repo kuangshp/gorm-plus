@@ -24,8 +24,8 @@ gorm-gen 解决的是"类型安全的 ORM 代码生成"——但实际业务里�
 | **复杂 SQL 写代码里** | `db.Raw("SELECT ...").Find(...)` 字符串拼接难维护 | DAL: SQL 写 .sql 文件,go 里 `gormplus.DALQuery[T](ctx, "x.sql", args)` | 复杂 SQL/视图/JOIN 走文件,git diff 清晰 |
 | **多数据源/读写分离** | 自己包装多个 *gorm.DB | `gormplus.SwitchDB(ctx)` 按 ctx 标记自动切换 | 中间件标记一次,Repository 自动路由 |
 | **慢查询监控** | 自己写 gorm plugin 或日志解析 | 注册插件 + 设阈值/钩子,自动上报 | 0 配置接入 Prometheus/ELK |
-| **写代码 + 改字段→重写 Repo** | gorm-gen 只生成基础 DAO,Repo 全手写 | generator 一次生成完整 Repository(CRUD + 分页 + 缓存失效 + 事务版本) | 改表→重跑生成器即可 |
-| **事务跨 Repo 调用** | `db.Transaction(func(tx *gorm.DB) error { dao.Use(tx).X... })` 每次手动 Use | `gormplus.TransactionAs(db, dao.Use, func(tx *dao.Query))` 类型安全 | tx 直接传给 Repo 的 *Tx 方法 |
+| **写代码 + 改字段→重写 Repo** | gorm-gen 只生成基础 DAO,Repo 全手写 | generator 一次生成完整 Repository(CRUD + 分页 + 缓存失效 + WithTx) | 改表→重跑生成器即可 |
+| **事务跨 Repo 调用** | `db.Transaction(func(tx *gorm.DB) error { dao.Use(tx).X... })` 每次手动 Use | `gormplus.TransactionAs(db, dao.Use, func(tx *dao.Query))` 类型安全 | Repository.WithTx(tx) 统一增删改查 |
 | **EXPLAIN/Debug** | 改全局 logger 配置 / 手动写 db.Debug() | `.PrintSQL() / .ToSQL() / .Explain()` 链式一行 | 排查 SQL 不动配置 |
 
 **一句话**:**gorm-gen 给你"能用"的 DAO,gorm-plus 给你"能上生产"的查询层 + 工具链**。
@@ -1386,16 +1386,24 @@ opt = gormplus.QueryOption{
 
 生成的 Repository 会通过 `MergeQueryOptions` 将 `ForUpdate: true` 转换为原生行锁子句；合并多个选项时，只要其中一个开启，就会保留锁，后续的默认值或 false 不会取消已有锁。自行消费查询选项时，也先调用 `gormplus.MergeQueryOptions(opt)` 获取对应 `Clauses`。
 
-上述选项应传给已绑定事务连接的读取方法。普通生成的 `FindById`、`FindOneWrapper` 等读取方法使用全局 DAO，传入该选项不会自动将它们绑定到外部事务；需要持续持有锁时，像上面的扩展方法一样使用事务中的 `tx`。
+上述选项应传给 `productRepository.WithTx(tx)` 返回的仓储。`FindById`、`FindOneWrapper` 等读取方法都会使用绑定连接；`ForUpdate` 本身不会绑定或开启事务。
 
-下面这种调用不能保护“先查再改”，即使把它写在事务回调里，普通读取方法也不会自动使用该回调的事务连接：
+正确的 Repository 写法，把“加锁查询 → 修改”放进同一个绑定仓储：
 
 ```go
-// 错误：普通生成的 FindById 使用全局 DAO，没有绑定事务 tx。
-product, err := productRepository.FindById(ctx, productID,
-    gormplus.QueryOption{ForUpdate: true},
-)
-// 随后的修改无法依靠上面这次查询持续持有的锁来防止并发冲突。
+err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+    products := productRepository.WithTx(tx)
+    product, err := products.FindById(ctx, productID, gormplus.QueryOption{ForUpdate: true})
+    if err != nil {
+        return err
+    }
+    if product.Stock < quantity {
+        return errors.New("库存不足")
+    }
+    return products.UpdateById(ctx, productID,
+        gormplus.WithUpdateColumns(tx.ProductEntity.Stock.Value(product.Stock-quantity)),
+    )
+})
 ```
 
 `ForUpdate` 只添加查询锁，不自动创建事务或修改数据。锁随事务提交/回滚释放；查询和后续修改必须使用同一事务连接。数据库需要支持 `FOR UPDATE`，例如 MySQL/InnoDB 或 PostgreSQL；SQLite 不提供这种行锁。只有需要防止并发冲突时才添加，避免在持锁期间调用外部接口或执行耗时操作。
@@ -1961,189 +1969,131 @@ gormplus.WithDALHook(&SlowDALHook{Threshold: 200 * time.Millisecond}),
 
 ## 六、事务工具
 
-`gormplus` 提供 4 个事务方法,覆盖"原生 *gorm.DB"和"类型安全 *dao.Query"两种风格。**`dao.Query` 是用户项目里 gorm-gen 自动生成的类型,gorm-plus 框架包没法 import 用户项目**——本工具用泛型 + `dao.Use` 函数注入的方式优雅解决了这个包依赖问题。
+生成的 Repository 统一使用 `WithTx(tx)` 绑定事务副本，增删改查继续调用同一套普通方法：
 
-| API | fn 参数 | 适用场景 |
+```go
+// 普通调用：没有加入外部事务。
+err := userRepository.Create(ctx, user)
+
+// 事务调用：同一个 tx 可以绑定多个 Repository。
+err = gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+    users := userRepository.WithTx(tx)
+    profiles := profileRepository.WithTx(tx)
+
+    if err := users.Create(ctx, user); err != nil {
+        return err
+    }
+    // user.ID 已回填；任意一步返回错误，两个仓储的写入一起回滚。
+    profile.UserId = user.ID // 字段名按实际生成的模型调整。
+    return profiles.Create(ctx, profile)
+}) // 回调返回 nil 时提交，返回 error 或 panic 时回滚；panic 继续向外传播。
+```
+
+`WithTx` **只绑定已有事务，不开启或提交事务**，返回完整业务 Repository 接口，原仓储不变。必须使用返回值：`users := userRepository.WithTx(tx)`，或者直接 `userRepository.WithTx(tx).Create(ctx, user)`。只调用 `userRepository.WithTx(tx)` 而不接收返回值，不会改变后续调用的连接。
+
+不加 `WithTx` 就不会加入这个外部事务；GORM 自身默认的单次写入事务机制仍然有效。即使传入相同的 `ctx`，原仓储也不会自动加入事务。
+
+### 同一事务中查询、修改、删除
+
+```go
+err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+    users := userRepository.WithTx(tx)
+    user, err := users.FindById(ctx, userID, gormplus.QueryOpt().ForUpdate().Build())
+    if err != nil {
+        return err
+    }
+    if user.Status != 1 {
+        return errors.New("用户状态不允许修改")
+    }
+    return users.UpdateById(ctx, userID,
+        gormplus.WithUpdateColumns(tx.UserEntity.Status.Value(2)),
+    )
+})
+```
+
+`Create`、`CreateBatch`、全部 `Update*` / `Delete*`，以及 `FindById`、列表、分页、`Count`、`Exists` 和 Wrapper 查询都从绑定仓储取连接。行锁和后续修改因此可以使用同一个事务。
+
+事务中的生成查询会自动跳过缓存和 SingleFlight，即使传入 `WithCache` / `WithSingleFlight` 也一样，避免读到事务外旧值或把未提交数据共享给其他请求。事务中的生成写入只登记受影响的表，最外层提交后按表去重失效缓存；回滚不执行这些失效。提交报错时结果可能不确定，会保守失效。自定义缓存后端须实现 `SFCachePrefixDeleter` 或 `SFCachePrefixBatchDeleter`，才能执行表前缀失效。
+
+当前进程还会隔离失效前已经运行的 SingleFlight 查询，并阻止这些旧查询在失效后回填缓存；这不是跨进程的强一致缓存协议。多实例共享 Redis 时，仍应按业务设置合理 TTL；余额、库存等关键判断使用事务内查询。
+
+### 四个事务入口
+
+| API | 回调参数 | 用法 |
 |---|---|---|
-| `Transaction(db, fn, opts...)` | `*gorm.DB` | 最通用,fn 内手动 `dao.Use(tx)` |
-| **`TransactionAs(db, dao.Use, fn, opts...)`** | **`*dao.Query`(泛型)** | **推荐**:类型安全,业务侧最优雅 |
-| `TransactionCtx(ctx, db, fn, opts...)` | `*gorm.DB` 自带 ctx | 需要 ctx 透传到 gorm hook 时 |
-| `TransactionAsCtx(ctx, db, dao.Use, fn, opts...)` | `*dao.Query` + ctx | 上面两个组合 |
+| `Transaction(db, fn, opts...)` | `*gorm.DB` | 原生 GORM / DAL；需要仓储时在回调内 `dao.Use(tx)` |
+| `TransactionCtx(ctx, db, fn, opts...)` | 带上下文的 `*gorm.DB` | 同上，自动传递请求上下文 |
+| `TransactionAs(db, dao.Use, fn, opts...)` | `*dao.Query` | 类型安全的 DAO / Repository |
+| `TransactionAsCtx(ctx, db, dao.Use, fn, opts...)` | `*dao.Query` | 推荐，带请求上下文的 DAO / Repository |
 
-### 推荐写法：TransactionAs（泛型）
-
-```go
-import (
-	gormplus "github.com/kuangshp/gorm-plus"
-	"your-project/internal/dal/dao"
-)
-
-func (s *AccountService) RegisterWithVIP(ctx context.Context, req *RegisterReq) error {
-	return gormplus.TransactionAs(s.Db, dao.Use, func(tx *dao.Query) error {
-		// 1) 创建用户
-		user := &model.UserEntity{Name: req.Name}
-		if err := s.userRepo.CreateTx(ctx, tx, user); err != nil {
-			return err // 任何一步出错,所有写操作自动回滚
-		}
-		// 2) 创建档案(注意:user.ID 在 Create 后已被回填)
-		profile := &model.ProfileEntity{UserId: user.ID, Bio: req.Bio}
-		if err := s.profileRepo.CreateTx(ctx, tx, profile); err != nil {
-			return err
-		}
-		// 3) 标记关联订单为已激活
-		return s.orderRepo.UpdateByIdTx(ctx, tx, req.OrderId,
-			gormplus.WithUpdateColumns(dao.OrderEntity.Status.Value(1)))
-		// return nil 自动提交
-	})
-}
-```
-
-### 为什么这种设计能消除 dao 包依赖
-
-```
-你的项目                  gorm-plus 框架
-─────────                ─────────────
-dao.Use   ─────传进去──→  TransactionAs[Q]
-                              │
-                              ↓ 在事务内调一次 useFn(tx)
-                              │
-                              ↓ 把构造好的 *dao.Query 喂给 fn
-                          fn(tx *dao.Query) error
-```
-
-Go 编译器看到 `dao.Use` 的签名是 `func(*gorm.DB) *dao.Query`,**自动推断泛型 Q = *dao.Query**,所以 fn 的参数自动是 `*dao.Query`,业务侧没有任何额外样板代码。
-
-### 跨 Repository 调用
-
-generator 模板生成的所有写操作都有 `*Tx` 版本(`CreateTx`/`UpdateByIdTx`/`DeleteByIdTx` 等),第二个参数都是 `*dao.Query`,**和 `TransactionAs` 给的 tx 类型完全一致**,直接传:
+`dao.Query` 属于业务项目，由 `dao.Use` 注入，公共包无需反向导入业务 DAO。转换函数的签名与当前 gorm-gen 一致：`func(*gorm.DB, ...gen.DOOption) *dao.Query`。
 
 ```go
-gormplus.TransactionAs(db, dao.Use, func(tx *dao.Query) error {
-	userRepo.CreateTx(ctx, tx, &user)            // ← 传 tx
-	profileRepo.CreateTx(ctx, tx, &profile)      // ← 同一个 tx
-	orderRepo.UpdateByIdTx(ctx, tx, id, gormplus.WithUpdateColumns(...)) // ← 同一个 tx
-	return nil
+// 原生事务入口也能绑定 Repository。
+err := gormplus.TransactionCtx(ctx, db, func(tx *gorm.DB) error {
+    users := userRepository.WithTx(dao.Use(tx))
+    return users.Create(ctx, user)
 })
 ```
 
-### 混用 DAL + DAO（同一事务）
+事务必须通过以上四个入口创建。`WithTx(nil)`、绑定普通连接、绑定由原生 `db.Begin()` / `db.Transaction()` / `dao.Query.Transaction()` 创建且未被本库跟踪的事务，都会在操作时返回错误，不会悄悄改用全局 DAO。未跟踪事务返回 `gormplus.ErrUnmanagedTransaction`。事务提交、回滚或退出嵌套保存点后，绑定仓储不可再用，操作返回 `sql.ErrTxDone`。
 
-事务里经常需要混用两种风格——用 **gorm-gen dao 做类型安全的 CRUD**,用 **DAL 跑复杂原生 SQL**(`SELECT ... FOR UPDATE`、跨表 JOIN、聚合统计等)。两者类型不一样:
+### 关联查询与业务扩展
 
-| API | 第二个参数 | TransactionAs 给的是 |
-|---|---|---|
-| `userRepo.CreateTx(ctx, tx, ...)` | `*dao.Query` | ✅ 直接传 |
-| `gormplus.DALTxExec(ctx, tx, ...)` | `*gorm.DB` | ❌ 类型不匹配 |
-| `gormplus.DALTxQueryOne[T](ctx, tx, ...)` | `*gorm.DB` | ❌ 类型不匹配 |
-
-**解决:从 `*dao.Query` 取回底层 `*gorm.DB`**。gorm-gen 生成的每个字段表(`tx.UsersEntity`/`tx.OrdersEntity` 等)都暴露了 `UnderlyingDB()` 方法,返回的就是事务里的同一个 `*gorm.DB`:
+绑定仓储的 Wrapper 查询沿用事务连接。生成的泛型 `FindUserJoinList[T]` / `FindUserJoinPage[T]` / `FindUserJoinOne[T]` 是独立函数，没有仓储实例，需要显式传入使用事务 DAO 的 builder：
 
 ```go
-err := gormplus.TransactionAs(s.Db, dao.Use, func(tx *dao.Query) error {
-	// 从任意一个 DO 取事务里的 *gorm.DB,给 DAL 用
-	gormDB := tx.UsersEntity.UnderlyingDB()
-	//         ^^^^^^^^^^^^  任何一个 DO 都行,选哪个不影响结果
-
-	// 1) 加锁查库存(FOR UPDATE)—— DAL 原生 SQL
-	stock, err := gormplus.DALTxQueryOne[StockVO](ctx, gormDB,
-		"stock/find_for_update.sql", productID)
-	if err != nil {
-		return err
-	}
-	if stock == nil || stock.Quantity < qty {
-		return errors.New("库存不足")
-	}
-
-	// 2) 扣库存 —— DAL
-	if err := gormplus.DALTxExec(ctx, gormDB,
-		"stock/deduct.sql", qty, productID, qty); err != nil {
-		return err
-	}
-
-	// 3) 创建订单 —— dao 类型安全
-	order := &model.OrderEntity{OrderNo: orderNo, AccountId: accountID, ProductId: productID, Qty: qty}
-	if err := s.orderRepo.CreateTx(ctx, tx, order); err != nil {
-		return err
-	}
-
-	// 4) 更新账户最后下单时间 —— dao 类型安全
-	_, err = tx.UsersEntity.WithContext(ctx).
-		Where(tx.UsersEntity.ID.Eq(accountID)).
-		Update(tx.UsersEntity.LastOrderAt, time.Now())
-	return err
-})
-// 任何一步出错,4 个写操作全部回滚(库存不扣、订单不创建、用户时间不变)
-```
-
-**关键点**:`tx.AnyDO.UnderlyingDB()` 拿到的是 `db.Begin()` 后那个事务里的 `*gorm.DB`,所以 `DALTxExec` 在上面执行的所有 SQL **跟 dao 操作在同一个事务里**——任何一步失败都会全部回滚。
-
-**反例:不要在 fn 里调外层 DB**
-
-```go
-// ❌ 错误:用 s.Db 取的是事务外的连接,DAL 操作不会被事务保护
-gormplus.TransactionAs(s.Db, dao.Use, func(tx *dao.Query) error {
-	s.orderRepo.CreateTx(ctx, tx, order)              // ✅ 事务内
-	gormplus.DALTxExec(ctx, s.Db, "stock/deduct.sql") // ❌ 用了 s.Db,事务外
-	return errors.New("故意失败")
-})
-// 结果:订单回滚了,但库存真的被扣了!
-```
-
-**如果事务里 DAL 操作多于 dao**,直接用通用版 `Transaction` 更简洁,免去 `UnderlyingDB()` 调用——见下一节。
-
-### 通用版 Transaction（也常用）
-
-```go
-gormplus.Transaction(s.Db, func(tx *gorm.DB) error {
-	// 直接是 *gorm.DB,DAL 直接传 tx
-	stock, err := gormplus.DALTxQueryOne[StockVO](ctx, tx,
-		"stock/find_for_update.sql", productID)
-	if err != nil {
-		return err
-	}
-
-	// DAL 扣库存
-	if err := gormplus.DALTxExec(ctx, tx, "stock/deduct.sql", qty); err != nil {
-		return err
-	}
-
-	// 在事务内也能用 dao(fn 内 dao.Use(tx) 一次)
-	q := dao.Use(tx)
-	return q.Orders.WithContext(ctx).Create(&order)
+err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+    rows, err := repository.FindUserJoinList[UserWithDepartmentVO](ctx,
+        func(ctx context.Context) dao.IUserEntityDo {
+            return tx.UserEntity.WithContext(ctx).
+                LeftJoin(tx.DepartmentEntity, tx.DepartmentEntity.ID.EqCol(tx.UserEntity.DeptID))
+        },
+        func(w gormplus.IGenWrapper[dao.IUserEntityDo]) {
+            w.Where(tx.UserEntity.Status.Eq(1))
+        },
+    )
+    if err != nil {
+        return err
+    }
+    // 使用 rows 处理本次事务中的数据。
+    _ = rows
+    return nil
 })
 ```
 
-**两种风格对比**:
+`WithTx` 会复制 `customerUserRepository` 和内嵌的基础仓储，保留业务接口、覆盖方法及注入依赖。业务扩展文件不会被覆盖；互斥锁等不可复制状态应通过指针持有，绑定操作也不要与原仓储字段的修改并发进行。
 
-| 场景 | 推荐 API |
-|---|---|
-| 事务里 dao 操作为主、偶尔几条 DAL | `TransactionAs` + `tx.AnyDO.UnderlyingDB()` |
-| 事务里 DAL 操作为主、偶尔几条 dao | `Transaction` + `dao.Use(tx)` |
-| 纯 dao 操作 | `TransactionAs(db, dao.Use, fn)` ⭐ |
-| 纯 DAL / 纯 gorm 原生 | `Transaction(db, fn)` |
+自定义方法必须先调用 `r.checkTx()`，通过 `r.source().UserEntity.WithContext(ctx)` 获取连接；不要直接使用全局 DAO。自定义查询用 `opt.WithLockingFrom(tx.UnderlyingDB())` 配合 `ExecuteQuery` / `ExecutePage`，才能同样跳过事务内缓存和 SingleFlight。自定义写操作成功后调用 `r.invalidateAllTableCaches()`，可复用提交后失效机制。最简单的扩展方式是组合已有普通仓储方法，这些方法已经处理上述逻辑。
 
-### 关键约定
-
-- **永远用 fn 参数里的 `tx`**,不要用外层闭包变量,否则事务保护失效
-- **gorm-gen 的查询链需要显式 `.WithContext(ctx)`**,这是 gorm-gen 的设计约定,不是框架能控制的
-- gorm 原生支持嵌套事务(SavePoint),但**强烈建议拆开**显式控制
-- 错误处理建议用 `fmt.Errorf("%w", err)` 包装,事务回滚后业务能拿到包装后的 error
-
-### 隔离级别
+### 混用 DAL、DAO 与 Repository
 
 ```go
-import "database/sql"
-
-gormplus.TransactionAs(db, dao.Use, func(tx *dao.Query) error {
-	// ...
-	return nil
-}, &sql.TxOptions{
-	Isolation: sql.LevelSerializable,   // 序列化隔离
-	ReadOnly:  false,
+err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+    // 从事务 DAO 取底层连接，DAL 与 Repository 使用同一事务。
+    txDB := tx.OrderEntity.UnderlyingDB()
+    if err := gormplus.DALTxExec(ctx, txDB, "stock/deduct.sql", quantity, productID); err != nil {
+        return err
+    }
+    return orderRepository.WithTx(tx).Create(ctx, order)
 })
 ```
 
-不传 `opts` 用数据库默认隔离级别(MySQL 默认 RepeatableRead)。
+DAL 和直接 DAO 写入没有经过生成的 Repository，不会自动登记缓存失效。如修改了有缓存的表，应在回调中取得 `scope, err := gormplus.RepositoryTransactionScope(txDB)`，检查错误后调用 `scope.InvalidateTable("stock")`；这里只登记表名，外层成功提交后才失效该表缓存。不要把事务外的 `db` 传给 DAL。
+
+### 嵌套事务、隔离级别与更新方式
+
+同一事务连接内再次调用本库事务入口时，沿用 GORM 保存点：子事务成功只把缓存失效登记合并到父级，父级提交才发布；子事务回滚会丢弃自己的登记。传入外层事务连接，不能重新传普通 `db`。设置 GORM `DisableNestedTransaction: true` 关闭保存点后，不允许再嵌套调用。事务回调内不要手动 `Commit` / `Rollback`，也不要并发使用事务连接。
+
+隔离级别仍通过可选参数传入，支持程度由数据库驱动决定：
+
+```go
+err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+    return userRepository.WithTx(tx).Create(ctx, user)
+}, &sql.TxOptions{Isolation: sql.LevelSerializable})
+```
+
+**此次为不兼容更新**：生成接口移除 `CreateTx`、`CreateBatchTx`、`UpdateByIdTx`、`DeleteByIdTx` 等所有重复的 Repository `*Tx` 方法。升级公共包后重新运行业务项目的 `go run generator.go`，把旧调用统一改为 `repository.WithTx(tx).普通方法(ctx, ...)`。生成的 `_gen.go` 会更新，业务扩展 `.go` 文件保留；若曾自定义覆盖基础方法或手工改变仓储结构，需要按上述连接与缓存约定调整。DAL 自身的 `DALTxExec` 等方法继续保留。
 
 ---
 
