@@ -6,7 +6,9 @@ import (
 	"fmt"
     "log"
     "log/slog"
+    "net"
     "net/http"
+    "strconv"
 
     "github.com/kuangshp/gorm-plus/httpresponse"
     "github.com/zeromicro/go-zero/rest/httpx"
@@ -104,7 +106,18 @@ func main() {
                 server.AddRoute(rest.Route{Method: method, Path: route, Handler: docs.ServeHTTP})
             }
         }
-        fmt.Printf("Swagger UI: %s/\n", docs.Routes()[0])
+        // 监听全部网卡时，输出本机可直接访问的地址；IPv6 由 JoinHostPort 正确加括号。
+        host := c.Host
+        if host == "" || host == "0.0.0.0" || host == "::" {
+            host = "127.0.0.1"
+        }
+        scheme := "http"
+        if c.CertFile != "" || c.KeyFile != "" {
+            scheme = "https"
+        }
+        address := scheme + "://" + net.JoinHostPort(host, strconv.Itoa(c.Port)) + docs.Routes()[0]
+        fmt.Printf("Swagger UI: %s/\n", address)
+        fmt.Printf("Swagger JSON: %s/swagger.json\n", address)
     }
 
 	fmt.Printf("Starting server at %s:%d...\n", c.Host, c.Port)

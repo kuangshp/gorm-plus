@@ -33,6 +33,15 @@ gormplus swagger --dir apps/shop --config etc/shop-api.yaml
 
 运行时不执行代码生成。只修改 YAML 不能更新二进制里的文档，直接执行 `go build`、`go run` 不会自动执行 Makefile。`ApiFile` 仅供开发/构建工具读取，部署后的程序不访问该路径。
 
+开启 Swagger 后，生成的启动入口会输出可直接访问的完整地址。例如 `Host: 0.0.0.0`、`Port: 8888`、`Path: /swagger`：
+
+```text
+Swagger UI: http://127.0.0.1:8888/swagger/
+Swagger JSON: http://127.0.0.1:8888/swagger/swagger.json
+```
+
+空 Host、`0.0.0.0`、`::` 转为本机访问地址；指定 IP/域名时沿用配置，IPv6 自动加方括号。配置服务自身的 TLS 证书后打印 `https`，反向代理的外部域名和协议则以部署入口为准。关闭 Swagger 不打印地址。已有服务需合并新版 main 的打印代码，升级依赖或重新运行 goctl 不会自动改写旧 main。
+
 ## Makefile：先生成，再运行或构建
 
 首次使用先安装支持该功能的 gormplus 命令和 goctl；本次使用 goctl **1.10.2** 验证，需支持 `api swagger --filename`。`go install` 只安装命令，业务 `go.mod` 也应使用包含 `httpswagger` 和新版模板的 gorm-plus 版本。未发布时，可临时使用本地 `replace` 并在 gorm-plus 仓库执行 `go install ./cmd/gormplus` 测试。

@@ -67,7 +67,11 @@ func TestGoctlSwaggerIntegration(t *testing.T) {
 	binary := filepath.Join(dir, "service")
 	build(binary)
 	t.Run("disabled with placeholder", func(t *testing.T) {
-		base := startHTTPFixture(t, dir, binary, "SwaggerConfig:\n  Enabled: false\n")
+		base := startHTTPFixture(t, dir, binary, "SwaggerConfig:\n  Enabled: false\n", func(output string) {
+			if strings.Contains(output, "Swagger UI:") || strings.Contains(output, "Swagger JSON:") {
+				t.Errorf("disabled Swagger printed documentation URLs: %s", output)
+			}
+		})
 		status, _, _ := requestHTTPFixture(t, base, http.MethodGet, "/swagger/swagger.json", "", "")
 		if status != http.StatusNotFound {
 			t.Fatalf("disabled Swagger still exposed: %d", status)
@@ -104,7 +108,9 @@ func TestGoctlSwaggerIntegration(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(uploads, "image.txt"), []byte("static remains available"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		base := startHTTPFixture(t, deployment, binary, fmt.Sprintf(`SwaggerConfig:
+		var base string
+		base = startHTTPFixture(t, deployment, binary, fmt.Sprintf(`Host: 0.0.0.0
+SwaggerConfig:
   Enabled: true
   Path: /docs
 ResponseConfig:
@@ -114,7 +120,13 @@ StaticConfig:
   Enabled: true
   Directory: %q
   Prefix: /uploads
-`, uploads))
+`, uploads), func(output string) {
+			for _, line := range []string{"Swagger UI: " + base + "/docs/\n", "Swagger JSON: " + base + "/docs/swagger.json\n"} {
+				if !strings.Contains(output, line) {
+					t.Errorf("missing complete documentation URL %q: %s", line, output)
+				}
+			}
+		})
 		for route, contentType := range map[string]string{
 			"/docs/": "text/html", "/docs/index.html": "text/html",
 			"/docs/swagger-ui.css": "text/css", "/docs/swagger-ui-bundle.js": "application/javascript",

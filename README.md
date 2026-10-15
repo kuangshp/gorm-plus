@@ -525,6 +525,16 @@ make run-open      # 本地启动，并在文档接口就绪后打开浏览器�
 
 服务启动后访问 `http://127.0.0.1:服务端口/swagger/`。也可以单独执行 `gormplus swagger --config etc/shop-api.yaml` 更新文档；从仓库根目录操作时可用 `gormplus swagger --dir apps/shop --config etc/shop-api.yaml`。`--config` 和 `ApiFile` 的相对路径均以 `--dir` 指定的服务目录为基准，默认当前目录。
 
+开启 Swagger 后，启动入口会打印完整页面和 JSON 地址。例如监听 `0.0.0.0:8888` 时：
+
+```text
+Swagger UI: http://127.0.0.1:8888/swagger/
+Swagger JSON: http://127.0.0.1:8888/swagger/swagger.json
+Starting server at 0.0.0.0:8888...
+```
+
+地址使用实际端口和 `SwaggerConfig.Path`；监听全部网卡时输出本机访问地址，配置服务端 TLS 证书时使用 `https`。关闭 Swagger 时不打印文档地址。已有 main 不会被 goctl 自动覆盖，需同步新版入口中的地址打印代码。
+
 `run-open` 通过 `gormplus swagger-open --config ...` 检查文档 JSON 就绪后再打开浏览器，不依赖固定等待时间；默认等待 30 秒，可用 `--timeout 60s` 调整。该命令只用于本地开发，Swagger 关闭时直接跳过。
 
 生成命令读取同一份 YAML 的开关：关闭时写入占位，开启时调用 `goctl api swagger` 生成 `swagger/swagger.json`；API 校验或生成失败会返回非零状态，阻止后续构建、启动，并使旧文档失效。开启后尚未生成有效文档的程序会明确报错，不能仅修改 YAML 就取得新接口文档。该命令需要支持 `api swagger --filename` 的 goctl，已验证版本为 1.10.2；不需要额外安装 `goctl-swagger` 或 `swag`。
@@ -801,28 +811,28 @@ return httpresponse.NewError(response.AuthSessionInvalidCode, "请先登录")
 GORMPLUS_GOCTL_INTEGRATION=1 go test ./httpresponse ./httpcors ./httpstatic ./generator/gozero
 ```
 
-### 整数、小数入参同时支持 JSON 数字和字符串
+### 数字与字符串入参自动兼容
 
-普通 DTO 和内嵌 go-zero Handler 模板已接入 `github.com/kuangshp/gorm-plus/decimaljson`，不依赖 HTTP 框架。数据库 `decimal`、`float`、`double` 字段仍生成 Go `string`，并自动标记 `decimal:"true"`：
+普通 DTO 和内嵌 go-zero Handler 模板已接入 `github.com/kuangshp/gorm-plus/decimaljson`，不依赖 HTTP 框架。普通 `string` 字段无需额外标签，就能自动接收 JSON 数字：
 
 ```go
-Amount string `json:"amount" decimal:"true"`
+Amount string `json:"amount"`
 ```
 
-前端提交 `{"amount":12.345678}` 或 `{"amount":"12.345678"}`，解析后 `Amount` 都为字符串 `"12.345678"`，不在入参阶段舍入、补零。非法小数、空字符串、NaN、Inf 和超出 float64 范围的值会返回解析错误；缺失/null 的必填判断仍交给原有校验。
+前端提交 `{"amount":12.20}` 或 `{"amount":"12.20"}`，解析后 `Amount` 都为字符串 `"12.20"`。数字直接按 JSON 原文转成字符串，不经过浮点数，因此保留末尾零、大整数和指数形式，也不受 float64 范围限制。普通字符串仍可接收文本和空字符串；布尔值、对象、数组不会自动转成字符串。缺失/null 的必填判断仍交给原有校验。
 
 - **普通 DTO**：生成 `Create...DTO.UnmarshalJSON` 和 `Modify...DTO.UnmarshalJSON`，使用 `encoding/json` 的框架自动调用。修改请求单独解析，避免嵌入的 Create DTO 吞掉 ID。
 - **go-zero**：生成的 Handler 先调用 `decimaljson.PrepareRequest(r, &req)`，再调用原有 `httpx.Parse` 与 `validation.Validate`，保留路径、表单、请求头解析和校验。单独使用 `json.Unmarshal` 解码 goctl 生成的 types 不会启用 Handler 的兼容步骤。
-- **手写 `.api`**：对字符串小数加 `decimal:"true"`，或使用已有的 `validate:"decimal"` 规则。普通字符串不自动接受数字；原有 `float32/float64` 字段自动兼容数值字符串，解析后仍是浮点类型。
+- **手写 `.api`**：直接使用下方示例中的普通 `string` 字段即可自动转换，无需 `decimal:"true"`。金额规则仍通过 `validate:"required,decimal"` 等标签交给 `validation.Validate` 校验。旧的 `decimal:"true"` 和 `validate:"decimal"` 继续兼容，并保留原有小数格式检查（空字符串、非法小数和超出 float64 范围的值返回解析错误）。原有 `float32/float64` 字段自动兼容数值字符串，解析后仍是浮点类型。
 - **整数**：`int` / `int8` / `int16` / `int32` / `int64` 及对应的无符号整数类型无需额外标签，同时接受 JSON 整数和十进制整数字符串。例如 `ID int64` 可以接收 `{"id":1}` 或 `{"id":"1"}`。解析不经过浮点数，大整数保持精度；小数、指数形式、空字符串、非法文本、目标类型溢出及无符号整数的负值会报错。已有 `json:",string"` 整数字段也兼容两种入参形式。
-- **嵌套数据**：支持嵌入结构体、对象、数组、切片和字符串键 map；整数兼容同样适用于指针和嵌套字段。日期、普通文本、`[]byte`、自定义 `UnmarshalJSON` 类型及响应格式保持原有处理。
+- **嵌套数据**：支持嵌入结构体、对象、数组、切片和字符串键 map；数字与字符串兼容同样适用于指针和嵌套字段。日期、`[]byte`、自定义 `UnmarshalJSON` 类型及响应格式保持原有处理。
 
 手写 `.api` 示例：
 
 ```go
 type SavePriceReq {
     ID int64 `json:"id"`
-    Amount string `json:"amount" decimal:"true"`
+    Amount string `json:"amount"`
     Rate string `json:"rate" validate:"required,decimal"`
 }
 ```
@@ -835,7 +845,9 @@ gormplus goctl api go -api price.api --dir . --style=goZero
 gormplus export-goctl-templates --output ./tools/goctl
 ```
 
-业务项目需使用包含对应整数、小数兼容能力的 gorm-plus 版本，并更新本地 `gormplus` 命令。未发布时可在业务项目用 `go mod edit -replace` 指向当前 gorm-plus 源码。生成器会跳过已有 DTO，goctl 也不会覆盖已有 Handler；已接入 `decimaljson.Unmarshal` 或 `decimaljson.PrepareRequest` 的文件升级库即可获得整数兼容，尚未接入的文件需手动添加上述方法，或在保留业务逻辑后重新生成。
+业务项目需使用包含对应兼容能力的 gorm-plus 版本，并更新本地 `gormplus` 命令。未发布时可在业务项目用 `go mod edit -replace` 指向当前 gorm-plus 源码。生成器会跳过已有 DTO，goctl 也不会覆盖已有 Handler；已接入 `decimaljson.Unmarshal` 或 `decimaljson.PrepareRequest` 的文件升级库即可获得普通字符串与数字的自动兼容，尚未接入的文件需手动添加上述方法，或在保留业务逻辑后重新生成。
+
+Swagger UI 的提交校验仍依据文档中的字段类型：字符串字段在页面中应填写 `"12.20"`。后端的自动转换不会修改 Swagger 的类型声明；通过客户端直接发送 JSON 数字同样可解析。
 
 测试真实 goctl 与 go-zero 参数解析（需安装 goctl）：
 

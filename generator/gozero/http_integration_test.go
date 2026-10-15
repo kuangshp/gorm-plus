@@ -267,7 +267,7 @@ StaticConfig:
 	})
 }
 
-func startHTTPFixture(t *testing.T, dir, binary, config string) string {
+func startHTTPFixture(t *testing.T, dir, binary, config string, checkOutput ...func(string)) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -278,7 +278,13 @@ func startHTTPFixture(t *testing.T, dir, binary, config string) string {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "service.yaml")
-	contents := fmt.Sprintf("Name: sample-api\nMode: test\nHost: 127.0.0.1\nPort: %d\n", port)
+	host := "127.0.0.1"
+	if strings.HasPrefix(config, "Host:") {
+		line, rest, _ := strings.Cut(config, "\n")
+		host = strings.TrimSpace(strings.TrimPrefix(line, "Host:"))
+		config = rest
+	}
+	contents := fmt.Sprintf("Name: sample-api\nMode: test\nHost: %s\nPort: %d\n", host, port)
 	if !strings.HasPrefix(config, "Log:\n") {
 		contents += "Log:\n  Level: error\n"
 	}
@@ -296,6 +302,10 @@ func startHTTPFixture(t *testing.T, dir, binary, config string) string {
 	t.Cleanup(func() {
 		_ = command.Process.Kill()
 		_ = command.Wait()
+		// Wait 后再读取输出，避免与 os/exec 的复制 goroutine 并发访问 bytes.Buffer。
+		for _, check := range checkOutput {
+			check(output.String())
+		}
 		if t.Failed() {
 			t.Log(output.String())
 		}

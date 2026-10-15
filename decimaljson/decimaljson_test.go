@@ -36,8 +36,8 @@ func TestUnmarshalDecimalInputs(t *testing.T) {
 		}
 	}
 	var got input
-	if err := Unmarshal([]byte(`{"name":12}`), &got); err == nil {
-		t.Fatal("ordinary text fields must stay strict")
+	if err := Unmarshal([]byte(`{"name":12}`), &got); err != nil || got.Name != "12" {
+		t.Fatalf("ordinary string did not accept number: %+v, %v", got, err)
 	}
 	if err := Unmarshal([]byte(`{"count":"12"}`), &got); err != nil || got.Count != 12 {
 		t.Fatalf("integer string was not accepted: count=%d, err=%v", got.Count, err)

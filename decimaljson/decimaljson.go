@@ -16,8 +16,8 @@ import (
 
 var decimalText = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
 
-// Unmarshal accepts numbers for string fields tagged decimal:"true" or
-// validate:"decimal", and numeric strings for integer and float fields.
+// Unmarshal accepts JSON numbers for string fields without extra tags,
+// and numeric strings for integer and float fields.
 // Generated DTOs call it with an alias that has no UnmarshalJSON method.
 func Unmarshal(data []byte, target any) error {
 	normalized, err := Normalize(data, target)
@@ -93,6 +93,14 @@ func normalize(data []byte, typ reflect.Type, decimal bool, path string) ([]byte
 	}
 	if integerKind(typ.Kind()) {
 		return normalizeInteger(data, typ, path)
+	}
+	// 普通字符串自动接收 JSON 数字，直接保留原文，避免浮点转换丢失精度。
+	// 带 decimal 标签的字段仍沿用下面的既有小数格式检查。
+	if typ.Kind() == reflect.String && !decimal {
+		if len(data) > 0 && (data[0] == '-' || (data[0] >= '0' && data[0] <= '9')) && json.Valid(data) {
+			return json.Marshal(string(data))
+		}
+		return data, nil
 	}
 	if (typ.Kind() == reflect.String && decimal) || typ.Kind() == reflect.Float32 || typ.Kind() == reflect.Float64 {
 		text := string(data)

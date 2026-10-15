@@ -16,7 +16,7 @@ import (
 func {{.HandlerName}}(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		{{if .HasRequest}}var req types.{{.RequestType}}
-		// 兼容整数、小数的数字与字符串入参，随后沿用 go-zero 的参数解析和校验。
+		// 自动兼容数字与字符串入参（string 字段无需额外标签），随后沿用 go-zero 的解析和校验。
  if err := decimaljson.PrepareRequest(r, &req); err != nil {
  httpx.ErrorCtx(r.Context(), w, err)
  return

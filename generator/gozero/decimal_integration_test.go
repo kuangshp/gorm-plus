@@ -23,7 +23,7 @@ func TestGoctlDecimalIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	spec := "syntax = \"v1\"\ntype Item {\n Amount string `json:\"amount\" decimal:\"true\"`\n Quantity int64 `json:\"quantity\"`\n}\ntype Input {\n ID int64 `path:\"id\"`\n Count int64 `json:\"count\"`\n QuotedCount int64 `json:\"quotedCount,string\"`\n Amount string `json:\"amount\" decimal:\"true\"`\n Legacy float64 `json:\"legacy\"`\n Items []Item `json:\"items\"`\n}\nservice decimal-api {\n @handler Check\n post /check/:id (Input) returns (Item)\n}\n"
+	spec := "syntax = \"v1\"\ntype Item {\n Amount string `json:\"amount\"`\n Quantity int64 `json:\"quantity\"`\n}\ntype Input {\n ID int64 `path:\"id\"`\n Count int64 `json:\"count\"`\n QuotedCount int64 `json:\"quotedCount,string\"`\n Amount string `json:\"amount\"`\n Legacy float64 `json:\"legacy\"`\n Items []Item `json:\"items\"`\n}\nservice decimal-api {\n @handler Check\n post /check/:id (Input) returns (Item)\n}\n"
 	if err := os.WriteFile(filepath.Join(dir, "decimal.api"), []byte(spec), 0600); err != nil {
 		t.Fatal(err)
 	}
