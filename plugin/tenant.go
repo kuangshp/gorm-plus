@@ -177,12 +177,11 @@ const (
 	//   // 生成：WHERE tenant_id = 1001（以 ctx 为准）
 	PolicyReplace
 
-	// PolicyAppend 追加注入（不去重）。
-	// 不扫描已有条件，直接追加，性能最好，但可能产生重复条件。
-	// 适合确定业务代码不会手动写租户条件、追求极致性能的场景。
+	// PolicyAppend 追加注入（不去重），仍执行 OR 安全检查。
+	// 始终追加当前租户条件，可能产生重复条件。
 	//
 	//   db.WithContext(ctx).Where("tenant_id = ?", 1001).Find(&list)
-	//   // 插件不检查，直接追加
+	//   // 完成 OR 安全检查后直接追加，不去重
 	//   // 生成：WHERE tenant_id = 1001 AND tenant_id = 1001（重复但不影响结果）
 	PolicyAppend
 )
@@ -334,7 +333,7 @@ type TenantConfig[T comparable] struct {
 	//   db.WithContext(ctx).Where("tenant_id = ?", 9999).Find(&list)
 	//   // 生成：WHERE tenant_id = 1001（强制替换为 ctx 中的值）
 	//
-	// PolicyAppend：不检查直接追加，性能最好，但可能产生重复条件。
+	// PolicyAppend：检查 OR 安全性后始终追加，可能产生重复条件。
 	//
 	//   db.WithContext(ctx).Where("tenant_id = ?", 1001).Find(&list)
 	//   // 生成：WHERE tenant_id = 1001 AND tenant_id = 1001（重复但不影响结果）
@@ -393,7 +392,7 @@ func (p *tenantPlugin[T]) Initialize(db *gorm.DB) error {
 		Register(p.Name()+":update_check", p.checkGlobalUpdate); err != nil {
 		return fmt.Errorf("RegisterTenant: 注册 update_check 钩子失败: %w", err)
 	}
-	if err := db.Callback().Update().After(p.Name()+":update_check").
+	if err := db.Callback().Update().After(p.Name()+":update_check").Before("gorm:update").
 		Register(p.Name()+":update", p.injectWhere); err != nil {
 		return fmt.Errorf("RegisterTenant: 注册 update 钩子失败: %w", err)
 	}
@@ -401,7 +400,7 @@ func (p *tenantPlugin[T]) Initialize(db *gorm.DB) error {
 		Register(p.Name()+":delete_check", p.checkGlobalDelete); err != nil {
 		return fmt.Errorf("RegisterTenant: 注册 delete_check 钩子失败: %w", err)
 	}
-	if err := db.Callback().Delete().After(p.Name()+":delete_check").
+	if err := db.Callback().Delete().After(p.Name()+":delete_check").Before("gorm:delete").
 		Register(p.Name()+":delete", p.injectWhere); err != nil {
 		return fmt.Errorf("RegisterTenant: 注册 delete 钩子失败: %w", err)
 	}
@@ -440,17 +439,29 @@ func (p *tenantPlugin[T]) checkTenantFieldSafetyForPrefix(db *gorm.DB, field, pr
 	// 遍历所有 WHERE 条件，检查租户字段出现情况
 	switch expr := whereClause.Expression.(type) {
 	case clause.Where:
-		for _, cond := range expr.Exprs {
-			s, e := checkExprForTenantField(cond, field, prefix)
-			if e != nil {
-				return false, e
-			}
-			if s {
-				return true, nil
+		return checkExprsForTenantField(expr.Exprs, field, prefix)
+	}
+	return false, nil
+}
+
+func checkExprsForTenantField(exprs []clause.Expression, field, prefix string) (skip bool, err error) {
+	// 找到重复条件后仍检查所有后续条件，不能提前跳过 OR 安全检查。
+	for _, expr := range exprs {
+		found, err := checkExprForTenantField(expr, field, prefix)
+		if err != nil {
+			return false, err
+		}
+		skip = skip || found
+	}
+	// tenant = ? OR business = ? 也会绕过隔离，即使 OR 分支不直接提及租户字段。
+	if hasORConnector(exprs) {
+		for _, expr := range exprs {
+			if containsTenantField(expr, field) {
+				return false, fmt.Errorf("tenant: 检测到租户字段 %q 参与 OR 条件，可能绕过租户隔离，已拒绝执行。如需跨租户查询请使用 plugin.SkipTenant(ctx)", field)
 			}
 		}
 	}
-	return false, nil
+	return skip, nil
 }
 
 // checkExprForTenantField 递归检查单个 clause 表达式中的租户字段安全性。
@@ -472,15 +483,7 @@ func checkExprForTenantField(expr clause.Expression, field, prefix string) (skip
 
 	case clause.AndConditions:
 		// AND 分组，递归检查每个子条件
-		for _, sub := range e.Exprs {
-			s, e := checkExprForTenantField(sub, field, prefix)
-			if e != nil {
-				return false, e
-			}
-			if s {
-				return true, nil
-			}
-		}
+		return checkExprsForTenantField(e.Exprs, field, prefix)
 
 	case clause.OrConditions:
 		// OR 分组：只要 OR 中涉及租户字段，立即拒绝
@@ -496,6 +499,8 @@ func checkExprForTenantField(expr clause.Expression, field, prefix string) (skip
 			}
 		}
 
+	case clause.NamedExpr:
+		return checkExprForTenantField(clause.Expr{SQL: e.SQL, Vars: e.Vars}, field, prefix)
 	case clause.Expr:
 		// 原生 SQL 字符串：扫描是否包含租户字段
 		if sqlContainsFieldWithPrefix(e.SQL, field, prefix) {
@@ -535,6 +540,22 @@ func containsTenantField(expr clause.Expression, field string) bool {
 		}
 	case clause.Expr:
 		return sqlContainsFieldWithPrefix(e.SQL, field, "")
+	case clause.NamedExpr:
+		return sqlContainsFieldWithPrefix(e.SQL, field, "")
+	case clause.IN:
+		return containsTenantField(clause.Eq{Column: e.Column}, field)
+	case clause.Neq:
+		return containsTenantField(clause.Eq(e), field)
+	case clause.Gt:
+		return containsTenantField(clause.Eq(e), field)
+	case clause.Gte:
+		return containsTenantField(clause.Eq(e), field)
+	case clause.Lt:
+		return containsTenantField(clause.Eq(e), field)
+	case clause.Lte:
+		return containsTenantField(clause.Eq(e), field)
+	case clause.Like:
+		return containsTenantField(clause.Eq(e), field)
 	case clause.AndConditions:
 		for _, sub := range e.Exprs {
 			if containsTenantField(sub, field) {
@@ -542,6 +563,12 @@ func containsTenantField(expr clause.Expression, field string) bool {
 			}
 		}
 	case clause.OrConditions:
+		for _, sub := range e.Exprs {
+			if containsTenantField(sub, field) {
+				return true
+			}
+		}
+	case clause.NotConditions:
 		for _, sub := range e.Exprs {
 			if containsTenantField(sub, field) {
 				return true
@@ -703,21 +730,20 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 			continue
 		}
 
-		// 根据 DuplicatePolicy 决定如何处理已有租户条件
+		// 所有策略都先完成安全检查，再决定是否跳过或替换重复条件。
+		skip, err := p.checkTenantFieldSafetyForPrefix(db, f.Field, prefix)
+		if err != nil {
+			_ = db.AddError(err)
+			return
+		}
 		switch p.cfg.DuplicatePolicy {
 		case PolicyAppend:
-			// 直接追加，不扫描已有条件，性能最优
-			// 适合确定业务代码不会手动写租户条件的场景
+			// 不去重，安全检查后始终追加。
 
 		case PolicyReplace:
 			// 先移除业务代码写的租户字段条件，再由插件注入正确值
 			// 适合需要强制隔离、不信任业务代码的严格模式
 			// ⚠️ 仍会检测 OR 危险条件，发现则拒绝执行
-			_, err := p.checkTenantFieldSafetyForPrefix(db, f.Field, prefix)
-			if err != nil {
-				_ = db.AddError(err)
-				return
-			}
 			removeWhereField(db, f.Field, prefix)
 
 		default: // PolicySkip（默认）
@@ -725,11 +751,6 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 			//   - 发现 AND 条件中已有该字段 → 跳过注入（以业务代码为准）
 			//   - 发现 OR 条件中有该字段 → 危险，拒绝执行
 			//   - 未发现 → 正常注入
-			skip, err := p.checkTenantFieldSafetyForPrefix(db, f.Field, prefix)
-			if err != nil {
-				_ = db.AddError(err)
-				return
-			}
 			if skip {
 				continue
 			}
@@ -746,6 +767,7 @@ func (p *tenantPlugin[T]) injectWhere(db *gorm.DB) {
 		} else {
 			sql = fmt.Sprintf("`%s` = ?", f.Field)
 		}
+		groupWhereForIsolation(db)
 		db.Statement.Where(sql, tenantID)
 	}
 
@@ -874,6 +896,7 @@ func (p *tenantPlugin[T]) injectJoinWhere(db *gorm.DB, ctx context.Context) {
 				continue
 			}
 
+			groupWhereForIsolation(db)
 			db.Statement.Where(fmt.Sprintf("`%s`.`%s` = ?", prefix, f.Field), tenantID)
 		}
 	}

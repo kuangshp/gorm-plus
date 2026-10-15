@@ -1,11 +1,17 @@
 package mapper
 
 import (
+{{- if .HasFloatField}}
+	"strconv"
+{{- end}}
 {{- if .HasTimeField}}
 	"time"
 {{- end}}
 {{- if .HasDecimalField}}
 	"github.com/shopspring/decimal"
+{{- end}}
+{{- if .HasJSONField}}
+	"gorm.io/datatypes"
 {{- end}}
 	"{{.Package}}/{{.ModelPkgPath}}"
 {{- if .IsGoZero}}
@@ -21,7 +27,7 @@ import (
 // I{{.ModelName}}Mapper {{.TableComment}} mapper 接口
 type I{{.ModelName}}Mapper interface {
 	// DtoToEntity 将请求结构体映射到数据库实体
-	DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
+	DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsFloatType}}, {{lowerFirst .FieldName}} float64{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
 	// EntityToVO 将数据库实体映射到响应结构体
 	EntityToVO(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types.{{.VoStructName}}{{else}}{{.VoPkgName}}.{{.ModelName}}VO{{end}}
 }
@@ -35,11 +41,11 @@ func New{{.ModelName}}Mapper() I{{.ModelName}}Mapper {
 }
 
 // DtoToEntity 将 {{.DtoStructName}} 映射到 {{.ModelName}}Entity
-func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsFloatType}}, {{lowerFirst .FieldName}} float64{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity {
 	e := &{{.ModelPkgName}}.{{.ModelName}}Entity{
 {{- range .Columns}}
-{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by") .IsTimeType .IsDecimalType .IsAuditField)}}
-		{{.FieldName}}: d.{{.FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
+{{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by") .IsTimeType .IsDecimalType .IsFloatType .IsAuditField)}}
+		{{.FieldName}}: {{if .IsJSONType}}datatypes.JSON(d.{{.FieldName}}){{else}}d.{{.FieldName}}{{end}}, {{if .Comment}}// {{.Comment}}{{end}}
 {{- end}}
 {{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by") )}}
 {{- if .IsTimeType}}
@@ -47,6 +53,9 @@ func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d *{{if .IsGoZero}}types{{else}}
 {{- end}}
 {{- if .IsAuditField}}
 		{{.FieldName}}: {{lowerFirst .FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
+{{- end}}
+{{- if .IsFloatType}}
+		{{.FieldName}}: {{lowerFirst .FieldName}},
 {{- end}}
 {{- if .IsDecimalType}}
 		{{.FieldName}}: {{lowerFirst .FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
@@ -64,12 +73,15 @@ func (m *{{.ModelNameLower}}Mapper) EntityToVO(e *{{.ModelPkgName}}.{{.ModelName
 	}
 	return &{{if .IsGoZero}}types.{{.VoStructName}}{{else}}{{.VoPkgName}}.{{.ModelName}}VO{{end}}{
 {{- range .Columns}}
-{{- if not (or (eq .Name "deleted_at") .IsTimeType .IsDecimalType)}}
-		{{.FieldName}}: e.{{.FieldName}}, {{if .Comment}}// {{.Comment}}{{end}}
+{{- if not (or (eq .Name "deleted_at") .IsTimeType .IsDecimalType .IsFloatType)}}
+		{{.FieldName}}: {{if .IsJSONType}}string(e.{{.FieldName}}){{else}}e.{{.FieldName}}{{end}}, {{if .Comment}}// {{.Comment}}{{end}}
 {{- end}}
 {{- if not (or (eq .Name "deleted_at") )}}
 		{{- if .IsTimeType}}
         {{.FieldName}}: e.{{.FieldName}}.Unix(), {{if .Comment}}// {{.Comment}}{{end}}
+        {{- end}}
+        {{- if .IsFloatType}}
+        {{.FieldName}}: strconv.FormatFloat(e.{{.FieldName}}, 'f', -1, 64),
         {{- end}}
         {{- if .IsDecimalType}}
         {{.FieldName}}: e.{{.FieldName}}.StringFixed(2), {{if .Comment}}// {{.Comment}}{{end}}

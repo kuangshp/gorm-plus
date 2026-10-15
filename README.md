@@ -257,6 +257,12 @@ func main() {
 
 ## 一、代码生成器
 
+生成流程按 `db_type` 使用 MySQL、PostgreSQL、SQLite、SQL Server 驱动读取表列表和字段元数据，包含主键（含联合主键）、自增、可空、长度、精度和注释。SQLite 自动跳过 `sqlite_` 内部表，表注释缺失时使用模型名。元数据、模板渲染和文件写入失败会返回错误，请检查生成入口的返回值。
+
+常见类型别名（如 PostgreSQL 的 `int8`、`numeric`、`bool`、`jsonb`，SQL Server 的 `datetime2`、`bit`）会同步映射到 Model 和 DTO/VO/Mapper。数据库特有的数组、空间类型、自定义类型仍需按业务调整模板；API/DTO 的修改请求仍沿用默认 `id` 约定，非标准主键的请求契约需自行调整。
+
+本次回归包含 SQLite 全量/单表增量生成、生成代码编译与 Repository 实际读写；MySQL、PostgreSQL、SQL Server 的真实数据库集成需在各自环境验证。已有 DTO/VO/Mapper 按保留策略不会覆盖，升级后请对照新模板同步受影响字段。
+
 ### 配置与运行
 
 #### 复用业务配置：根目录 generator.go
@@ -1499,6 +1505,8 @@ func main() {
 
 **前缀失效安全保护**：`fnName` 为空字符串或不含点号且短于 3 字符的可疑前缀会被静默拒绝，避免误清全部缓存。
 
+方法名匹配 `sf:user.FindList:`，表名匹配 `sf:user.`。整表失效同时清除详情、列表、分页及统计等方法的所有参数组合；单个与批量接口均支持表名尾点号，且不会清除 `user_role` 等其他表的缓存。自定义 Redis 缓存仍需实现前缀删除接口。
+
 ```go
 // ① 精确失效：FindById 更新后
 repo.UpdateById(ctx, id, gormplus.WithUpdateColumns(...))
@@ -2138,13 +2146,18 @@ gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
 	TenantField:     "tenant_id",
 	DuplicatePolicy: gormplus.PolicySkip,    // 默认：已有 AND 条件时跳过注入
 	// DuplicatePolicy: gormplus.PolicyReplace, // 强制替换为 ctx 中的值
-	// DuplicatePolicy: gormplus.PolicyAppend,  // 直接追加不检查
+	// DuplicatePolicy: gormplus.PolicyAppend,  // 完成 OR 安全检查后追加，不去重
 })
 
 // ③ OR 危险条件自动拒绝
 db.WithContext(ctx).Where("tenant_id = ? OR status = 1", 9999).Find(&list)
 // Error: tenant: 检测到租户字段 "tenant_id" 出现在 OR 条件中，已拒绝执行
+
+// 已有租户条件也不能绕过后续 OR 检查；查询、更新和删除都会在执行前拒绝。
+db.WithContext(ctx).Where("tenant_id = ?", 1001).Or("tenant_id = ?", 2002).Find(&list)
 ```
+
+三种重复条件策略都会完整检查后续及嵌套条件。普通业务 OR 可以正常使用，插件将其作为整体再追加隔离条件，例如 `(name = ? OR name = ?) AND tenant_id = ?`，避免 OR 的另一分支绕过租户过滤。
 
 ### 覆盖租户 ID / 超管跳过
 
@@ -2173,6 +2186,12 @@ tables, _ := gormplus.ExcludedTables[int64](db)
 
 
 注入逻辑由业务层定义，插件不耦合任何业务 SQL。
+
+权限条件同时应用于 Query 和 Row 查询路径：`Find`、通过 `Model` / `Table` 构建的 `Scan`、`Rows`、`Row` 均受过滤，`Scan` 的接收目标不影响权限检查。已有业务 OR 会先分组，再与权限条件通过 AND 连接。
+
+`Scan(&list)` 接收到切片，可映射多行；`Scan(&item)` 接收到结构体，只映射一行，但不会自动给 SQL 添加 `LIMIT 1`。需要数据库只查询一行时，显式使用 `Limit(1).Scan(&item)`，或使用 `First` / `Take`。使用 `Scan` 映射自定义 VO 时，应通过 `Model` / `Table` 明确源表。
+
+`Raw(sql).Scan(...)` 的 SQL 已由调用方构造，插件不会自动重写原生 SQL 来补充权限条件；此类查询必须在 SQL 中显式约束权限范围。排除表、`SkipDataPermission` 及未设置权限注入函数时的行为保持原有约定。
 
 ```go
 // 注册

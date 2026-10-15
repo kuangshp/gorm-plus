@@ -555,24 +555,29 @@ func SFInvalidate(fnName string, args map[string]any) {
 //   - Redis 缓存：用户实现 SFCachePrefixDeleter 时建议用 SCAN 而非 KEYS 避免阻塞
 //   - 自定义缓存未实现 SFCachePrefixDeleter 时静默忽略（业务不会报错，但缓存不会清）
 func SFInvalidatePrefix(fnName string) {
-	// 安全校验：拒绝可疑的空 / 过短前缀，避免误操作清空整个缓存
-	if fnName == "" {
-		return
-	}
-	// 不含点号且短于 3 字符的，多半是误用（合法格式应为 "tableName.MethodName" 或 "tableName."）
-	if len(fnName) < 3 && !strings.Contains(fnName, ".") {
+	prefix, ok := invalidateKeyPrefix(fnName)
+	if !ok {
 		return
 	}
 
 	c := getCache()
 	if pd, ok := c.(SFCachePrefixDeleter); ok {
-		// 与 buildSFKey 保持一致：noargs 的 key 也以 "sf:{fnName}:" 开头，
-		// 用同样的前缀即可一次清干净。
-		pd.DelByPrefix(keyPrefix + fnName + ":")
+		pd.DelByPrefix(prefix)
 		return
 	}
 	// 未实现 SFCachePrefixDeleter 时静默忽略（保持向后兼容，业务可继续运行）。
 	reportPrefixInvalidateNoop([]string{fnName})
+}
+
+// 方法名带冒号边界，避免 Find 误删 FindList；表名尾点号本身就是边界。
+func invalidateKeyPrefix(fnName string) (string, bool) {
+	if fnName == "" || (len(fnName) < 3 && !strings.Contains(fnName, ".")) {
+		return "", false
+	}
+	if strings.HasSuffix(fnName, ".") {
+		return keyPrefix + fnName, true
+	}
+	return keyPrefix + fnName + ":", true
 }
 
 // SFInvalidatePrefixes 批量按前缀失效缓存（一次调用清多个 fnName 的缓存）。
@@ -604,18 +609,16 @@ func SFInvalidatePrefixes(fnNames []string) {
 		return
 	}
 
-	// 按相同规则过滤可疑前缀，并拼上 keyPrefix + 尾点号
+	// 单个和批量失效使用相同的表名 / 方法名边界。
 	prefixes := make([]string, 0, len(fnNames))
 	filtered := make([]string, 0, len(fnNames))
 	for _, fn := range fnNames {
-		if fn == "" {
-			continue
-		}
-		if len(fn) < 3 && !strings.Contains(fn, ".") {
+		prefix, ok := invalidateKeyPrefix(fn)
+		if !ok {
 			continue
 		}
 		filtered = append(filtered, fn)
-		prefixes = append(prefixes, keyPrefix+fn+":")
+		prefixes = append(prefixes, prefix)
 	}
 	if len(prefixes) == 0 {
 		return
@@ -749,7 +752,7 @@ func unwrapCached[T any](raw any) (T, error) {
 // key 格式：sf:{fnName}:{md5(sorted_json(args))}    （有 args）
 // key 格式：sf:{fnName}:noargs                       （无 args）
 //
-// 注意：SFInvalidatePrefix 依赖 "sf:{fnName}:" 这个公共前缀，修改 key 格式时要同步调整。
+// 注意：方法失效依赖 "sf:{fnName}:"，表级失效依赖 "sf:{tableName}."；修改 key 格式时要同步调整。
 // 性能优化不得改变上述字节级输出（见 TestBuildSFKey_ByteCompatibility）。
 func buildSFKey(fnName string, args map[string]any) string {
 	if len(args) == 0 {

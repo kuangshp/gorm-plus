@@ -83,4 +83,16 @@ func TestRedisSFCache_DelByPrefix(t *testing.T) {
 	if len(mr.Keys()) != 1 {
 		t.Fatalf("after prefix invalidate keys=%v", mr.Keys())
 	}
+	// 表级前缀通过 Redis SCAN 同样生效，并保留其他表。
+	_, _ = gormplus.SFWithTTL(func() (int, error) { return 3, nil }, "users.FindList", nil, time.Minute)
+	_, _ = gormplus.SFWithTTL(func() (int, error) { return 4, nil }, "users_archive.FindList", nil, time.Minute)
+	gormplus.SFInvalidatePrefix("users.")
+	if len(mr.Keys()) != 1 {
+		t.Fatalf("after table invalidate keys=%v", mr.Keys())
+	}
+	_, _ = gormplus.SFWithTTL(func() (int, error) { return 5, nil }, "users.FindList", nil, time.Minute)
+	gormplus.SFInvalidatePrefixes([]string{"users.", "users_archive."})
+	if len(mr.Keys()) != 0 {
+		t.Fatalf("after batch table invalidate keys=%v", mr.Keys())
+	}
 }

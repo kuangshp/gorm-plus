@@ -1,3 +1,17 @@
+### 查询范围与 Scan
+
+插件覆盖 Query 和 Row 回调，支持 `Find` 以及通过 `Model` / `Table` 构建的 `Scan`、`Rows`、`Row`。权限过滤不依赖接收目标的类型：
+
+```go
+// 切片接收多行，按权限过滤。
+db.WithContext(ctx).Model(&Account{}).Scan(&list)
+
+// 结构体接收一行；Limit(1) 才会限制数据库查询行数。
+db.WithContext(ctx).Model(&Account{}).Order("id ASC").Limit(1).Scan(&item)
+```
+
+普通业务 OR 会先整体分组，再追加权限条件。`Raw(sql).Scan(...)` 不会自动重写原生 SQL，必须在 SQL 中自行写入权限限制。排除表、`SkipDataPermission` 和未设置权限注入函数时沿用原有行为。
+
 ### 一、使用方式
 * 1、注册
 ```go

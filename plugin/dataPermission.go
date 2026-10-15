@@ -137,7 +137,8 @@ type dataPermissionPlugin struct {
 
 func (p *dataPermissionPlugin) Name() string { return dataPermissionPluginName }
 
-// Initialize 向 gorm 注册 Query / Update / Delete 三类操作的钩子。
+// Initialize 向 gorm 注册 Query / Row / Update / Delete 钩子。
+// Row 覆盖结构化 Scan、Rows 和 Row，与接收目标是切片还是结构体无关。
 // Create 通常不需要数据权限过滤，故不注册。
 func (p *dataPermissionPlugin) Initialize(db *gorm.DB) error {
 	for _, op := range []struct {
@@ -146,6 +147,9 @@ func (p *dataPermissionPlugin) Initialize(db *gorm.DB) error {
 	}{
 		{"query", func(n string, fn func(*gorm.DB)) error {
 			return db.Callback().Query().Before("gorm:query").Register(n, fn)
+		}},
+		{"row", func(n string, fn func(*gorm.DB)) error {
+			return db.Callback().Row().Before("gorm:row").Register(n, fn)
 		}},
 		{"update", func(n string, fn func(*gorm.DB)) error {
 			return db.Callback().Update().Before("gorm:update").Register(n, fn)
@@ -161,7 +165,7 @@ func (p *dataPermissionPlugin) Initialize(db *gorm.DB) error {
 	return nil
 }
 
-// inject 在 Query / Update / Delete 执行前调用 InjectFn 注入数据权限条件。
+// inject 在 Query / Row / Update / Delete 执行前调用 InjectFn 注入数据权限条件。
 //
 // ⚠️ 关于注入方式：
 // db.Scopes() 在 gorm Callback 中调用无效（gorm 执行到 Callback 时已跳过 Scopes 处理阶段），
@@ -191,6 +195,7 @@ func (p *dataPermissionPlugin) inject(db *gorm.DB) {
 		// ctx 中无注入函数（如未登录、中间件未设置），跳过
 		return
 	}
+	groupWhereForIsolation(db)
 
 	// 调用业务层注入函数，由业务层决定追加什么条件。
 	// ⚠️ 两种模式底层行为相同：db.Scopes() 在 Callback 中无效，统一使用 Statement.Where。
@@ -230,7 +235,8 @@ func (p *dataPermissionPlugin) isExcluded(table string) bool {
 
 // RegisterDataPermission 向指定 DB 注册数据权限插件，整个应用只需调用一次。
 //
-// 注册后所有经过 db.WithContext(ctx) 的 Query / Update / Delete 操作，
+// 注册后经过 db.WithContext(ctx) 的 Query / Row / Update / Delete 操作，
+// 包括 Model/Table 构建的 Find、Scan、Rows 和 Row，
 // 若 ctx 中存在通过 WithDataPermission 写入的注入函数，则自动调用注入数据权限条件。
 //
 // 示例：

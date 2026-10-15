@@ -353,32 +353,6 @@ func init() {
 //  数据结构
 // ═══════════════════════════════════════════════════════════
 
-func getTableColumns(db *gorm.DB, tableName string) ([]ColumnInfo, error) {
-	type Column struct {
-		Field   string
-		Type    string
-		Null    string
-		Key     string
-		Default *string
-		Extra   string
-		Comment string
-	}
-	var columns []Column
-	err := db.Raw(fmt.Sprintf("SHOW FULL COLUMNS FROM `%s`", tableName)).Scan(&columns).Error
-	result := make([]ColumnInfo, len(columns))
-	for i, col := range columns {
-		result[i] = ColumnInfo{
-			Name:    col.Field,
-			Type:    col.Type,
-			CanNull: col.Null == "YES",
-			IsKey:   col.Key == "PRI",
-			Extra:   col.Extra,
-			Comment: col.Comment,
-		}
-	}
-	return result, err
-}
-
 type ColumnInfo struct {
 	Name, Type, FieldName, FieldType string
 	ParamName                        string
@@ -387,7 +361,7 @@ type ColumnInfo struct {
 	Extra, Comment, Validate         string
 	IsTimeType, IsAuditField         bool
 	IsDecimalType, IsFloatType       bool
-	IsBytesType                      bool
+	IsBytesType, IsJSONType          bool
 }
 
 type ApiTemplateData struct {
@@ -421,13 +395,13 @@ type RepositoryTemplateData struct {
 }
 
 type MapperTemplateData struct {
-	TableName, ModelName, ModelNameLower, TableComment string
-	Package, ModelPkgPath, ModelPkgName                string
-	DtoPkgPath, DtoPkgName, DtoStructName              string
-	VoPkgPath, VoPkgName, VoStructName                 string
-	SameDtoPkg, IsGoZero                               bool
-	HasTimeField, HasDecimalField                      bool
-	Columns                                            []ColumnInfo
+	TableName, ModelName, ModelNameLower, TableComment         string
+	Package, ModelPkgPath, ModelPkgName                        string
+	DtoPkgPath, DtoPkgName, DtoStructName                      string
+	VoPkgPath, VoPkgName, VoStructName                         string
+	SameDtoPkg, IsGoZero                                       bool
+	HasTimeField, HasDecimalField, HasFloatField, HasJSONField bool
+	Columns                                                    []ColumnInfo
 }
 
 type ProtoMapperTemplateData struct {
@@ -436,7 +410,7 @@ type ProtoMapperTemplateData struct {
 	ProtoPkgPath, ProtoPkgName                         string
 	APITypesPkgPath                                    string
 	HasTimeField, HasWritableTimeField                 bool
-	HasDecimalField, HasFloatField                     bool
+	HasDecimalField, HasFloatField, HasJSONField       bool
 	Columns, WritableColumns                           []ColumnInfo
 }
 
@@ -529,10 +503,12 @@ func getGoType(sqlType string) string {
 		return "string"
 	case strings.Contains(s, "int"):
 		return "int64"
-	case strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double"):
+	case isDecimalInputSQLType(s):
 		return "float64"
-	case strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date"):
+	case isTimeSQLType(s):
 		return "int64"
+	case strings.Contains(s, "binary"), strings.Contains(s, "blob"), strings.Contains(s, "bytea"):
+		return "[]byte"
 	case strings.Contains(s, "json"):
 		return "string"
 	case strings.Contains(s, "bool"):
@@ -548,12 +524,11 @@ func getProtoType(sqlType string) string {
 	switch {
 	case strings.Contains(s, "bool"):
 		return "bool"
-	case strings.Contains(s, "datetime"), strings.Contains(s, "timestamp"), strings.Contains(s, "date"):
+	case isTimeSQLType(s):
 		return "int64"
 	case strings.Contains(s, "int"):
 		return "int64"
-	case strings.Contains(s, "decimal"), strings.Contains(s, "numeric"),
-		strings.Contains(s, "float"), strings.Contains(s, "double"), strings.Contains(s, "real"):
+	case isDecimalInputSQLType(s):
 		return "double"
 	case strings.Contains(s, "binary"), strings.Contains(s, "blob"), strings.Contains(s, "bytea"):
 		return "bytes"
@@ -585,7 +560,7 @@ func getGoTypeForApiDto(sqlType string) string {
 	if isTimeSQLType(s) {
 		return "string"
 	}
-	if strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double") {
+	if isDecimalInputSQLType(s) {
 		return "string"
 	}
 	return getGoType(sqlType)
@@ -594,18 +569,24 @@ func getGoTypeForApiDto(sqlType string) string {
 // isDecimalInputSQLType identifies SQL fields exposed as decimal strings.
 func isDecimalInputSQLType(sqlType string) bool {
 	s := strings.ToLower(sqlType)
-	return strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double")
+	return isDecimalSQLType(s) || strings.Contains(s, "float") || strings.Contains(s, "double") || s == "real"
 }
 
 func isTimeSQLType(sqlType string) bool {
 	s := strings.ToLower(sqlType)
-	return strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
+	return strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date") || s == "time" || s == "timetz"
 }
 
-func getGoTypeForVo(sqlType string) string { return getGoTypeForApiDto(sqlType) }
+func getGoTypeForVo(sqlType string) string {
+	if isTimeSQLType(sqlType) {
+		return "int64"
+	}
+	return getGoTypeForApiDto(sqlType)
+}
 
 func isDecimalSQLType(sqlType string) bool {
-	return strings.Contains(strings.ToLower(sqlType), "decimal")
+	s := strings.ToLower(sqlType)
+	return strings.Contains(s, "decimal") || strings.Contains(s, "numeric") || strings.Contains(s, "money")
 }
 
 func isIntegerSQLType(sqlType string) bool {
@@ -675,42 +656,21 @@ func getLastPathSegment(path string) string {
 	return parts[len(parts)-1]
 }
 
-func ensureDir(dir string) {
-	if dir != "" {
-		os.MkdirAll(dir, 0755)
-	}
-}
-
-func writeFileIfNotExist(filePath, content, label string) {
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		if err = os.WriteFile(filePath, []byte(content), 0644); err != nil {
-			fmt.Printf("写入 %s 失败: %v\n", label, err)
-		} else {
-			fmt.Printf("已生成: %s\n", filePath)
+// writeGeneratedFile preserves extension files and reports filesystem failures.
+func writeGeneratedFile(path, content string, overwrite bool) (bool, error) {
+	if !overwrite {
+		if _, err := os.Stat(path); err == nil {
+			fmt.Printf("已存在，跳过: %s\n", path)
+			return false, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
 		}
-	} else {
-		fmt.Printf("已存在，跳过: %s\n", filePath)
 	}
-}
-
-func writeFileAlways(filePath, content, label string) {
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		fmt.Printf("写入 %s 失败: %v\n", label, err)
-	} else {
-		fmt.Printf("已生成(覆盖): %s\n", filePath)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return false, err
 	}
-}
-
-// ═══════════════════════════════════════════════════════════
-//  各类文件生成
-// ═══════════════════════════════════════════════════════════
-
-func getTableComment(db *gorm.DB, tableName string) string {
-	var comment string
-	db.Raw(fmt.Sprintf(
-		"SELECT TABLE_COMMENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='%s'",
-		tableName)).Scan(&comment)
-	return comment
+	fmt.Printf("已生成: %s\n", path)
+	return true, nil
 }
 
 func extractEnumValuesFromComment(comment string) []string {
@@ -1003,12 +963,16 @@ func buildMapperData(tableName string, columns []ColumnInfo, modelName string, d
 	pkg, modelPkgPath, dtoPkgPath, voPkgPath string, isGoZero bool) MapperTemplateData {
 	auditFields := map[string]bool{"created_by": true, "updated_by": true}
 	columnData := make([]ColumnInfo, len(columns))
-	hasTime, hasDecimal := false, false
+	hasTime, hasDecimal, hasFloat, hasJSON := false, false, false, false
 	for i, col := range columns {
 		s := strings.ToLower(col.Type)
-		isTime := strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
-		isDecimal := strings.Contains(s, "decimal") || strings.Contains(s, "float") || strings.Contains(s, "double")
-		if isTime {
+		isTime := isTimeSQLType(s)
+		isDecimal := isDecimalSQLType(s)
+		isFloat := isDecimalInputSQLType(s) && !isDecimal
+		isJSON := strings.Contains(s, "json")
+		hasJSON = hasJSON || isJSON
+		hasFloat = hasFloat || isFloat
+		if isTime && col.Name != "created_at" && col.Name != "updated_at" && col.Name != "deleted_at" {
 			hasTime = true
 		}
 		if isDecimal {
@@ -1018,7 +982,7 @@ func buildMapperData(tableName string, columns []ColumnInfo, modelName string, d
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoType(col.Type),
 			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
-			IsTimeType: isTime, IsAuditField: auditFields[col.Name], IsDecimalType: isDecimal,
+			IsTimeType: isTime, IsAuditField: auditFields[col.Name], IsDecimalType: isDecimal, IsFloatType: isFloat, IsJSONType: isJSON,
 		}
 	}
 	tableComment := getTableComment(db, tableName)
@@ -1036,7 +1000,7 @@ func buildMapperData(tableName string, columns []ColumnInfo, modelName string, d
 		DtoPkgPath: dtoPkgPath, DtoPkgName: getLastPathSegment(dtoPkgPath), DtoStructName: dtoStructName,
 		VoPkgPath: voPkgPath, VoPkgName: getLastPathSegment(voPkgPath), VoStructName: voStructName,
 		SameDtoPkg: dtoPkgPath != "" && dtoPkgPath == voPkgPath, IsGoZero: isGoZero,
-		HasTimeField: hasTime, HasDecimalField: hasDecimal, Columns: columnData,
+		HasTimeField: hasTime, HasDecimalField: hasDecimal, HasFloatField: hasFloat, HasJSONField: hasJSON, Columns: columnData,
 	}
 }
 
@@ -1044,12 +1008,14 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 	pkg, modelPkgPath, protoPkgPath, apiTypesPkgPath string) ProtoMapperTemplateData {
 	columnData := make([]ColumnInfo, 0, len(columns))
 	writableColumns := make([]ColumnInfo, 0, len(columns))
-	hasTime, hasWritableTime, hasDecimal, hasFloat := false, false, false, false
+	hasTime, hasWritableTime, hasDecimal, hasFloat, hasJSON := false, false, false, false, false
 	for _, col := range columns {
 		s := strings.ToLower(col.Type)
-		isTime := strings.Contains(s, "datetime") || strings.Contains(s, "timestamp") || strings.Contains(s, "date")
-		isDecimal := strings.Contains(s, "decimal") || strings.Contains(s, "numeric")
+		isTime := isTimeSQLType(s)
+		isDecimal := isDecimalSQLType(s)
 		isFloat := strings.Contains(s, "float") || strings.Contains(s, "double") || strings.Contains(s, "real")
+		isJSON := strings.Contains(s, "json")
+		hasJSON = hasJSON || isJSON
 		isBytes := strings.Contains(s, "binary") || strings.Contains(s, "blob") || strings.Contains(s, "bytea")
 		hasTime = hasTime || isTime
 		hasDecimal = hasDecimal || isDecimal
@@ -1057,7 +1023,7 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 		item := ColumnInfo{
 			Name: col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
 			ParamName:  normalizeAcronyms(Case2Camel(col.Name)),
-			IsTimeType: isTime, IsDecimalType: isDecimal, IsFloatType: isFloat, IsBytesType: isBytes,
+			IsTimeType: isTime, IsDecimalType: isDecimal, IsFloatType: isFloat, IsJSONType: isJSON, IsBytesType: isBytes,
 			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 		}
 		if col.Name != "deleted_at" {
@@ -1080,7 +1046,7 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 		ModelPkgPath: modelPkgPath, ModelPkgName: getLastPathSegment(modelPkgPath),
 		ProtoPkgPath: protoPkgPath, ProtoPkgName: getLastPathSegment(protoPkgPath),
 		APITypesPkgPath: apiTypesPkgPath, HasTimeField: hasTime, HasWritableTimeField: hasWritableTime,
-		HasDecimalField: hasDecimal, HasFloatField: hasFloat,
+		HasDecimalField: hasDecimal, HasFloatField: hasFloat, HasJSONField: hasJSON,
 		Columns: columnData, WritableColumns: writableColumns,
 	}
 }
@@ -1089,180 +1055,126 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 //  单表文件生成入口
 // ═══════════════════════════════════════════════════════════
 
-func generateForTable(tbl string, cfg *Config, db *gorm.DB,
+func generateForTable(tbl string, columns []ColumnInfo, cfg *Config, db *gorm.DB,
 	repoGenTmplPath, repoTmplPath, apiTmplPath, protoTmplPath, voTmplPath, dtoTmplPath,
-	mapperTmplPath, entityProtoMapperTmplPath, apiProtoMapperTmplPath string) {
+	mapperTmplPath, entityProtoMapperTmplPath, apiProtoMapperTmplPath string) error {
 
-	columns, err := getTableColumns(db, tbl)
-	if err != nil {
-		fmt.Printf("[%s] 获取表结构失败，跳过: %v\n", tbl, err)
-		return
-	}
 	modelName := Case2Camel(strings.ToUpper(tbl[:1]) + tbl[1:])
 	publicColumns := sensitivePublicColumns(tbl, columns, cfg.SensitiveFields)
 
-	// Proto .proto（go-zero RPC 描述文件，已存在则跳过）
+	// 统一传递渲染和写入错误，避免某一层缺失却仍报告全部生成成功。
+	emit := func(path string, overwrite bool, render func() (string, error)) error {
+		content, err := render()
+		if err != nil {
+			return fmt.Errorf("渲染 %s 失败: %w", path, err)
+		}
+		if _, err = writeGeneratedFile(path, content, overwrite); err != nil {
+			return fmt.Errorf("写入 %s 失败: %w", path, err)
+		}
+		return nil
+	}
+
 	if cfg.ProtoPath != "" {
 		protoPackage := getProtoPackage(cfg.Package)
 		baseProtoImport := filepath.Join(filepath.Base(filepath.Clean(cfg.ProtoPath)), "base.proto")
-		baseProtoFile := filepath.Join(cfg.ProtoPath, "base.proto")
-		if _, err := os.Stat(baseProtoFile); os.IsNotExist(err) {
-			if content, err := renderTemplate(
-				filepath.Join(filepath.Dir(protoTmplPath), "base_proto_template.txt"),
-				ProtoTemplateData{ProtoPackage: protoPackage},
-			); err != nil {
-				fmt.Printf("渲染 base.proto 失败: %v\n", err)
-			} else {
-				if err := os.WriteFile(baseProtoFile, []byte(content), 0644); err != nil {
-					fmt.Printf("写入 base.proto 失败: %v\n", err)
-				} else {
-					fmt.Printf("已生成: %s\n", baseProtoFile)
-				}
-			}
+		if err := emit(filepath.Join(cfg.ProtoPath, "base.proto"), false, func() (string, error) {
+			return renderTemplate(filepath.Join(filepath.Dir(protoTmplPath), "base_proto_template.txt"), ProtoTemplateData{ProtoPackage: protoPackage})
+		}); err != nil {
+			return err
 		}
-		if content, err := generateProtoFile(tbl, publicColumns, modelName, db, protoTmplPath, protoPackage, baseProtoImport); err != nil {
-			fmt.Printf("[%s] 生成 proto 失败: %v\n", tbl, err)
-		} else {
-			writeFileIfNotExist(
-				filepath.Join(cfg.ProtoPath, LowerCamelCase(Case2Camel(tbl))+".proto"),
-				content, "proto",
-			)
+		if err := emit(filepath.Join(cfg.ProtoPath, LowerCamelCase(Case2Camel(tbl))+".proto"), false, func() (string, error) {
+			return generateProtoFile(tbl, publicColumns, modelName, db, protoTmplPath, protoPackage, baseProtoImport)
+		}); err != nil {
+			return err
 		}
 	}
-	// Repository _gen.go（始终覆盖，与 model 保持同步）
 	if cfg.RepoPath != "" {
-		if content, err := generateRepositoryFile(columns, modelName, cfg.Package,
-			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath, tbl); err != nil {
-			fmt.Printf("[%s] 生成 repository_gen 失败: %v\n", tbl, err)
-		} else {
-			writeFileAlways(
-				fmt.Sprintf("%s/%s_gen.go", cfg.RepoPath, strings.ToLower(modelName)),
-				content, "repository_gen",
-			)
+		if err := emit(filepath.Join(cfg.RepoPath, strings.ToLower(modelName)+"_gen.go"), true, func() (string, error) {
+			return generateRepositoryFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoGenTmplPath, tbl)
+		}); err != nil {
+			return err
 		}
-
-		// Repository .go（用户自定义，已存在则跳过）
-		if content, err := generateRepositoryExtFile(columns, modelName, cfg.Package,
-			pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath, tbl); err != nil {
-			fmt.Printf("[%s] 生成 repository 失败: %v\n", tbl, err)
-		} else {
-			writeFileIfNotExist(
-				fmt.Sprintf("%s/%s.go", cfg.RepoPath, strings.ToLower(modelName)),
-				content, "repository",
-			)
+		if err := emit(filepath.Join(cfg.RepoPath, strings.ToLower(modelName)+".go"), false, func() (string, error) {
+			return generateRepositoryExtFile(columns, modelName, cfg.Package, pathToPkg(cfg.OutPath), pathToPkg(cfg.ModelPkgPath), repoTmplPath, tbl)
+		}); err != nil {
+			return err
 		}
 	}
-
-	// API .api（go-zero 模式，已存在则跳过）
 	if cfg.ApiPath != "" {
-		baseApiFile := filepath.Join(cfg.ApiPath, "base.api")
-		if _, err := os.Stat(baseApiFile); os.IsNotExist(err) {
-			if content, ok := embeddedTemplates["base_api_template.txt"]; ok {
-				if err := os.WriteFile(baseApiFile, []byte(content), 0644); err != nil {
-					fmt.Printf("写入 base.api 失败: %v\n", err)
-				} else {
-					fmt.Printf("已生成: %s\n", baseApiFile)
-				}
+		if err := emit(filepath.Join(cfg.ApiPath, "base.api"), false, func() (string, error) {
+			return renderTemplate(filepath.Join(filepath.Dir(apiTmplPath), "base_api_template.txt"), nil)
+		}); err != nil {
+			return err
+		}
+		content, err := generateApiFile(tbl, publicColumns, modelName, db, apiTmplPath)
+		if err != nil {
+			return err
+		}
+		apiFile := filepath.Join(cfg.ApiPath, LowerCamelCase(Case2Camel(tbl))+".api")
+		created, err := writeGeneratedFile(apiFile, content, false)
+		if err != nil {
+			return err
+		}
+		if created {
+			output, err := gozerogen.Run(context.Background(), gozerogen.RunOptions{
+				TemplateHome: cfg.GoctlTemplateHome,
+			}, "api", "go", "-api", apiFile, "--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
+			if err != nil {
+				return fmt.Errorf("[%s] goctl 执行失败: %w\n%s", tbl, err, output)
+			}
+			fmt.Printf("[%s] go-zero 代码生成成功\n", tbl)
+		}
+	}
+	if cfg.ApiPath == "" {
+		if cfg.VoPath != "" {
+			if err := emit(filepath.Join(cfg.VoPath, LowerCamelCase(Case2Camel(modelName))+"Vo.go"), false, func() (string, error) {
+				return generateVoFile(tbl, publicColumns, modelName, db, voTmplPath)
+			}); err != nil {
+				return err
 			}
 		}
-		if content, err := generateApiFile(tbl, publicColumns, modelName, db, apiTmplPath); err != nil {
-			fmt.Printf("[%s] 生成 api 失败: %v\n", tbl, err)
-		} else {
-			apiFile := fmt.Sprintf("%s/%s.api", cfg.ApiPath, LowerCamelCase(Case2Camel(tbl)))
-			if _, err := os.Stat(apiFile); os.IsNotExist(err) {
-				if err = os.WriteFile(apiFile, []byte(content), 0644); err != nil {
-					fmt.Printf("[%s] 写入 api 失败: %v\n", tbl, err)
-				} else {
-					fmt.Printf("已生成: %s\n", apiFile)
-					output, err := gozerogen.Run(context.Background(), gozerogen.RunOptions{
-						TemplateHome: cfg.GoctlTemplateHome,
-					}, "api", "go", "-api", apiFile, "--dir", filepath.Dir(cfg.ApiPath), "--style=goZero")
-					if err != nil {
-						fmt.Printf("[%s] goctl 执行失败: %v\n%s\n", tbl, err, output)
-					} else {
-						fmt.Printf("[%s] go-zero 代码生成成功\n", tbl)
-					}
-				}
-			} else {
-				fmt.Printf("已存在，跳过: %s\n", apiFile)
+		if cfg.DtoPath != "" {
+			if err := emit(filepath.Join(cfg.DtoPath, LowerCamelCase(Case2Camel(modelName))+"Dto.go"), false, func() (string, error) {
+				return generateDtoFile(tbl, publicColumns, modelName, db, dtoTmplPath)
+			}); err != nil {
+				return err
 			}
 		}
 	}
-
-	// VO（非 go-zero 模式，已存在则跳过）
-	if cfg.VoPath != "" && cfg.ApiPath == "" {
-		if content, err := generateVoFile(tbl, publicColumns, modelName, db, voTmplPath); err != nil {
-			fmt.Printf("[%s] 生成 VO 失败: %v\n", tbl, err)
-		} else {
-			writeFileIfNotExist(
-				fmt.Sprintf("%s/%sVo.go", cfg.VoPath, LowerCamelCase(Case2Camel(modelName))),
-				content, "VO",
-			)
-		}
-	}
-
-	// DTO（非 go-zero 模式，已存在则跳过）
-	if cfg.DtoPath != "" && cfg.ApiPath == "" {
-		if content, err := generateDtoFile(tbl, publicColumns, modelName, db, dtoTmplPath); err != nil {
-			fmt.Printf("[%s] 生成 DTO 失败: %v\n", tbl, err)
-		} else {
-			writeFileIfNotExist(
-				fmt.Sprintf("%s/%sDto.go", cfg.DtoPath, LowerCamelCase(Case2Camel(modelName))),
-				content, "DTO",
-			)
-		}
-	}
-
-	// Mapper（已存在则跳过）。API mapper 与 Proto mapper 使用独立输出目录。
 	if cfg.ProtoPath == "" {
 		if cfg.APIMapperPath != "" {
 			dtoPkg, voPkg := "", ""
 			if cfg.ApiPath == "" {
-				dtoPkg = pathToPkg(cfg.DtoPath)
-				voPkg = pathToPkg(cfg.VoPath)
+				dtoPkg, voPkg = pathToPkg(cfg.DtoPath), pathToPkg(cfg.VoPath)
 			}
 			data := buildMapperData(tbl, publicColumns, modelName, db,
 				cfg.Package, pathToPkg(cfg.ModelPkgPath), dtoPkg, voPkg, cfg.ApiPath != "")
-			if content, err := renderTemplate(mapperTmplPath, data); err != nil {
-				fmt.Printf("[%s] 生成 mapper 失败: %v\n", tbl, err)
-			} else {
-				writeFileIfNotExist(
-					fmt.Sprintf("%s/%sMapper.go", cfg.APIMapperPath, LowerCamelCase(Case2Camel(tbl))),
-					content, "mapper",
-				)
+			return emit(filepath.Join(cfg.APIMapperPath, LowerCamelCase(Case2Camel(tbl))+"Mapper.go"), false, func() (string, error) {
+				return renderTemplate(mapperTmplPath, data)
+			})
+		}
+	} else if cfg.ProtoMapperPath != "" || (cfg.ApiPath != "" && cfg.APIMapperPath != "") {
+		protoPkgPath := filepath.Join(pathToPkg(cfg.ProtoPath), getProtoPackage(cfg.Package))
+		apiTypesPkgPath := ""
+		if cfg.ApiPath != "" {
+			apiTypesPkgPath = pathToPkg(filepath.Join(filepath.Dir(cfg.ApiPath), "internal", "types"))
+		}
+		data := buildProtoMapperData(tbl, publicColumns, modelName, db,
+			cfg.Package, pathToPkg(cfg.ModelPkgPath), protoPkgPath, apiTypesPkgPath)
+		if cfg.ProtoMapperPath != "" {
+			if err := emit(filepath.Join(cfg.ProtoMapperPath, LowerCamelCase(Case2Camel(tbl))+"Mapper.go"), false, func() (string, error) {
+				return renderTemplate(entityProtoMapperTmplPath, data)
+			}); err != nil {
+				return err
 			}
 		}
-	} else {
-		if cfg.ProtoMapperPath != "" || (cfg.ApiPath != "" && cfg.APIMapperPath != "") {
-			protoPkgPath := filepath.Join(pathToPkg(cfg.ProtoPath), getProtoPackage(cfg.Package))
-			apiTypesPkgPath := ""
-			if cfg.ApiPath != "" {
-				apiTypesPkgPath = pathToPkg(filepath.Join(filepath.Dir(cfg.ApiPath), "internal", "types"))
-			}
-			data := buildProtoMapperData(tbl, publicColumns, modelName, db,
-				cfg.Package, pathToPkg(cfg.ModelPkgPath), protoPkgPath, apiTypesPkgPath)
-			if cfg.ProtoMapperPath != "" {
-				if content, err := renderTemplate(entityProtoMapperTmplPath, data); err != nil {
-					fmt.Printf("[%s] 生成 Entity/Proto mapper 失败: %v\n", tbl, err)
-				} else {
-					writeFileIfNotExist(
-						fmt.Sprintf("%s/%sMapper.go", cfg.ProtoMapperPath, LowerCamelCase(Case2Camel(tbl))),
-						content, "Entity/Proto mapper",
-					)
-				}
-			}
-			if cfg.ApiPath != "" && cfg.APIMapperPath != "" {
-				if content, err := renderTemplate(apiProtoMapperTmplPath, data); err != nil {
-					fmt.Printf("[%s] 生成 API/Proto mapper 失败: %v\n", tbl, err)
-				} else {
-					writeFileIfNotExist(
-						fmt.Sprintf("%s/%sMapper.go", cfg.APIMapperPath, LowerCamelCase(Case2Camel(tbl))),
-						content, "API/Proto mapper",
-					)
-				}
-			}
+		if cfg.ApiPath != "" && cfg.APIMapperPath != "" {
+			return emit(filepath.Join(cfg.APIMapperPath, LowerCamelCase(Case2Camel(tbl))+"Mapper.go"), false, func() (string, error) {
+				return renderTemplate(apiProtoMapperTmplPath, data)
+			})
 		}
 	}
+	return nil
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1278,6 +1190,10 @@ func Generate(cfg *Config) error {
 	db, err := OpenDB(cfg)
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)
+	}
+
+	if sqlDB, err := db.DB(); err == nil {
+		defer sqlDB.Close()
 	}
 
 	inputTable := strings.TrimSpace(readInput("请输入表名（直接回车同步所有表）: "))
@@ -1329,7 +1245,7 @@ func Generate(cfg *Config) error {
 		FieldWithTypeTag:  true,
 	})
 	g.UseDB(db)
-	g.WithDataTypeMap(map[string]func(gorm.ColumnType) string{
+	dataTypeMap := map[string]func(gorm.ColumnType) string{
 		"int":       func(_ gorm.ColumnType) string { return "int64" },
 		"int2":      func(_ gorm.ColumnType) string { return "int64" },
 		"int4":      func(_ gorm.ColumnType) string { return "int64" },
@@ -1338,9 +1254,47 @@ func Generate(cfg *Config) error {
 		"integer":   func(_ gorm.ColumnType) string { return "int64" },
 		"tinyint":   func(_ gorm.ColumnType) string { return "int64" },
 		"bigint":    func(_ gorm.ColumnType) string { return "int64" },
-		"json":      func(_ gorm.ColumnType) string { return "datatypes.JSON" },
-		"decimal":   func(_ gorm.ColumnType) string { return "decimal.Decimal" },
-	})
+		"int8":      func(_ gorm.ColumnType) string { return "int64" },
+		"bit": func(_ gorm.ColumnType) string {
+			if db.Dialector.Name() == "sqlserver" {
+				return "bool"
+			}
+			if db.Dialector.Name() == "postgres" {
+				return "string"
+			}
+			return "[]byte"
+		},
+		"bit varying":      func(_ gorm.ColumnType) string { return "string" },
+		"bool":             func(_ gorm.ColumnType) string { return "bool" },
+		"float":            func(_ gorm.ColumnType) string { return "float64" },
+		"float4":           func(_ gorm.ColumnType) string { return "float64" },
+		"float8":           func(_ gorm.ColumnType) string { return "float64" },
+		"double precision": func(_ gorm.ColumnType) string { return "float64" },
+		"numeric":          func(_ gorm.ColumnType) string { return "decimal.Decimal" },
+		"money":            func(_ gorm.ColumnType) string { return "decimal.Decimal" },
+		"smallmoney":       func(_ gorm.ColumnType) string { return "decimal.Decimal" },
+		"timestamp": func(_ gorm.ColumnType) string {
+			if db.Dialector.Name() == "sqlserver" {
+				return "[]byte"
+			}
+			return "time.Time"
+		},
+		"rowversion":     func(_ gorm.ColumnType) string { return "[]byte" },
+		"timetz":         func(_ gorm.ColumnType) string { return "time.Time" },
+		"timestamptz":    func(_ gorm.ColumnType) string { return "time.Time" },
+		"datetime2":      func(_ gorm.ColumnType) string { return "time.Time" },
+		"datetimeoffset": func(_ gorm.ColumnType) string { return "time.Time" },
+		"smalldatetime":  func(_ gorm.ColumnType) string { return "time.Time" },
+		"bytea":          func(_ gorm.ColumnType) string { return "[]byte" },
+		"jsonb":          func(_ gorm.ColumnType) string { return "datatypes.JSON" },
+		"json":           func(_ gorm.ColumnType) string { return "datatypes.JSON" },
+		"decimal":        func(_ gorm.ColumnType) string { return "decimal.Decimal" },
+	}
+	// 有些驱动返回大写 DatabaseTypeName，gorm-gen 的自定义映射按原值匹配。
+	for typ, mapping := range dataTypeMap {
+		dataTypeMap[strings.ToUpper(typ)] = mapping
+	}
+	g.WithDataTypeMap(dataTypeMap)
 	g.WithModelNameStrategy(func(tableName string) string {
 		return Case2Camel(strings.ToUpper(tableName[:1])+tableName[1:]) + "Entity"
 	})
@@ -1388,7 +1342,7 @@ func Generate(cfg *Config) error {
 		modelTables = mergeTableNames(historyTables, inputTable)
 		fmt.Printf("  合并后共 %d 张表（含本次 %q）: %v\n", len(modelTables), inputTable, modelTables)
 	} else {
-		if err := db.Raw("SHOW TABLES").Scan(&modelTables).Error; err != nil {
+		if modelTables, err = getTables(db); err != nil {
 			return fmt.Errorf("获取表列表失败: %w", err)
 		}
 		if len(modelTables) == 0 {
@@ -1407,6 +1361,23 @@ func Generate(cfg *Config) error {
 		return nil
 	}
 
+	// 在 gorm-gen 写文件前检查所有表，避免元数据失败留下不完整产物。
+	columnsByTable := make(map[string][]ColumnInfo, len(modelTables))
+	for _, tbl := range modelTables {
+		columns, err := getTableColumns(db, tbl)
+		if err != nil {
+			return fmt.Errorf("[%s] 获取表结构失败: %w", tbl, err)
+		}
+		columnsByTable[tbl] = columns
+	}
+	for _, dir := range []string{cfg.OutPath, cfg.ModelPkgPath, cfg.RepoPath, cfg.ApiPath, cfg.ProtoPath, cfg.VoPath, cfg.DtoPath, cfg.APIMapperPath, cfg.ProtoMapperPath} {
+		if dir != "" {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("创建输出目录 %s 失败: %w", dir, err)
+			}
+		}
+	}
+
 	// ③ 统一生成（含所有历史表 + 新表）
 	allModels := make([]interface{}, 0, len(modelTables))
 	for _, tbl := range modelTables {
@@ -1423,13 +1394,6 @@ func Generate(cfg *Config) error {
 	//   单表模式：只对本次输入的表生成（其余已有文件自动跳过）
 	//   全量模式：对所有表生成
 	// ══════════════════════════════════════════════════════
-	ensureDir(cfg.RepoPath)
-	ensureDir(cfg.ApiPath)
-	ensureDir(cfg.ProtoPath)
-	ensureDir(cfg.VoPath)
-	ensureDir(cfg.DtoPath)
-	ensureDir(cfg.APIMapperPath)
-	ensureDir(cfg.ProtoMapperPath)
 
 	var step2Tables []string
 	if isSingleTable {
@@ -1442,10 +1406,12 @@ func Generate(cfg *Config) error {
 	fmt.Printf("\n【第二步】生成 Repo / API / Proto / VO / DTO / Mapper（共 %d 张表）...\n", len(step2Tables))
 	for _, tbl := range step2Tables {
 		fmt.Printf("\n─── 表: %s ───\n", tbl)
-		generateForTable(tbl, cfg, db,
+		if err := generateForTable(tbl, columnsByTable[tbl], cfg, db,
 			repoGenTmplPath, repoTmplPath,
 			apiTmplPath, protoTmplPath, voTmplPath, dtoTmplPath,
-			mapperTmplPath, entityProtoMapperTmplPath, apiProtoMapperTmplPath)
+			mapperTmplPath, entityProtoMapperTmplPath, apiProtoMapperTmplPath); err != nil {
+			return fmt.Errorf("[%s] 生成失败: %w", tbl, err)
+		}
 	}
 
 	fmt.Println("\n全部生成完成！")

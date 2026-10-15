@@ -206,7 +206,7 @@ type NodeConfig struct {
 type GroupConfig struct {
 	// Master 主库（读写，必填）
 	Master NodeConfig
-	// Slaves 从库列表（只读，可为空；为空时读操作 fallback 主库）
+	// Slaves 从库列表（Dialector 或 DSN 均可；空节点跳过，无有效从库时读操作 fallback 主库）
 	Slaves []NodeConfig
 }
 
@@ -257,14 +257,14 @@ func NewManager() *Manager {
 
 // Register 注册一个命名数据源组（支持运行时热注册）。
 // 第一个注册的数据源自动成为默认数据源（Auto 在 context 无数据源名时使用）。
-// Master.DSN 为空时 panic。
+// Master 未配置 Dialector 和 DSN 时 panic；空从库配置会被跳过。
 func (m *Manager) Register(name string, cfg GroupConfig) {
 	if cfg.Master.Dialector == nil && cfg.Master.DSN == "" {
 		panic(fmt.Sprintf("datasource.Register: 数据源 [%s] 的主库必须配置 Dialector 或 DSN", name))
 	}
 	g := &dbGroup{master: &dbNode{cfg: cfg.Master}}
 	for _, s := range cfg.Slaves {
-		if s.DSN != "" {
+		if s.Dialector != nil || s.DSN != "" {
 			g.slaves = append(g.slaves, &dbNode{cfg: s})
 		}
 	}

@@ -19,7 +19,8 @@ type DataPermissionInjectFn = plugin.DataPermissionInjectFn
 
 // RegisterDataPermission 向指定 DB 注册数据权限插件，整个应用只需调用一次。
 //
-// 注册后所有 db.WithContext(ctx) 的 Query / Update / Delete 操作，
+// 注册后 db.WithContext(ctx) 的 Query / Row / Update / Delete 操作，
+// 包括 Model/Table 构建的 Find、Scan、Rows 和 Row，
 // 若 ctx 中存在通过 WithDataPermission 写入的注入函数，则自动调用注入数据权限条件。
 //
 // 使用示例：
