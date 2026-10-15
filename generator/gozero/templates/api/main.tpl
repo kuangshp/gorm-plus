@@ -1,10 +1,12 @@
 package main
 
 import (
+	_ "embed"
 	"flag"
 	"fmt"
     "log"
     "log/slog"
+    "net/http"
 
     "github.com/kuangshp/gorm-plus/httpresponse"
     "github.com/zeromicro/go-zero/rest/httpx"
@@ -15,11 +17,21 @@ import (
 
 var configFile = flag.String("f", "etc/{{.serviceName}}.yaml", "the config file")
 
+// 关闭文档时使用占位文件；make run/build 会按同一份 YAML 准备最新文档。
+//go:embed swagger/swagger.json
+var swaggerDocument []byte
+
 func main() {
 	flag.Parse()
 
 	var c config.Config
 	conf.MustLoad(*configFile, &c)
+
+    // 尽早校验内嵌文档；关闭时无需有效文档，开启但未生成时停止启动。
+    docs, err := c.SwaggerConfig.Handler(swaggerDocument, c.ResponseConfig)
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // 完整沿用 LogConf，包括 ServiceName、Stat、Encoding、Level、Path、MaxContentLength 等。
     logConfig := c.Log
@@ -84,6 +96,16 @@ func main() {
 
 	ctx := svc.NewServiceContext(c)
 	handler.RegisterHandlers(server, ctx)
+
+    if docs != nil {
+        // 使用独立路由，保留 StaticConfig 的文件处理器；原样输出页面和 JSON。
+        for _, route := range docs.Routes() {
+            for _, method := range []string{http.MethodGet, http.MethodHead} {
+                server.AddRoute(rest.Route{Method: method, Path: route, Handler: docs.ServeHTTP})
+            }
+        }
+        fmt.Printf("Swagger UI: %s/\n", docs.Routes()[0])
+    }
 
 	fmt.Printf("Starting server at %s:%d...\n", c.Host, c.Port)
 	server.Start()

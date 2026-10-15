@@ -43,6 +43,7 @@ gorm-gen 解决的是"类型安全的 ORM 代码生成"——但实际业务里�
 - [快速开始](#快速开始)
 - [一、代码生成器](#一代码生成器)
   - [goctl 内嵌模板与 Makefile](#goctl-内嵌模板)
+  - [Swagger 文档配置与自动生成](#swagger-文档配置与自动生成)
   - [Proto 生成与参数校验](#proto-生成与参数校验)
   - [结构体校验与 Gin 接入](#结构体校验与-gin-接入)
   - [业务自定义 CEL 校验](#业务自定义-cel-校验)
@@ -139,12 +140,15 @@ gorm-plus/
 │   ├── validation.go            # Protovalidate 全局参数校验
 │   └── context_propagation.go   # 租户与操作人 Context 透传
 │
+├── httpswagger/                 # 独立 Swagger 配置、内嵌 UI 与运行时文档适配
+│
 └── generator/                   # 代码生成器
     ├── generator.go             # 主逻辑
     ├── dialector.go             # 多驱动支持(MySQL/Postgres/SQLite/SQLServer)
     ├── config.go                # YAML 配置
     ├── generator.example.yaml
     ├── gozero/                  # 内嵌 goctl 模板与标准库执行器
+    ├── swagger/                 # 按业务 YAML 开关调用 goctl 生成内嵌文档
     └── template/                # 代码模板
         ├── repository_gen_template.txt   # 自动生成(含缓存失效)
         ├── repository_template.txt       # 用户可改(自定义查询示例)
@@ -438,7 +442,7 @@ gormplus goctl api go -api *.api --dir . --style=goZero
 在业务服务的 `.api` 文件所在目录创建 `Makefile`。例如 `apps/shop` 中有 `shop.api`，可以直接复制以下内容，无需配置变量：
 
 ```makefile
-.PHONY: gen install-tools validate
+.PHONY: gen install-tools validate swagger run run-open build
 
 # 使用 gorm-plus 内嵌模板生成代码：先安装工具，再校验，最后生成。
 gen: install-tools validate
@@ -452,6 +456,25 @@ install-tools:
 # 先确保工具已安装，再校验 API 定义。
 validate: install-tools
 	goctl api validate --api shop.api
+
+# 按同一份服务配置生成 Swagger；关闭时准备编译占位文件。
+# 首次使用先执行 make install-tools，日常启动和构建沿用已安装的工具。
+swagger:
+	gormplus swagger --config etc/shop-api.yaml
+
+# 先准备文档，再启动；不重新生成 Handler 或覆盖业务代码。
+run: swagger
+	go run . -f etc/shop-api.yaml
+
+# 本地开发可选：文档接口就绪后自动打开浏览器，最长等待 30 秒。
+run-open: swagger
+	@gormplus swagger-open --config etc/shop-api.yaml &
+	go run . -f etc/shop-api.yaml
+
+# 先准备文档，再构建包含文档的二进制。
+build: swagger
+	mkdir -p bin
+	go build -o bin/shop .
 ```
 
 进入该目录运行：
@@ -463,11 +486,52 @@ make gen
 # 也可以单独安装工具，或安装工具后只校验 API。
 make install-tools
 make validate
+
+# 按 SwaggerConfig 开关准备文档，再启动或构建。
+make run
+make build
+# 本地启动并自动打开文档页面。
+make run-open
 ```
 
 将 `shop.api` 替换为自己的 API 文件名；Makefile 中命令行前必须使用 **Tab** 缩进。`gen → validate → install-tools` 的依赖关系保证按安装、校验、生成的顺序执行，即使使用 `make -j gen` 也不会抢先校验；校验失败时不会执行生成，无需在 `gen` 中重复写校验命令。
 
 每次 `make gen` 或 `make validate` 都会先安装或更新工具。请确保 Go 命令安装目录在 `PATH` 中：优先使用 `go env GOBIN`，为空时使用 `go env GOPATH` 对应的 `bin` 目录。安装命令不会升级业务项目的依赖，业务项目的 `go.mod` 也需要引入包含对应模板能力的 gorm-plus 版本；生成后运行 `go mod tidy` 整理依赖。
+
+### Swagger 文档配置与自动生成
+
+内嵌 go-zero 模板提供默认关闭的 `SwaggerConfig`。开启后，通过上面的 `make run` / `make build` 自动生成文档，并将 Swagger JSON 和固定版本的 Swagger UI 页面、JS、CSS 一起内嵌进二进制。页面与 API 使用同一端口，不依赖 CDN 或上传文件的 `StaticConfig`。
+
+在业务配置 `etc/shop-api.yaml` 中设置：
+
+```yaml
+# Swagger 文档，默认关闭。
+SwaggerConfig:
+  Enabled: true # make run/build 会先生成最新文档；运行时注册文档路由。
+  Path: /swagger # 页面地址 /swagger/；JSON 地址 /swagger/swagger.json。
+  ApiFile: shop.api # 相对于执行命令的服务目录；自动处理入口中的 import。
+  # 唯一的 .api 入口可填 ""；多个入口时必须指定，不能随意挑选或使用 *.api。
+```
+
+进入服务目录执行：
+
+```bash
+cd apps/shop
+make install-tools # 首次安装或需要升级工具时执行。
+make run           # 生成文档后启动，读取 etc/shop-api.yaml。
+make build         # 生成文档后构建 bin/shop。
+make run-open      # 本地启动，并在文档接口就绪后打开浏览器。
+```
+
+服务启动后访问 `http://127.0.0.1:服务端口/swagger/`。也可以单独执行 `gormplus swagger --config etc/shop-api.yaml` 更新文档；从仓库根目录操作时可用 `gormplus swagger --dir apps/shop --config etc/shop-api.yaml`。`--config` 和 `ApiFile` 的相对路径均以 `--dir` 指定的服务目录为基准，默认当前目录。
+
+`run-open` 通过 `gormplus swagger-open --config ...` 检查文档 JSON 就绪后再打开浏览器，不依赖固定等待时间；默认等待 30 秒，可用 `--timeout 60s` 调整。该命令只用于本地开发，Swagger 关闭时直接跳过。
+
+生成命令读取同一份 YAML 的开关：关闭时写入占位，开启时调用 `goctl api swagger` 生成 `swagger/swagger.json`；API 校验或生成失败会返回非零状态，阻止后续构建、启动，并使旧文档失效。开启后尚未生成有效文档的程序会明确报错，不能仅修改 YAML 就取得新接口文档。该命令需要支持 `api swagger --filename` 的 goctl，已验证版本为 1.10.2；不需要额外安装 `goctl-swagger` 或 `swag`。
+
+文档 JSON 按运行时的 `ResponseConfig` 自动适配为 `code/message/result`，无返回值的成功接口展示 `code/message`；关闭统一响应或匹配 `BypassPaths` 的路径保留原始结构。文档自身始终原样输出。部署只需带二进制和服务配置，无需再复制文档目录或安装 goctl。
+
+完整说明见 [Swagger 配置、部署与 Air 热重载](docs/swagger.md)，包含 API 信息、自定义路径、生产配置、已有项目接入和独立运行时用法。
 
 ### go-zero 文件日志管理
 

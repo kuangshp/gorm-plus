@@ -56,3 +56,11 @@ StaticConfig:
   Directory: ./uploads # 已存在的本机目录，相对路径以进程工作目录为基准。
   # 例如将图片保存到 ./uploads/a.png 后，可访问 http://服务地址/uploads/a.png。
   # 仅提供普通文件，不列出目录；目录外的符号链接目标及隐藏路径不能读取。
+
+# Swagger 文档，独立于上传文件的 StaticConfig，默认关闭。
+SwaggerConfig:
+  Enabled: false # 开启后通过 make run/build 先生成文档，再启动或构建。
+  Path: /swagger # 页面：/swagger/；JSON：/swagger/swagger.json，与业务服务使用同一端口。
+  ApiFile: "" # 服务目录唯一的 .api 文件可留空；多个入口时指定，例如 shop.api。
+  # 页面、JS、CSS 和文档内嵌到二进制，不依赖 CDN、静态目录或部署机上的 goctl。
+  # 修改 API 后应重新生成并构建；仅修改 YAML 不会更新二进制里的文档。

@@ -57,6 +57,9 @@ func Run(ctx context.Context, options RunOptions, arguments ...string) ([]byte, 
 	if err != nil {
 		return output, fmt.Errorf("run goctl: %w", err)
 	}
+	if err := ensureSwaggerPlaceholder(arguments); err != nil {
+		return output, fmt.Errorf("prepare Swagger embed file: %w", err)
+	}
 	return output, nil
 }
 
