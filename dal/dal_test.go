@@ -1136,13 +1136,33 @@ func (f *singleFileFS) Open(name string) (fs.File, error) {
 	if name != f.name {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
-	return &memFile{content: strings.NewReader(f.content)}, nil
+	return &memFile{
+		name:    f.name,
+		size:    int64(len(f.content)),
+		content: strings.NewReader(f.content),
+	}, nil
 }
 
 type memFile struct {
+	name    string
+	size    int64
 	content *strings.Reader
 }
 
 func (f *memFile) Read(p []byte) (int, error) { return f.content.Read(p) }
 func (f *memFile) Close() error               { return nil }
-func (f *memFile) Stat() (fs.FileInfo, error) { return nil, nil }
+func (f *memFile) Stat() (fs.FileInfo, error) {
+	return memFileInfo{name: f.name, size: f.size}, nil
+}
+
+type memFileInfo struct {
+	name string
+	size int64
+}
+
+func (i memFileInfo) Name() string       { return i.name }
+func (i memFileInfo) Size() int64        { return i.size }
+func (i memFileInfo) Mode() fs.FileMode  { return 0o444 }
+func (i memFileInfo) ModTime() time.Time { return time.Time{} }
+func (i memFileInfo) IsDir() bool        { return false }
+func (i memFileInfo) Sys() any           { return nil }

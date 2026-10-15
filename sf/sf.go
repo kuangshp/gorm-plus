@@ -1,13 +1,12 @@
 package sf
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -223,6 +222,14 @@ type RawValue []byte
 // 注意：此钩子可能在高频路径执行，实现要尽量快、不阻塞、不 panic。
 var OnUnwrapError func(key string, err error)
 
+// OnPrefixInvalidateNoop 当 SFInvalidatePrefix(es) 因缓存未实现前缀删除接口而静默跳过时调用。
+//
+// 默认行为保持兼容：不实现 SFCachePrefixDeleter / SFCachePrefixBatchDeleter 时仍静默 no-op，
+// 不返回错误。注入此钩子便于发现「写后缓存未真正失效」的配置问题。
+//
+// 注意：钩子可能被高频写路径触发，实现要尽量快、不阻塞、不 panic；框架会 recover。
+var OnPrefixInvalidateNoop func(fnNames []string)
+
 // reportUnwrapError 安全调用 OnUnwrapError，防止用户钩子 panic 影响主流程。
 func reportUnwrapError(key string, err error) {
 	if OnUnwrapError == nil || err == nil {
@@ -233,6 +240,17 @@ func reportUnwrapError(key string, err error) {
 		_ = recover()
 	}()
 	OnUnwrapError(key, err)
+}
+
+// reportPrefixInvalidateNoop 安全调用 OnPrefixInvalidateNoop。
+func reportPrefixInvalidateNoop(fnNames []string) {
+	if OnPrefixInvalidateNoop == nil || len(fnNames) == 0 {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	OnPrefixInvalidateNoop(fnNames)
 }
 
 // ── 全局缓存注册 ──────────────────────────────────────────────
@@ -551,8 +569,10 @@ func SFInvalidatePrefix(fnName string) {
 		// 与 buildSFKey 保持一致：noargs 的 key 也以 "sf:{fnName}:" 开头，
 		// 用同样的前缀即可一次清干净。
 		pd.DelByPrefix(keyPrefix + fnName + ":")
+		return
 	}
 	// 未实现 SFCachePrefixDeleter 时静默忽略（保持向后兼容，业务可继续运行）。
+	reportPrefixInvalidateNoop([]string{fnName})
 }
 
 // SFInvalidatePrefixes 批量按前缀失效缓存（一次调用清多个 fnName 的缓存）。
@@ -586,6 +606,7 @@ func SFInvalidatePrefixes(fnNames []string) {
 
 	// 按相同规则过滤可疑前缀，并拼上 keyPrefix + 尾点号
 	prefixes := make([]string, 0, len(fnNames))
+	filtered := make([]string, 0, len(fnNames))
 	for _, fn := range fnNames {
 		if fn == "" {
 			continue
@@ -593,6 +614,7 @@ func SFInvalidatePrefixes(fnNames []string) {
 		if len(fn) < 3 && !strings.Contains(fn, ".") {
 			continue
 		}
+		filtered = append(filtered, fn)
 		prefixes = append(prefixes, keyPrefix+fn+":")
 	}
 	if len(prefixes) == 0 {
@@ -612,7 +634,9 @@ func SFInvalidatePrefixes(fnNames []string) {
 		for _, p := range prefixes {
 			pd.DelByPrefix(p)
 		}
+		return
 	}
+	reportPrefixInvalidateNoop(filtered)
 }
 
 // SFWithTTL 通用 singleflight + 缓存封装，手动指定缓存时长（底层实现）。
@@ -633,12 +657,13 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 	// 步骤 1：缓存快速路径
 	if ttl > 0 {
 		if cached, ok := cache.Get(key); ok {
-			if result, uerr := unwrapCached[T](cached); uerr == nil {
+			result, uerr := unwrapCached[T](cached)
+			if uerr == nil {
 				return result, nil
-			} else {
-				// 命中缓存但还原失败：上报观测钩子（默认行为是降级到 DB，业务无感知）
-				reportUnwrapError(key, uerr)
 			}
+			// 命中缓存但还原失败：上报观测钩子，删坏 key，降级到 fn()（业务无感知）
+			reportUnwrapError(key, uerr)
+			cache.Del(key)
 		}
 	}
 
@@ -647,7 +672,13 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 		// Do 内部二次查缓存（防止等待期间已由其他 goroutine 写入）
 		if ttl > 0 {
 			if cached, ok := cache.Get(key); ok {
-				return cached, nil
+				result, uerr := unwrapCached[T](cached)
+				if uerr == nil {
+					// 已还原为 T，避免步骤 3 再走 RawValue 路径
+					return result, nil
+				}
+				reportUnwrapError(key, uerr)
+				cache.Del(key)
 			}
 		}
 		// 真正执行查询
@@ -669,9 +700,10 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 	// 步骤 3：类型还原（支持 RawValue 反序列化）
 	result, uerr := unwrapCached[T](raw)
 	if uerr != nil {
+		// 理论上 Do 已保证返回 T 或已删坏缓存；若仍失败则再降级一次 fn()
 		reportUnwrapError(key, uerr)
-		var zero T
-		return zero, fmt.Errorf("SF: 类型还原失败 key=%s: %w", key, uerr)
+		cache.Del(key)
+		return fn()
 	}
 	return result, nil
 }
@@ -718,43 +750,30 @@ func unwrapCached[T any](raw any) (T, error) {
 // key 格式：sf:{fnName}:noargs                       （无 args）
 //
 // 注意：SFInvalidatePrefix 依赖 "sf:{fnName}:" 这个公共前缀，修改 key 格式时要同步调整。
+// 性能优化不得改变上述字节级输出（见 TestBuildSFKey_ByteCompatibility）。
 func buildSFKey(fnName string, args map[string]any) string {
 	if len(args) == 0 {
-		return fmt.Sprintf("%s%s:noargs", keyPrefix, fnName)
+		return keyPrefix + fnName + ":noargs"
 	}
 	b, err := marshalSorted(args)
+	var sum [md5.Size]byte
 	if err != nil {
 		fallback := fmt.Sprintf("%v", args)
-		hash := md5.Sum([]byte(fallback))
-		return fmt.Sprintf("%s%s:%x", keyPrefix, fnName, hash)
+		sum = md5.Sum([]byte(fallback))
+	} else {
+		sum = md5.Sum(b)
 	}
-	hash := md5.Sum(b)
-	return fmt.Sprintf("%s%s:%x", keyPrefix, fnName, hash)
+	out := make([]byte, 0, len(keyPrefix)+len(fnName)+1+md5.Size*2)
+	out = append(out, keyPrefix...)
+	out = append(out, fnName...)
+	out = append(out, ':')
+	out = hex.AppendEncode(out, sum[:])
+	return string(out)
 }
 
 // marshalSorted 将 map 按 key 字母序排列后序列化为 JSON 字节。
+// encoding/json 对 map 会按 key 排序序列化，输出与历史「手写排序 + 逐字段 Marshal」逐字节一致
+// （含对 & 等的 \u0026 转义）；一次 Marshal 显著降低分配。
 func marshalSorted(m map[string]any) ([]byte, error) {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	for i, k := range keys {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
-		kb, _ := json.Marshal(k)
-		vb, err := json.Marshal(m[k])
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(kb)
-		buf.WriteByte(':')
-		buf.Write(vb)
-	}
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
+	return json.Marshal(m)
 }

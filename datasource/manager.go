@@ -467,13 +467,14 @@ func openDB(cfg NodeConfig) (*gorm.DB, error) {
 			return nil, fmt.Errorf("datasource: Dialector 和 DSN 不能同时为空，请通过 NodeConfig.Dialector 传入数据库驱动")
 		}
 		return nil, fmt.Errorf(
-			"datasource: 不再内置 MySQL 驱动依赖，请改用 NodeConfig.Dialector 明确指定驱动。\n" +
-				"示例（MySQL）：\n" +
-				"  import \"gorm.io/driver/mysql\"\n" +
-				"  NodeConfig{Dialector: mysql.Open(\"" + cfg.DSN + "\")}\n" +
-				"示例（PostgreSQL）：\n" +
-				"  import \"gorm.io/driver/postgres\"\n" +
+			"datasource: 不再内置 MySQL 驱动依赖，请改用 NodeConfig.Dialector 明确指定驱动。\n"+
+				"示例（MySQL）：\n"+
+				"  import \"gorm.io/driver/mysql\"\n"+
+				"  NodeConfig{Dialector: mysql.Open(%q)}\n"+
+				"示例（PostgreSQL）：\n"+
+				"  import \"gorm.io/driver/postgres\"\n"+
 				"  NodeConfig{Dialector: postgres.Open(dsn)}",
+			cfg.DSN,
 		)
 	}
 

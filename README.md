@@ -52,6 +52,7 @@ gorm-gen 解决的是"类型安全的 ORM 代码生成"——但实际业务里�
 - [二、gorm-gen 类型安全链式(GenWrap)](#二gorm-gen-类型安全链式genwrap)
 - [三、原生 gorm 链式(Query)](#三原生-gorm-链式query)
 - [四、SingleFlight + 可插拔缓存(SF)](#四singleflight-可插拔缓存sf)
+  - [缓存使用红线（必读）](#缓存使用红线必读)
 - [五、DAL SQL 文件化查询](#五dal-sql-文件化查询)
 - [六、事务工具](#六事务工具)
 
@@ -1277,6 +1278,18 @@ product, err := productRepository.FindById(ctx, productID,
 - **缓存一致性**：写完数据库后旧缓存还在
 
 SF（SingleFlight + Cache）一次解决：同一瞬间并发请求合并成一次、结果按 TTL 缓存、写操作支持精确/前缀失效。
+
+### 缓存使用红线（必读）
+
+| 红线 | 说明 | 正确做法 |
+|---|---|---|
+| **列表/条件查询必须带完整 cache args** | 生成模板默认 args 往往只有分页等字段，**不含 Where 条件**；不同条件共用同一 key 会串数据 | 使用 `WithCacheArgs` / `WithCacheArgsFromStruct(req)` / `BuildArgsFromStruct`；不确定时宁可不缓存 |
+| **Redis Get 必须返回 `RawValue`** | 直接返回 `[]byte` 会导致类型还原失败、命中率静默为 0 | 参考独立模块 [`examples/redis-sfcache`](./examples/redis-sfcache) |
+| **生产 Redis 必须实现前缀删除** | 未实现 `SFCachePrefixDeleter` 时，`SFInvalidatePrefix(es)` **静默 no-op**（兼容旧行为） | 实现 SCAN 版 `DelByPrefix`（建议再加 `DelByPrefixes`）；可用 `SetCachePrefixInvalidateNoopHandler` 观测漏配 |
+| **行锁查询不走缓存** | `ForUpdate` / locking clause 经 `ExecuteQuery`/`ExecutePage` 时自动跳过 SF/Cache | 勿对加锁读手动套 `SF` |
+| **坏缓存会降级到 `fn()`** | JSON 损坏或类型不匹配时删坏 key 并回源 DB，可用 `SetCacheUnwrapErrorHandler` 观测 | 不要假设「缓存错误会直接失败」 |
+
+性能相关：同一进程可跑库内基准，例如 `go test ./sf ./query -bench=. -benchmem`。
 
 ### 查询流程图
 

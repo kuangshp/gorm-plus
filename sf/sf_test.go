@@ -385,6 +385,46 @@ func TestSFWithTTL_OnUnwrapErrorPanicIsRecovered(t *testing.T) {
 	}
 }
 
+// TestSFWithTTL_BadCacheDeletedAfterFallback 确认坏缓存被删除且回填为 fn 结果。
+func TestSFWithTTL_BadCacheDeletedAfterFallback(t *testing.T) {
+	type User struct {
+		Name string `json:"name"`
+	}
+
+	fake := newFakeRedisCache()
+	ForceReplaceCache(fake)
+	defer ForceReplaceCache(NewMemoryCache())
+	OnUnwrapError = nil
+
+	key := buildSFKey("users.FindById", map[string]any{"id": int64(9)})
+	fake.mu.Lock()
+	fake.data[key] = []byte(`{bad`)
+	fake.mu.Unlock()
+
+	calls := atomic.Int32{}
+	fn := func() (*User, error) {
+		calls.Add(1)
+		return &User{Name: "fresh"}, nil
+	}
+
+	u, err := SFWithTTL(fn, "users.FindById", map[string]any{"id": int64(9)}, time.Minute)
+	if err != nil || u == nil || u.Name != "fresh" {
+		t.Fatalf("fallback failed: u=%+v err=%v", u, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("fn calls=%d want 1", calls.Load())
+	}
+
+	// 第二次应命中回填后的合法缓存
+	u2, err := SFWithTTL(fn, "users.FindById", map[string]any{"id": int64(9)}, time.Minute)
+	if err != nil || u2 == nil || u2.Name != "fresh" {
+		t.Fatalf("second call failed: u=%+v err=%v", u2, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("after warm cache fn calls=%d want 1", calls.Load())
+	}
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 //////////////////////////// SFInvalidate / Prefix /////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -481,8 +521,36 @@ func TestSFInvalidatePrefix_OnCacheWithoutPrefixDeleter(t *testing.T) {
 	ForceReplaceCache(newMinimalCache())
 	defer ForceReplaceCache(NewMemoryCache())
 
-	// 不应该 panic
+	var (
+		hookCalls atomic.Int32
+		gotNames  []string
+		mu        sync.Mutex
+	)
+	OnPrefixInvalidateNoop = func(fnNames []string) {
+		hookCalls.Add(1)
+		mu.Lock()
+		gotNames = append([]string(nil), fnNames...)
+		mu.Unlock()
+	}
+	defer func() { OnPrefixInvalidateNoop = nil }()
+
+	// 不应该 panic；默认仍静默，但可观测钩子应触发
 	SFInvalidatePrefix("users.FindList")
+	if hookCalls.Load() != 1 {
+		t.Fatalf("OnPrefixInvalidateNoop calls=%d want 1", hookCalls.Load())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotNames) != 1 || gotNames[0] != "users.FindList" {
+		t.Fatalf("hook fnNames=%v", gotNames)
+	}
+
+	// 实现了 PrefixDeleter 时不应触发钩子
+	ForceReplaceCache(NewMemoryCache())
+	SFInvalidatePrefix("users.FindList")
+	if hookCalls.Load() != 1 {
+		t.Fatalf("MemoryCache should not trigger noop hook, calls=%d", hookCalls.Load())
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////

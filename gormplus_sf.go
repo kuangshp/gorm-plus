@@ -269,6 +269,15 @@ func SetCacheUnwrapErrorHandler(fn func(key string, err error)) {
 	sf.OnUnwrapError = fn
 }
 
+// SetCachePrefixInvalidateNoopHandler 注入前缀失效静默跳过钩子。
+//
+// 当自定义缓存未实现 SFCachePrefixDeleter / SFCachePrefixBatchDeleter 时，
+// SFInvalidatePrefix(es) 仍保持兼容的静默 no-op，但可通过本钩子观测到「写后未真正清缓存」。
+// 传 nil 清除钩子；钩子 panic 会被框架吞掉。
+func SetCachePrefixInvalidateNoopHandler(fn func(fnNames []string)) {
+	sf.OnPrefixInvalidateNoop = fn
+}
+
 // StopSFCache 统一关闭入口，应在应用退出时调用（推荐 defer）。
 //
 // 行为：
