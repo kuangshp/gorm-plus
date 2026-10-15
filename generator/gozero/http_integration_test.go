@@ -30,7 +30,7 @@ func TestGoctlHTTPIntegration(t *testing.T) {
 	}
 	dir := t.TempDir()
 	spec := "syntax = \"v1\"\ntype Input {\n Name string `json:\"name\" validate:\"required\"`\n}\ntype Output {\n Message string `json:\"message\"`\n}\nservice sample-api {\n @handler Echo\n post /echo (Input) returns (Output)\n @handler Remove\n delete /remove\n @handler Health\n get /health\n}\n"
-	mod := fmt.Sprintf("module httpfixture\n\ngo 1.25.5\n\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/kuangshp/go-utils v1.0.12\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root)
+	mod := fmt.Sprintf("module httpfixture\n\ngo 1.25.5\n\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root)
 	for name, content := range map[string]string{"sample.api": spec, "go.mod": mod} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
 			t.Fatal(err)
@@ -61,6 +61,10 @@ func TestGoctlHTTPIntegration(t *testing.T) {
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("generated service does not compile: %v\n%s", err, output)
+	}
+	resolvedModules, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil || bytes.Contains(resolvedModules, []byte("github.com/kuangshp/go-utils")) {
+		t.Fatalf("generated service must not require go-utils: %s, %v", resolvedModules, err)
 	}
 
 	for _, settings := range []struct{ rotation, encoding string }{
@@ -176,6 +180,9 @@ CorsConfig:
 			}
 			if err := json.Unmarshal(body, &response); err != nil || status != http.StatusOK || response.Code == nil || *response.Code != request.code || response.Message == "" {
 				t.Fatalf("%s %s: status=%d, body=%s, err=%v", request.method, request.path, status, body, err)
+			}
+			if request.body == `{"name":""}` && !strings.Contains(response.Message, "必填") {
+				t.Fatalf("validation error was not translated: %s", body)
 			}
 		}
 		status, _, body := requestHTTPFixture(t, base, http.MethodGet, "/health", "", "http://example.com")

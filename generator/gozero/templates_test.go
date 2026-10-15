@@ -34,8 +34,11 @@ func TestWriteTemplateHome(t *testing.T) {
 		t.Fatalf("read handler template: %v", err)
 	}
 	handler := string(handlerContent)
-	if !strings.Contains(handler, "github.com/kuangshp/go-utils/k/validation") {
+	if !strings.Contains(handler, "github.com/kuangshp/gorm-plus/validation") {
 		t.Fatal("handler template does not use shared validation package")
+	}
+	if strings.Contains(handler, "github.com/kuangshp/go-utils") {
+		t.Fatal("handler template still depends on go-utils")
 	}
 	if strings.Contains(handler, "kg-api/common/utils") {
 		t.Fatal("handler template still contains project-specific validation import")

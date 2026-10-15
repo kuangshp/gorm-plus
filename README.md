@@ -42,7 +42,9 @@ gorm-gen 解决的是"类型安全的 ORM 代码生成"——但实际业务里�
 - [目录结构](#目录结构)
 - [快速开始](#快速开始)
 - [一、代码生成器](#一代码生成器)
+  - [goctl 内嵌模板与 Makefile](#goctl-内嵌模板)
   - [Proto 生成与参数校验](#proto-生成与参数校验)
+  - [结构体校验与 Gin 接入](#结构体校验与-gin-接入)
   - [业务自定义 CEL 校验](#业务自定义-cel-校验)
   - [gRPC 全局参数校验](#grpc-全局参数校验)
   - [RPC Context 透传](#rpc-context-透传)
@@ -431,6 +433,42 @@ gormplus goctl api go -api *.api --dir . --style=goZero
 
 两种命令生成方式一致；第二种会自动使用 gorm-plus 内嵌模板，不需要传递 `--home`。
 
+#### 使用 Makefile 一键生成
+
+在业务服务的 `.api` 文件所在目录创建 `Makefile`。例如 `apps/shop` 中有 `shop.api`，可以直接复制以下内容，无需配置变量：
+
+```makefile
+.PHONY: gen install-tools validate
+
+# 使用 gorm-plus 内嵌模板生成代码：先安装工具，再校验，最后生成。
+gen: install-tools validate
+	gormplus goctl api go --api shop.api --dir . --style=goZero
+
+# 安装或更新工具。
+install-tools:
+	go install github.com/zeromicro/go-zero/tools/goctl@latest
+	go install github.com/kuangshp/gorm-plus/cmd/gormplus@latest
+
+# 先确保工具已安装，再校验 API 定义。
+validate: install-tools
+	goctl api validate --api shop.api
+```
+
+进入该目录运行：
+
+```bash
+cd apps/shop
+make gen
+
+# 也可以单独安装工具，或安装工具后只校验 API。
+make install-tools
+make validate
+```
+
+将 `shop.api` 替换为自己的 API 文件名；Makefile 中命令行前必须使用 **Tab** 缩进。`gen → validate → install-tools` 的依赖关系保证按安装、校验、生成的顺序执行，即使使用 `make -j gen` 也不会抢先校验；校验失败时不会执行生成，无需在 `gen` 中重复写校验命令。
+
+每次 `make gen` 或 `make validate` 都会先安装或更新工具。请确保 Go 命令安装目录在 `PATH` 中：优先使用 `go env GOBIN`，为空时使用 `go env GOPATH` 对应的 `bin` 目录。安装命令不会升级业务项目的依赖，业务项目的 `go.mod` 也需要引入包含对应模板能力的 gorm-plus 版本；生成后运行 `go mod tidy` 整理依赖。
+
 ### go-zero 文件日志管理
 
 新服务的 YAML 默认包含以下配置；`Log` 控制日志级别、格式及 go-zero 统计日志，`LogRotation` 控制文件存储和归档：
@@ -740,6 +778,24 @@ gormplus export-goctl-templates --output ./tools/goctl
 ```bash
 GORMPLUS_GOCTL_INTEGRATION=1 go test ./decimaljson ./generator/...
 ```
+
+### 结构体校验与 Gin 接入
+
+结构体校验统一使用 `github.com/kuangshp/gorm-plus/validation`，不再依赖 `go-utils/k/validation`。提供 `Validate`、`HasRules`、中文错误翻译，以及复用已有引擎的 `Configure`。公共规则包括手机、邮箱、日期、小数等；项目通过 `WithRules` 集中追加规则，同名规则同时覆盖校验函数和中文提示，避免重复注册翻译。
+
+```go
+import "github.com/kuangshp/gorm-plus/validation"
+
+type Request struct {
+    Mobile string `json:"mobile" validate:"required,mobile"`
+}
+
+err := validation.Validate(&Request{}) // 返回首个中文校验错误。
+```
+
+go-zero 新 Handler 自动使用新导入路径；已有 Handler 和项目自定义模板需手动替换旧路径。Gin 项目使用 `binding` 标签，在启动时将公共规则配置到 Gin 原有引擎，`ShouldBindJSON` 后只翻译错误，无需再次校验。
+
+完整中文示例见 [结构体校验与 Gin 接入](docs/validation.md)，包含参考 gof_cos_ser 的 `utils.ShowErrorMessage`、统一 `InitValidate`、项目规则覆盖和旧包迁移步骤。示例不会额外定义一套 Gin 校验引擎。
 
 ### Proto 生成与参数校验
 

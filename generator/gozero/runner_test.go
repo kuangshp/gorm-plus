@@ -53,7 +53,7 @@ service demo-api {
 		t.Fatalf("read generated handler: %v", err)
 	}
 	handler := string(handlerContent)
-	if !strings.Contains(handler, "github.com/kuangshp/go-utils/k/validation") {
+	if !strings.Contains(handler, "github.com/kuangshp/gorm-plus/validation") {
 		t.Fatalf("generated handler does not use shared validation package:\n%s", handler)
 	}
 	if !strings.Contains(handler, "validation.Validate(&req)") {

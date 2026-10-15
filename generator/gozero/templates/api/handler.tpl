@@ -7,7 +7,7 @@ import (
 
     {{if not .HasResp}}"github.com/kuangshp/gorm-plus/httpresponse"{{end}}
 
-	{{if .HasRequest}}"github.com/kuangshp/go-utils/k/validation"
+	{{if .HasRequest}}"github.com/kuangshp/gorm-plus/validation"
  "github.com/kuangshp/gorm-plus/decimaljson"{{end}}
 	{{.ImportPackages}}
 )
