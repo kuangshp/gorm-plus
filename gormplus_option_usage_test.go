@@ -30,12 +30,15 @@ func TestRepositoryOptionPublicUsage(t *testing.T) {
 
 	queryOpt := QueryOpt().
 		Where(status.Eq(1)).
-		Clauses(gormclause.Locking{Strength: "UPDATE"}).
+		ForUpdate().
 		WithDeleted().
 		WithCache(time.Second).
 		Build()
-	if resolved := MergeQueryOptions(queryOpt); !resolved.Unscoped || len(resolved.Cond) != 1 || len(resolved.Clauses) != 1 {
+	if resolved := MergeQueryOptions(queryOpt); !resolved.ForUpdate || !resolved.Unscoped || len(resolved.Cond) != 1 || len(resolved.Clauses) != 1 {
 		t.Fatalf("unexpected query options: %+v", resolved)
+	}
+	if resolved := MergeQueryOptions(QueryOption{ForUpdate: true}); !resolved.ForUpdate || len(resolved.Clauses) != 1 {
+		t.Fatalf("literal ForUpdate option not resolved: %+v", resolved)
 	}
 
 	updateOpt := Update().

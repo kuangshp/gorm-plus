@@ -538,6 +538,8 @@ func TestGenerateRepositoryFileUsesPrimaryKeyTypeAndColumn(t *testing.T) {
 		"if deleteOpts.Physical",
 		"baseTx = baseTx.Clauses(deleteOpts.Clauses...)",
 		"baseTx = baseTx.Clauses(opt.Clauses...)",
+		"opt = opt.WithLockingFrom(tx.UnderlyingDB())",
+		"opt = opt.WithLockingFrom(built.UnderlyingDB())",
 		"tx = tx.Unscoped()",
 		"if q.Unscoped",
 		"if opt.Unscoped",

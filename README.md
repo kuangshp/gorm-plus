@@ -1187,7 +1187,81 @@ gormplus.Query[*model.Account](db, ctx).
 | `WhereGroup(fn)` | AND 括号分组 |
 | `OrGroup(fn)` | OR 括号分组 |
 | `RawWhere / RawOrWhere / RawWhereIf` | 原生 SQL 条件 |
+| `ForUpdate() / ForUpdateIf(cond)` | 查询时加 `FOR UPDATE` 悲观行锁，需要在同一事务内查询和修改 |
 | `Build()` | 返回 `*gorm.DB` |
+
+### 悲观行锁简写：ForUpdate
+
+> **必须在显式事务中使用。** `.ForUpdate()`、`.ForUpdateIf(true)` 和 `QueryOption{ForUpdate: true}` 都只设置查询锁，不会自动开启事务，也不会检查调用方是否处于事务中。加锁查询和后续修改必须使用事务回调中的同一个 `tx`，不能混用普通 `db` 或全局 DAO。
+
+默认自动提交模式下，每条 SQL 各自结束事务。事务外单独执行加锁查询，锁无法持续保护后续的判断和修改，因此不能依赖这种写法防止并发冲突。必须把“加锁查询 → 判断 → 修改”放进 `Transaction` / `TransactionCtx` 或 `TransactionAs` / `TransactionAsCtx` 的同一个回调中；事务提交或回滚后释放锁。
+
+需要先查询、判断，再修改同一条数据，并且存在并发冲突时，可以直接调用 `.ForUpdate()`，等价于 `.Clauses(clause.Locking{Strength: "UPDATE"})`。`Query`、`GenWrap` 和 Repository 查询选项 `QueryOpt` 都支持；`.ForUpdateIf(condition)` 仅在条件为 true 时添加锁，false 时不改变已有查询。
+
+这里使用的是**悲观锁**：查询时先获取数据库行锁，再根据查询结果判断和修改。其他事务对相同记录的冲突写操作或加锁查询通常需要等待，直到当前事务提交或回滚释放锁。适合扣库存、余额扣减、订单状态流转等需要防止并发冲突的场景。
+
+下面以扣库存为例，代码放在业务项目的 Repository 扩展方法中；`db`、`ctx`、`productID` 和 `quantity` 由该方法提供，`ProductEntity` 及字段按实际生成的实体替换：
+
+```go
+// 正确：查询和修改都使用本次事务的 tx.ProductEntity。
+return gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+    product, err := gormplus.GenWrap(tx.ProductEntity.WithContext(ctx)).
+        Where(dao.ProductEntity.ID.Eq(productID)).
+        ForUpdate().
+        Apply().First()
+    if err != nil {
+        return err
+    }
+    if product.Stock < quantity {
+        return errors.New("库存不足")
+    }
+    _, err = tx.ProductEntity.WithContext(ctx).
+        Where(dao.ProductEntity.ID.Eq(productID)).
+        Update(dao.ProductEntity.Stock, product.Stock-quantity)
+    return err
+})
+```
+
+使用原生 GORM 时，把事务连接传给 builder：
+
+```go
+// 放在 Transaction / TransactionCtx 的回调内，tx 为 *gorm.DB。
+err := gormplus.Query[model.ProductEntity](tx, ctx).
+    WhereIf(true, "id = ?", productID).
+    ForUpdate().
+    Build().First(&product).Error
+```
+
+Repository 查询选项也支持直接构造结构体，`ForUpdate` 字段可以传布尔表达式：
+
+```go
+// 此处仅构造选项；执行时必须传给绑定了同一事务 tx 的读取方法。
+// 固定开启悲观锁，等价于 gormplus.QueryOpt().ForUpdate().Build()。
+opt := gormplus.QueryOption{ForUpdate: true}
+
+// 按业务操作决定是否开启，等价于 ForUpdateIf(...)。
+opt = gormplus.QueryOption{
+    ForUpdate: action == "deduct_stock" || action == "refund_stock",
+}
+```
+
+生成的 Repository 会通过 `MergeQueryOptions` 将 `ForUpdate: true` 转换为原生行锁子句；合并多个选项时，只要其中一个开启，就会保留锁，后续的默认值或 false 不会取消已有锁。自行消费查询选项时，也先调用 `gormplus.MergeQueryOptions(opt)` 获取对应 `Clauses`。
+
+上述选项应传给已绑定事务连接的读取方法。普通生成的 `FindById`、`FindOneWrapper` 等读取方法使用全局 DAO，传入该选项不会自动将它们绑定到外部事务；需要持续持有锁时，像上面的扩展方法一样使用事务中的 `tx`。
+
+下面这种调用不能保护“先查再改”，即使把它写在事务回调里，普通读取方法也不会自动使用该回调的事务连接：
+
+```go
+// 错误：普通生成的 FindById 使用全局 DAO，没有绑定事务 tx。
+product, err := productRepository.FindById(ctx, productID,
+    gormplus.QueryOption{ForUpdate: true},
+)
+// 随后的修改无法依靠上面这次查询持续持有的锁来防止并发冲突。
+```
+
+`ForUpdate` 只添加查询锁，不自动创建事务或修改数据。锁随事务提交/回滚释放；查询和后续修改必须使用同一事务连接。数据库需要支持 `FOR UPDATE`，例如 MySQL/InnoDB 或 PostgreSQL；SQLite 不提供这种行锁。只有需要防止并发冲突时才添加，避免在持锁期间调用外部接口或执行耗时操作。
+
+通过 `ExecuteQuery` / `ExecutePage` 执行的加锁查询会自动跳过缓存和 SingleFlight，包括用原生 `Clauses(clause.Locking{...})` 指定的行锁。新生成的 Repository 模板也会在读取缓存前识别 Wrapper 回调中的锁；已有 Repository 使用 Wrapper 回调加锁且启用了缓存时，需要重新生成对应 Repository。直接使用 `GenWrap(...).Apply().First()` 时不经过缓存执行器。
 
 ---
 

@@ -723,9 +723,11 @@ func (r *default{{.ModelName}}Repository) FindList(ctx context.Context, query ..
 
 func (r *default{{.ModelName}}Repository) FindListByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 	opt := gormplus.MergeQueryOptions(query...)
+	tx := r.buildWrapperTx(ctx, fn, query)
+	opt = opt.WithLockingFrom(tx.UnderlyingDB())
 	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindListByWrapper", nil,
 		func() ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
-			return r.buildWrapperTx(ctx, fn, query).Find()
+			return tx.Find()
 		},
 	)
 }
@@ -746,10 +748,12 @@ func (r *default{{.ModelName}}Repository) FindPageByWrapper(ctx context.Context,
 	offset := int((pageNumber - 1) * pageSize)
 	limit := int(pageSize)
 	opt := gormplus.MergeQueryOptions(query...)
+	tx := r.buildWrapperTx(ctx, fn, query)
+	opt = opt.WithLockingFrom(tx.UnderlyingDB())
 	return gormplus.ExecutePage(opt, "{{.TableName}}.FindPageByWrapper",
 		gormplus.BuildArgs("page", pageNumber, "size", pageSize),
 		func() ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
-			return r.buildWrapperTx(ctx, fn, query).FindByPage(offset, limit)
+			return tx.FindByPage(offset, limit)
 		},
 	)
 }
@@ -865,9 +869,11 @@ func (r *default{{.ModelName}}Repository) FindOne(ctx context.Context, query ...
 
 func (r *default{{.ModelName}}Repository) FindOneWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) ({{.ModelNameLower}} *{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 	opt := gormplus.MergeQueryOptions(query...)
+	tx := r.buildWrapperTx(ctx, fn, query)
+	opt = opt.WithLockingFrom(tx.UnderlyingDB())
 	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindOneWrapper", nil,
 		func() ({{.ModelNameLower}} *{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
-			return r.buildWrapperTx(ctx, fn, query).First()
+			return tx.First()
 		},
 	)
 }
@@ -897,23 +903,25 @@ func (r *default{{.ModelName}}Repository) Exists(ctx context.Context, query ...g
 
 func (r *default{{.ModelName}}Repository) ExistsByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) ({{.ModelNameLower}}Exists bool, err error) {
 	opt := gormplus.MergeQueryOptions(query...)
+	baseTx := dao.{{.ModelName}}Entity.WithContext(ctx)
+	if opt.Unscoped {
+		baseTx = baseTx.Unscoped()
+	}
+	if len(opt.Clauses) > 0 {
+		baseTx = baseTx.Clauses(opt.Clauses...)
+	}
+	tx := gormplus.GenWrap(baseTx)
+	if opt.Unscoped {
+		tx.WithDeleted()
+	}
+	if fn != nil {
+		fn(tx)
+	}
+	built := tx.Apply()
+	opt = opt.WithLockingFrom(built.UnderlyingDB())
 	return gormplus.ExecuteQuery(opt, "{{.TableName}}.ExistsByWrapper", nil,
 		func() ({{.ModelNameLower}}Exists bool, err error) {
-			baseTx := dao.{{.ModelName}}Entity.WithContext(ctx)
-			if opt.Unscoped {
-				baseTx = baseTx.Unscoped()
-			}
-			if len(opt.Clauses) > 0 {
-				baseTx = baseTx.Clauses(opt.Clauses...)
-			}
-			tx := gormplus.GenWrap(baseTx)
-			if opt.Unscoped {
-				tx.WithDeleted()
-			}
-			if fn != nil {
-				fn(tx)
-			}
-			cnt, err := tx.Apply().Count()
+			cnt, err := built.Count()
 			if err != nil {
 				return false, err
 			}
@@ -943,23 +951,25 @@ func (r *default{{.ModelName}}Repository) Count(ctx context.Context, query ...go
 
 func (r *default{{.ModelName}}Repository) CountByWrapper(ctx context.Context, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) ({{.ModelNameLower}}Count int64, err error) {
 	opt := gormplus.MergeQueryOptions(query...)
+	baseTx := dao.{{.ModelName}}Entity.WithContext(ctx)
+	if opt.Unscoped {
+		baseTx = baseTx.Unscoped()
+	}
+	if len(opt.Clauses) > 0 {
+		baseTx = baseTx.Clauses(opt.Clauses...)
+	}
+	tx := gormplus.GenWrap(baseTx)
+	if opt.Unscoped {
+		tx.WithDeleted()
+	}
+	if fn != nil {
+		fn(tx)
+	}
+	built := tx.Apply()
+	opt = opt.WithLockingFrom(built.UnderlyingDB())
 	return gormplus.ExecuteQuery(opt, "{{.TableName}}.CountByWrapper", nil,
 		func() ({{.ModelNameLower}}Count int64, err error) {
-			baseTx := dao.{{.ModelName}}Entity.WithContext(ctx)
-			if opt.Unscoped {
-				baseTx = baseTx.Unscoped()
-			}
-			if len(opt.Clauses) > 0 {
-				baseTx = baseTx.Clauses(opt.Clauses...)
-			}
-			tx := gormplus.GenWrap(baseTx)
-			if opt.Unscoped {
-				tx.WithDeleted()
-			}
-			if fn != nil {
-				fn(tx)
-			}
-			return tx.Apply().Count()
+			return built.Count()
 		},
 	)
 }

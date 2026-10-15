@@ -153,6 +153,12 @@ type IQueryBuilder interface {
 	// Clauses 追加 GORM clause。
 	Clauses(clauses ...gormclause.Expression) IQueryBuilder
 
+	// ForUpdate 查询时加 FOR UPDATE 行锁；查询和后续修改必须使用同一事务连接。
+	ForUpdate() IQueryBuilder
+
+	// ForUpdateIf condition 为 true 时加行锁，false 时不改变已有查询。
+	ForUpdateIf(condition bool) IQueryBuilder
+
 	// -------- 条件分组（保证括号语义正确） --------
 
 	// WhereGroup 将 fn 内的条件用括号包裹后以 AND 连接到主查询。
@@ -382,6 +388,17 @@ func (b *Builder) WhereDeleted(tableOrAlias string) IQueryBuilder {
 func (b *Builder) Clauses(clauses ...gormclause.Expression) IQueryBuilder {
 	if len(clauses) > 0 {
 		b.db = b.db.Clauses(clauses...)
+	}
+	return b
+}
+
+func (b *Builder) ForUpdate() IQueryBuilder {
+	return b.Clauses(gormclause.Locking{Strength: gormclause.LockingStrengthUpdate})
+}
+
+func (b *Builder) ForUpdateIf(condition bool) IQueryBuilder {
+	if condition {
+		return b.ForUpdate()
 	}
 	return b
 }

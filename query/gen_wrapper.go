@@ -89,6 +89,7 @@ import (
 
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
+	gormclause "gorm.io/gorm/clause"
 )
 
 // ================== 内部条件结构 ==================
@@ -416,6 +417,12 @@ type IGenWrapper[T GenDo[T]] interface {
 	//   g.Select("b.id", "b.name", "c.name AS category_name")
 	Select(columns ...any) IGenWrapper[T]
 
+	// ForUpdate 查询时加 FOR UPDATE 行锁；传入的 DO 必须绑定到事务连接。
+	ForUpdate() IGenWrapper[T]
+
+	// ForUpdateIf condition 为 true 时加行锁，false 时不改变已有查询。
+	ForUpdateIf(condition bool) IGenWrapper[T]
+
 	// WhereRaw 追加一段原生 SQL 作为 AND 条件,功能等同 RawWhere(命名更符合 Go 习惯)。
 	//
 	//   .WhereRaw("(discount_amount IS NOT NULL AND discount_amount != '') " +
@@ -563,14 +570,15 @@ type IGenWrapper[T GenDo[T]] interface {
 
 type GenWrapper[T GenDo[T]] struct {
 	do            T
-	ctx           context.Context // 保存原始 ctx，Apply 时复用
-	alias         string          // 表别名，As() 设置后在 Apply 时注入到底层 DB
-	unscoped      bool            // 包含当前模型表逻辑删除数据
-	limit         *int            // 限制行数，nil 表示不限制
-	offset        *int            // 偏移量，nil 表示不设置
-	selectCols    []any           // 指定查询字段，nil 表示查询全部
-	orders        []field.Expr    // 显式排序字段(Order/OrderRaw/OrderIf/OrderTriState 累积),Apply 时注入
-	defaultOrders []field.Expr    // 默认排序字段,仅在没有显式排序时注入
+	ctx           context.Context         // 保存原始 ctx，Apply 时复用
+	alias         string                  // 表别名，As() 设置后在 Apply 时注入到底层 DB
+	unscoped      bool                    // 包含当前模型表逻辑删除数据
+	limit         *int                    // 限制行数，nil 表示不限制
+	offset        *int                    // 偏移量，nil 表示不设置
+	selectCols    []any                   // 指定查询字段，nil 表示查询全部
+	clauses       []gormclause.Expression // 查询子句，如行锁
+	orders        []field.Expr            // 显式排序字段(Order/OrderRaw/OrderIf/OrderTriState 累积),Apply 时注入
+	defaultOrders []field.Expr            // 默认排序字段,仅在没有显式排序时注入
 	group         *condGroup
 	replaceDB     func(*gorm.DB) T
 }
@@ -890,6 +898,18 @@ func (w *GenWrapper[T]) Select(columns ...any) IGenWrapper[T] {
 	return w
 }
 
+func (w *GenWrapper[T]) ForUpdate() IGenWrapper[T] {
+	w.clauses = append(w.clauses, gormclause.Locking{Strength: gormclause.LockingStrengthUpdate})
+	return w
+}
+
+func (w *GenWrapper[T]) ForUpdateIf(condition bool) IGenWrapper[T] {
+	if condition {
+		return w.ForUpdate()
+	}
+	return w
+}
+
 // ── Where 系列新命名(推荐) ────────────────────────────────────────────
 
 func (w *GenWrapper[T]) WhereRaw(sql string, args ...any) IGenWrapper[T] {
@@ -988,6 +1008,9 @@ func (w *GenWrapper[T]) OrderDefault(fields ...field.Expr) IGenWrapper[T] {
 // buildDB 把所有累积的条件、字段选择、排序、分页应用到 db,返回新的 *gorm.DB。
 // Apply / ToSQL / Explain 共用此方法,保持行为一致。
 func (w *GenWrapper[T]) buildDB(db *gorm.DB) *gorm.DB {
+	if len(w.clauses) > 0 {
+		db = db.Clauses(w.clauses...)
+	}
 	if w.unscoped {
 		db = db.Unscoped()
 	}

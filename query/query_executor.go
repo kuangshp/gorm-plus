@@ -68,6 +68,7 @@ import (
 //   - fn:     真实查询闭包
 //
 // 执行规则：
+//   - 包含行锁子句：直接执行 fn()，跳过缓存和 sf，保证每个事务实际查询并获取锁
 //   - Cache.Enable=true：走 sf.SFWithTTL（自带 sf 保护 + 缓存）
 //   - 仅 SF.Enable=true 且 TTL=0：走 sf.SFNoCache（纯 sf，不缓存）
 //   - 仅 SF.Enable=true 且 TTL>0：走 sf.SFWithTTL（升级为缓存）
@@ -78,6 +79,10 @@ func ExecuteQuery[T any](
 	args map[string]any,
 	fn func() (T, error),
 ) (T, error) {
+	// 每个加锁查询都必须实际执行，不能复用缓存或其他事务的查询结果。
+	if opt.ForUpdate || hasRowLock(opt.Clauses) {
+		return fn()
+	}
 	args = withQueryOptionArgs(args, opt)
 	// 走缓存（自动包 sf 防击穿）
 	if opt.Cache != nil && opt.Cache.Enable {
@@ -134,7 +139,7 @@ func ExecutePage[T any](
 	fn func() ([]T, int64, error),
 ) ([]T, int64, error) {
 	// 不走 sf/cache 的快速路径
-	if (opt.Cache == nil || !opt.Cache.Enable) && (opt.SF == nil || !opt.SF.Enable) {
+	if opt.ForUpdate || hasRowLock(opt.Clauses) || ((opt.Cache == nil || !opt.Cache.Enable) && (opt.SF == nil || !opt.SF.Enable)) {
 		return fn()
 	}
 
@@ -263,5 +268,5 @@ func FirstQueryOption(opts []QueryOption) QueryOption {
 	if len(opts) == 0 {
 		return QueryOption{}
 	}
-	return opts[0]
+	return opts[0].withForUpdateClause()
 }

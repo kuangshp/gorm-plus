@@ -12,6 +12,7 @@ import (
 //   - QueryOption.Cache 启用时：自动包 singleflight 防缓存击穿
 //   - 仅 QueryOption.SF 启用时：纯 singleflight，不缓存（实时数据场景）
 //   - 两者皆未启用：直接执行查询，零额外开销
+//   - 包含行锁子句：直接执行查询，跳过缓存和 singleflight
 
 // QueryOption 查询参数结构体（条件、排序、字段选择、limit、SF、Cache 等）。
 // 通过 query.Query() 链式构造器构建，或直接构造字面量。

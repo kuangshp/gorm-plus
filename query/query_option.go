@@ -33,6 +33,7 @@ type QueryOption struct {
 	Select     []field.Expr            // 指定查询字段
 	OmitFields []field.Expr            // 排除字段
 	Clauses    []gormclause.Expression // GORM clauses，如 hints、locking、dbresolver
+	ForUpdate  bool                    // 启用 FOR UPDATE 悲观行锁；查询和修改必须绑定同一事务
 	Limit      *int                    // 查询条数
 	Unscoped   bool                    // 包含主表逻辑删除数据
 	SF         *SingleFlightOption     // 使用sf并发处理
@@ -458,6 +459,21 @@ func (q *QueryBuilder) Clauses(clauses ...gormclause.Expression) *QueryBuilder {
 	return q.WithClauses(clauses...)
 }
 
+// ForUpdate 查询时加 FOR UPDATE 行锁，执行器会跳过缓存和 SingleFlight。
+// 只添加查询选项，不创建事务；查询和后续修改必须绑定同一事务连接。
+func (q *QueryBuilder) ForUpdate() *QueryBuilder {
+	q.option.ForUpdate = true
+	return q
+}
+
+// ForUpdateIf condition 为 true 时加行锁，false 时不改变已有查询选项。
+func (q *QueryBuilder) ForUpdateIf(condition bool) *QueryBuilder {
+	if condition {
+		return q.ForUpdate()
+	}
+	return q
+}
+
 // Limit 查询条数
 func (q *QueryBuilder) Limit(limit int) *QueryBuilder {
 	q.option.Limit = &limit
@@ -759,7 +775,7 @@ func FlattenStructToArgs(rv reflect.Value, out map[string]any) {
 
 // Build 构建QueryOption
 func (q *QueryBuilder) Build() QueryOption {
-	return q.option
+	return q.option.withForUpdateClause()
 }
 
 // MergeQueryOptions 合并配置
@@ -813,6 +829,9 @@ func MergeQueryOptions(opts ...QueryOption) QueryOption {
 		if opt.Unscoped {
 			result.Unscoped = true
 		}
+		if opt.ForUpdate {
+			result.ForUpdate = true
+		}
 
 		// SF
 		if opt.SF != nil {
@@ -837,5 +856,5 @@ func MergeQueryOptions(opts ...QueryOption) QueryOption {
 			}
 		}
 	}
-	return result
+	return result.withForUpdateClause()
 }
