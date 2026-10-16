@@ -1,0 +1,143 @@
+package repository
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"generationfixture/dao"
+	"generationfixture/model"
+	gormplus "github.com/kuangshp/gorm-plus"
+	"github.com/kuangshp/gorm-plus/query"
+	"gorm.io/gorm"
+)
+
+func TestThreeRepositoryDataSources(t *testing.T) {
+	dbs := []*gorm.DB{transactionDB(t), transactionDB(t), transactionDB(t)}
+	gormplus.Use(dbs[0])
+	// 新默认连接与旧全局 DAO 不同时，以 Use 注册的连接为准。
+	dao.SetDefault(dbs[2])
+	repos := []ItemsRepository{NewItemsRepository(), NewItemsRepository(dbs[1]), NewItemsRepository(dbs[2])}
+	ctx := context.Background()
+	cached := query.Query().WithCache(time.Minute).Build()
+	var counts [3]atomic.Int64
+	for i, db := range dbs {
+		index := i
+		if err := db.Callback().Query().Before("gorm:query").Register("count_reads", func(*gorm.DB) { counts[index].Add(1) }); err != nil {
+			t.Fatal(err)
+		}
+		if err := repos[i].Create(ctx, &model.ItemsEntity{ID: 1, Name: fmt.Sprintf("db-%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(i int, name string) {
+		t.Helper()
+		row, err := repos[i].FindById(ctx, 1, cached)
+		if err != nil || row.Name != name {
+			t.Fatalf("source %d: row=%+v err=%v", i, row, err)
+		}
+	}
+	for i := range repos {
+		check(i, fmt.Sprintf("db-%d", i))
+	}
+	// 相同表、主键和查询参数也必须在并发命中时保持数据源隔离。
+	var wg sync.WaitGroup
+	for i := range repos {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for n := 0; n < 50; n++ {
+				row, err := repos[i].FindById(ctx, 1, cached)
+				if err != nil || row.Name != fmt.Sprintf("db-%d", i) {
+					t.Errorf("source %d cache crossed: %+v %v", i, row, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	before0, before2 := counts[0].Load(), counts[2].Load()
+	if err := repos[1].UpdateMapById(ctx, 1, map[string]any{"name": "db-1-updated"}); err != nil {
+		t.Fatal(err)
+	}
+	check(0, "db-0")
+	check(1, "db-1-updated")
+	check(2, "db-2")
+	if counts[0].Load() != before0 || counts[2].Load() != before2 {
+		t.Fatal("one source invalidated another source's cache")
+	}
+	// 条件更新的整表失效也只影响对应数据源。
+	if err := repos[1].UpdateByWrapper(ctx, func(w gormplus.IGenWrapper[dao.IItemsEntityDo]) {
+		w.Where(dao.ItemsEntity.ID.Eq(1))
+	}, gormplus.WithUpdateColumns(dao.ItemsEntity.Name.Value("db-1-wrapper"))); err != nil {
+		t.Fatal(err)
+	}
+	check(0, "db-0")
+	check(1, "db-1-wrapper")
+	check(2, "db-2")
+	if counts[0].Load() != before0 || counts[2].Load() != before2 {
+		t.Fatal("table invalidation crossed sources")
+	}
+	abort := errors.New("abort")
+	err := gormplus.TransactionAsCtx(ctx, dbs[1], dao.Use, func(tx *dao.Query) error {
+		bound := repos[1].WithTx(tx)
+		if err := bound.UpdateMapById(ctx, 1, map[string]any{"name": "uncommitted"}); err != nil {
+			return err
+		}
+		row, err := bound.FindById(ctx, 1, cached)
+		if err != nil || row.Name != "uncommitted" {
+			t.Fatalf("bound source lost: %+v %v", row, err)
+		}
+		// 也支持把本库创建的事务 *gorm.DB 直接传给构造函数。
+		direct := NewItemsRepository(tx.ItemsEntity.UnderlyingDB())
+		row, err = direct.FindById(ctx, 1, cached)
+		if err != nil || row.Name != "uncommitted" {
+			t.Fatalf("constructor transaction lost: %+v %v", row, err)
+		}
+		return abort
+	})
+	if !errors.Is(err, abort) {
+		t.Fatal(err)
+	}
+	check(0, "db-0")
+	check(1, "db-1-wrapper")
+	check(2, "db-2")
+	if err := gormplus.TransactionAsCtx(ctx, dbs[1], dao.Use, func(tx *dao.Query) error {
+		return repos[1].WithTx(tx).UpdateMapById(ctx, 1, map[string]any{"name": "committed"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check(0, "db-0")
+	check(1, "committed")
+	check(2, "db-2")
+	// 更新默认连接只作用于之后构造的仓储，不改变已存在的实例。
+	gormplus.Use(dbs[2])
+	check(0, "db-0")
+	latest := NewItemsRepository()
+	row, err := latest.FindById(ctx, 1, cached)
+	if err != nil || row.Name != "db-2" {
+		t.Fatalf("new default ignored: %+v %v", row, err)
+	}
+	type joinRow struct {
+		ID   int64
+		Name string
+	}
+	joined, err := FindItemsJoinList[joinRow](ctx, nil, nil, cached)
+	if err != nil || len(joined) != 1 || joined[0].Name != "db-2" {
+		t.Fatalf("default join ignored Use: %+v %v", joined, err)
+	}
+	for _, args := range [][]*gorm.DB{{nil}, {dbs[0], dbs[1]}} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Error("invalid constructor accepted")
+				}
+			}()
+			NewItemsRepository(args...)
+		}()
+	}
+}

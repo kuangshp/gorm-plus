@@ -86,6 +86,7 @@ func transactionDB(t *testing.T) *gorm.DB {
 		}
 	}
 	dao.SetDefault(db)
+	gormplus.Use(db)
 	gormplus.ForceReplaceCache(gormplus.NewMemoryCache())
 	t.Cleanup(func() { gormplus.StopSFCache() })
 	return db

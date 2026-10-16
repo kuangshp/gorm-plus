@@ -60,8 +60,23 @@ func resolveConfigPaths(cfg *Config) error {
 	cfg.ProtoPath = resolve(cfg.ProtoPath)
 	cfg.VoPath = resolve(cfg.VoPath)
 	cfg.DtoPath = resolve(cfg.DtoPath)
+	cfg.MapperPath = resolve(cfg.MapperPath)
 	cfg.APIMapperPath = resolve(cfg.APIMapperPath)
 	cfg.ProtoMapperPath = resolve(cfg.ProtoMapperPath)
+	if cfg.MapperPath != "" {
+		if cfg.ProtoPath == "" {
+			if cfg.APIMapperPath == "" {
+				cfg.APIMapperPath = cfg.MapperPath
+			}
+		} else {
+			if cfg.ProtoMapperPath == "" {
+				cfg.ProtoMapperPath = filepath.Join(cfg.MapperPath, "entityproto")
+			}
+			if cfg.ApiPath != "" && cfg.APIMapperPath == "" {
+				cfg.APIMapperPath = filepath.Join(cfg.MapperPath, "apiproto")
+			}
+		}
+	}
 	return nil
 }
 

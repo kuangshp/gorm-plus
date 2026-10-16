@@ -33,6 +33,10 @@ type Config struct {
 	DtoPath         string `yaml:"dto_path"`          // dto输出路径，如 "./apps/admin/dto"
 	APIMapperPath   string `yaml:"api_mapper_path"`   // API types/DTO/VO mapper输出路径，如 "./query/mapper/api"
 	ProtoMapperPath string `yaml:"proto_mapper_path"` // Entity/Proto mapper输出路径，如 "./query/mapper/proto"
+	// MapperPath 兼容旧版 mapper 输出路径。未使用 Proto 时直接输出到此目录；
+	// 使用 Proto 时分别输出到 entityproto、apiproto 子目录。显式配置的新路径优先。
+	// Deprecated: 新项目建议使用 APIMapperPath 和 ProtoMapperPath。
+	MapperPath string `yaml:"mapper_path"`
 	// GoctlTemplateHome 可覆盖内嵌的 goctl 模板目录；为空时使用 gorm-plus 内嵌模板。
 	GoctlTemplateHome string `yaml:"goctl_template_home"`
 

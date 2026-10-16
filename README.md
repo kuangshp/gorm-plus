@@ -165,6 +165,8 @@ gorm-plus/
 
 Mapper 使用两个独立输出路径：`proto_mapper_path` 输出 Entity ↔ Proto 映射，`api_mapper_path` 输出 API types ↔ Proto 映射；未配置 `proto_path` 时，`api_mapper_path` 输出 DTO/VO ↔ Entity 映射。
 
+旧版 Go 配置 `MapperPath` 和 YAML 配置 `mapper_path` 仍可使用：未配置 `proto_path` 时直接输出到该目录；配置 `proto_path` 时，Entity ↔ Proto 输出到其 `entityproto` 子目录，同时配置 `api_path` 时 API types ↔ Proto 输出到其 `apiproto` 子目录。显式配置的 `APIMapperPath` / `api_mapper_path`、`ProtoMapperPath` / `proto_mapper_path` 分别优先，不会被旧配置覆盖。
+
 > **顶层 `gormplus_*.go` 文件**只做类型别名 + 函数转发,把分包的 API 聚合到 `gormplus` 命名空间。业务方一律用 `gormplus.XXX` 调用,不需要直接 import 子包(`sf`/`query`/`plugin`/`dal` 等)。
 
 ---
@@ -1986,6 +1988,39 @@ gormplus.WithDALHook(&SlowDALHook{Threshold: 200 * time.Millisecond}),
 ---
 
 ## 六、事务工具
+
+### Repository 默认连接与多数据源
+
+启动时注册一次默认连接，构造仓储时可选传入其他 `*gorm.DB`：
+
+```go
+gormplus.Use(mainDB)
+
+users := repository.NewUserRepository()          // 使用 mainDB
+reports := repository.NewUserRepository(reportDB) // 使用 reportDB
+archives := repository.NewUserRepository(archiveDB) // 使用 archiveDB
+```
+
+每个实例固定构造时选中的连接，显式传入句柄不会修改默认连接。`Use` 同步初始化生成的业务 DAO，仍可使用 `dao.UserEntity.ID` 等字段表达式。`Use` 应在服务启动阶段调用；业务请求通过传参选择连接。变更默认连接只影响之后构造的仓储，已构造实例保持原连接。只配置 `dao.SetDefault(db)` 的旧项目也继续支持无参构造；同时配置时以 `gormplus.Use` 为准。
+
+构造函数最多接受一个句柄；显式传入 `nil`、未初始化句柄或多个句柄会 panic，便于初始化时暴露配置错误。各连接的插件和连接池仍由业务项目初始化，工具库不会自动关闭传入的句柄。事务继续使用 `WithTx(tx)`；构造函数直接传入本库创建的事务句柄也会保留事务检查和提交后失效规则。
+
+生成仓储的缓存名称使用 `数据源摘要.表名.方法名`，不同库的同表同 ID 不会互相命中，写入也只失效当前数据源的缓存。摘要来自驱动类型和完整 DSN，不包含明文连接信息；同一数据源应复用同一个句柄或完全一致的连接配置。自定义驱动、仅传入底层 `Conn`、缺少 DSN 或 SQLite 内存库无法确定稳定身份，生成仓储会跳过缓存和 SingleFlight，直接查询。数据源隔离不会自动代替租户、权限和筛选参数的缓存隔离。
+
+自定义仓储方法使用 `r.cacheName("方法名")`，以及 `gormplus.RepositoryQueryOptions(db, opt)` 保持相同规则。仓储外手动失效生成仓储的缓存时，名称也通过 `gormplus.RepositoryCacheName(db, "user.FindById")` 构造。
+
+已有扩展 `.go` 文件不会被生成器覆盖。重新生成 `_gen.go` 后，在扩展文件引入 `gorm.io/gorm`，将已有构造函数改为：
+
+```go
+func NewUserRepository(dbs ...*gorm.DB) UserRepository {
+    return &customerUserRepository{
+        defaultUserRepository: newDefaultUserRepository(dbs...),
+        // 保留已有业务依赖初始化。
+    }
+}
+```
+
+### Repository 事务绑定
 
 生成的 Repository 统一使用 `WithTx(tx)` 绑定事务副本，增删改查继续调用同一套普通方法：
 

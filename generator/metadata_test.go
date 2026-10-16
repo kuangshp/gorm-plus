@@ -77,7 +77,8 @@ func testDatabaseGeneration(t *testing.T, dialect string) {
 		inputLines, inputIndex = []string{table}, 0
 		generation := *cfg
 		generation.OutPath, generation.ModelPkgPath, generation.RepoPath = "dao", "model", "repository"
-		generation.DtoPath, generation.VoPath, generation.APIMapperPath = "dto", "vo", "mapper"
+		// 旧配置也必须实际产出可编译、可执行的 mapper。
+		generation.DtoPath, generation.VoPath, generation.MapperPath = "dto", "vo", "mapper"
 		generation.Package, generation.ExcludeTables = "generationfixture", []string{"ignored"}
 		return Generate(&generation)
 	}
@@ -175,6 +176,13 @@ func TestConditionalWritesInvalidateTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "repository/transactions_test.go"), txTests, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sourceTests, err := os.ReadFile(filepath.Join(root, "generator/testdata/repository_datasources_test.go.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "repository/datasources_test.go"), sourceTests, 0600); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("go", "test", "-mod=mod", "-v", "./...")

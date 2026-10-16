@@ -3,6 +3,8 @@
 // 如需扩展或覆盖基础方法，请在 {{.ModelName}}Repository 中定义
 package repository
 
+import "gorm.io/gorm"
+
 // {{.ModelName}}Repository {{.ModelName}}仓储层
 // 嵌入 default{{.ModelName}}Repository
 type customer{{.ModelName}}Repository struct {
@@ -17,10 +19,10 @@ type {{.ModelName}}Repository interface {
 
 var _ {{.ModelName}}Repository = (*customer{{.ModelName}}Repository)(nil)
 
-// New{{.ModelName}}Repository 创建{{.ModelName}}Repository实例
-func New{{.ModelName}}Repository() {{.ModelName}}Repository {
+// New{{.ModelName}}Repository 不传句柄时使用默认连接，传入句柄时固定使用该连接。
+func New{{.ModelName}}Repository(dbs ...*gorm.DB) {{.ModelName}}Repository {
 	return &customer{{.ModelName}}Repository{
-		default{{.ModelName}}Repository: newDefault{{.ModelName}}Repository(),
+		default{{.ModelName}}Repository: newDefault{{.ModelName}}Repository(dbs...),
 	}
 }
 
@@ -37,8 +39,8 @@ func New{{.ModelName}}Repository() {{.ModelName}}Repository {
 //         return 0, err
 //     }
 //     tx := r.buildTx(ctx, query) // 使用绑定连接、条件和请求上下文。
-//     opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(tx.UnderlyingDB())
-//     return gormplus.ExecuteQuery(opt, "{{.TableName}}.CountCustom", nil,
+//     opt := gormplus.RepositoryQueryOptions(tx.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+//     return gormplus.ExecuteQuery(opt, r.cacheName("CountCustom"), nil,
 //         func() (int64, error) { return tx.Count() },
 //     )
 // }
@@ -51,4 +53,4 @@ func New{{.ModelName}}Repository() {{.ModelName}}Repository {
 // 1. 先 r.checkTx()；使用 r.source().{{.ModelName}}Entity.WithContext(ctx) 获取连接。
 // 2. 执行成功后调用 r.invalidateAllTableCaches()。
 //    普通仓储立即失效，绑定仓储登记失效，最外层事务提交后统一执行。
-// 3. 使用 "{{.TableName}}.方法名" 作为自定义缓存名称，以便按表失效。
+// 3. 使用 r.cacheName("方法名") 作为自定义缓存名称，以便按数据源和表失效。

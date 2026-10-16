@@ -12,7 +12,12 @@ import (
 	"{{.ModelPath}}"
 )
 
+func init() {
+	gormplus.RegisterRepositoryDefault("{{.DaoPath}}", func(db *gorm.DB) { dao.SetDefault(db) })
+}
+
 type default{{.ModelName}}Repository struct {
+	daoBase *dao.Query
 	daoTx *dao.Query
 	txScope *gormplus.TransactionScope
 	txErr error
@@ -37,7 +42,13 @@ func (r *default{{.ModelName}}Repository) source() *dao.Query {
 	if r.daoTx != nil {
 		return r.daoTx
 	}
-	return dao.Q
+	return r.daoBase
+}
+
+func (r *default{{.ModelName}}Repository) cacheName(method string) string {
+	table := gormplus.RepositoryCacheName(r.source().{{.ModelName}}Entity.UnderlyingDB(), "{{.TableName}}")
+	if method == "" { return table }
+	return table+"."+method
 }
 
 func (r *default{{.ModelName}}Repository) checkTx() error {
@@ -46,6 +57,9 @@ func (r *default{{.ModelName}}Repository) checkTx() error {
 	}
 	if r.txScope != nil {
 		return r.txScope.Check()
+	}
+	if r.source() == nil || !r.source().Available() {
+		return gorm.ErrInvalidDB
 	}
 	return nil
 }
@@ -116,7 +130,7 @@ type iDefault{{.ModelName}}Repository interface {
 // ==================== 缓存失效辅助方法 ====================
 //
 // 事务仓储把失效动作合并到最外层提交后执行；回滚不失效。
-// 缓存策略总览（统一以 "{{.TableName}}.方法名" 为 fnName）：
+// 缓存策略总览（以 r.cacheName("方法名") 为 fnName，包含数据源命名空间）：
 //
 //	写操作              失效范围
 //	──────────         ─────────────────────────────────────────────────────────
@@ -134,21 +148,21 @@ type iDefault{{.ModelName}}Repository interface {
 // 用于 Create / Update / Delete 三类已知 ID 的写操作。
 func (r *default{{.ModelName}}Repository) invalidateWriteCaches() {
 	if r.txScope != nil {
-		r.txScope.InvalidateTable("{{.TableName}}")
+		r.txScope.InvalidateTable(r.cacheName(""))
 		return
 	}
 	gormplus.SFInvalidatePrefixes([]string{
-		"{{.TableName}}.FindList",
-		"{{.TableName}}.FindListByWrapper",
-		"{{.TableName}}.FindPage",
-		"{{.TableName}}.FindPageByWrapper",
-		"{{.TableName}}.FindByIdList",
-		"{{.TableName}}.FindOne",
-		"{{.TableName}}.FindOneWrapper",
-		"{{.TableName}}.Count",
-		"{{.TableName}}.CountByWrapper",
-		"{{.TableName}}.Exists",
-		"{{.TableName}}.ExistsByWrapper",
+		r.cacheName("FindList"),
+		r.cacheName("FindListByWrapper"),
+		r.cacheName("FindPage"),
+		r.cacheName("FindPageByWrapper"),
+		r.cacheName("FindByIdList"),
+		r.cacheName("FindOne"),
+		r.cacheName("FindOneWrapper"),
+		r.cacheName("Count"),
+		r.cacheName("CountByWrapper"),
+		r.cacheName("Exists"),
+		r.cacheName("ExistsByWrapper"),
 	})
 }
 
@@ -156,18 +170,18 @@ func (r *default{{.ModelName}}Repository) invalidateWriteCaches() {
 // 包括 FindById 在内的所有方法都会被清掉。
 func (r *default{{.ModelName}}Repository) invalidateAllTableCaches() {
 	if r.txScope != nil {
-		r.txScope.InvalidateTable("{{.TableName}}")
+		r.txScope.InvalidateTable(r.cacheName(""))
 		return
 	}
-	gormplus.SFInvalidatePrefix("{{.TableName}}.")
+	gormplus.SFInvalidatePrefix(r.cacheName("")+".")
 }
 
 func (r *default{{.ModelName}}Repository) invalidateById(args map[string]any) {
 	if r.txScope != nil {
-		r.txScope.InvalidateTable("{{.TableName}}")
+		r.txScope.InvalidateTable(r.cacheName(""))
 		return
 	}
-	gormplus.SFInvalidate("{{.TableName}}.FindById", args)
+	gormplus.SFInvalidate(r.cacheName("FindById"), args)
 }
 
 // ==================== 公共构建方法 ====================
@@ -249,7 +263,7 @@ type {{.ModelName}}JoinQueryBuilder func(ctx context.Context) dao.I{{.ModelName}
 
 // newDefault{{.ModelName}}JoinQuery 创建{{.ModelName}}默认连表查询基础语句。
 func newDefault{{.ModelName}}JoinQuery(ctx context.Context) dao.I{{.ModelName}}EntityDo {
-	return dao.{{.ModelName}}Entity.WithContext(ctx)
+	return newDefault{{.ModelName}}Repository().source().{{.ModelName}}Entity.WithContext(ctx)
 }
 
 // build{{.ModelName}}JoinTx 构建{{.ModelName}}连表查询语句。
@@ -294,8 +308,8 @@ func build{{.ModelName}}JoinTx(ctx context.Context, build {{.ModelName}}JoinQuer
 // Find{{.ModelName}}JoinList 查询{{.ModelName}}连表列表，T 可以是调用方自定义的行结构体。
 func Find{{.ModelName}}JoinList[T any](ctx context.Context, build {{.ModelName}}JoinQueryBuilder, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (rows []T, err error) {
 	built := build{{.ModelName}}JoinTx(ctx, build, fn, query)
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(built.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindJoinList", nil,
+	opt := gormplus.RepositoryQueryOptions(built.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, gormplus.RepositoryCacheName(built.UnderlyingDB(), "{{.TableName}}.FindJoinList"), nil,
 		func() (rows []T, err error) {
 			rows = make([]T, 0)
 			err = built.Scan(&rows)
@@ -308,8 +322,8 @@ func Find{{.ModelName}}JoinList[T any](ctx context.Context, build {{.ModelName}}
 func Find{{.ModelName}}JoinPage[T any](ctx context.Context, pageNumber int64, pageSize int64, build {{.ModelName}}JoinQueryBuilder, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (rows []T, total int64, err error) {
 	offset, limit := gormplus.DbPage(pageNumber, pageSize)
 	built := build{{.ModelName}}JoinTx(ctx, build, fn, query)
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(built.UnderlyingDB())
-	return gormplus.ExecutePage(opt, "{{.TableName}}.FindJoinPage",
+	opt := gormplus.RepositoryQueryOptions(built.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecutePage(opt, gormplus.RepositoryCacheName(built.UnderlyingDB(), "{{.TableName}}.FindJoinPage"),
 		gormplus.BuildArgs("page", pageNumber, "size", pageSize),
 		func() (rows []T, total int64, err error) {
 			rows = make([]T, 0)
@@ -322,8 +336,8 @@ func Find{{.ModelName}}JoinPage[T any](ctx context.Context, pageNumber int64, pa
 // Find{{.ModelName}}JoinOne 查询{{.ModelName}}连表单条数据，T 可以是调用方自定义的行结构体。
 func Find{{.ModelName}}JoinOne[T any](ctx context.Context, build {{.ModelName}}JoinQueryBuilder, fn func(gormplus.IGenWrapper[dao.I{{.ModelName}}EntityDo]), query ...gormplus.QueryOption) (row T, err error) {
 	built := build{{.ModelName}}JoinTx(ctx, build, fn, query)
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(built.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindJoinOne", nil,
+	opt := gormplus.RepositoryQueryOptions(built.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, gormplus.RepositoryCacheName(built.UnderlyingDB(), "{{.TableName}}.FindJoinOne"), nil,
 		func() (row T, err error) {
 			err = built.Limit(1).Scan(&row)
 			return row, err
@@ -584,8 +598,8 @@ func (r *default{{.ModelName}}Repository) FindList(ctx context.Context, query ..
 	if err := r.checkTx(); err != nil {
 		return nil, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindList", nil,
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, r.cacheName("FindList"), nil,
 		func() ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 			return r.buildTx(ctx, query).Find()
 		},
@@ -596,10 +610,10 @@ func (r *default{{.ModelName}}Repository) FindListByWrapper(ctx context.Context,
 	if err := r.checkTx(); err != nil {
 		return nil, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
 	tx := r.buildWrapperTx(ctx, fn, query)
-	opt = opt.WithLockingFrom(tx.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindListByWrapper", nil,
+	opt = gormplus.RepositoryQueryOptions(tx.UnderlyingDB(), opt)
+	return gormplus.ExecuteQuery(opt, r.cacheName("FindListByWrapper"), nil,
 		func() ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 			return tx.Find()
 		},
@@ -611,8 +625,8 @@ func (r *default{{.ModelName}}Repository) FindPage(ctx context.Context, pageNumb
 		return nil, 0, err
 	}
 	offset, limit := gormplus.DbPage(pageNumber, pageSize)
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
-	return gormplus.ExecutePage(opt, "{{.TableName}}.FindPage",
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecutePage(opt, r.cacheName("FindPage"),
 		gormplus.BuildArgs("page", pageNumber, "size", pageSize),
 		func() ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
 			return r.buildTx(ctx, query).FindByPage(offset, limit)
@@ -625,10 +639,10 @@ func (r *default{{.ModelName}}Repository) FindPageByWrapper(ctx context.Context,
 		return nil, 0, err
 	}
 	offset, limit := gormplus.DbPage(pageNumber, pageSize)
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
 	tx := r.buildWrapperTx(ctx, fn, query)
-	opt = opt.WithLockingFrom(tx.UnderlyingDB())
-	return gormplus.ExecutePage(opt, "{{.TableName}}.FindPageByWrapper",
+	opt = gormplus.RepositoryQueryOptions(tx.UnderlyingDB(), opt)
+	return gormplus.ExecutePage(opt, r.cacheName("FindPageByWrapper"),
 		gormplus.BuildArgs("page", pageNumber, "size", pageSize),
 		func() ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, total int64, err error) {
 			return tx.FindByPage(offset, limit)
@@ -640,8 +654,8 @@ func (r *default{{.ModelName}}Repository) FindById(ctx context.Context, {{.Prima
 	if err := r.checkTx(); err != nil {
 		return nil, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindById",
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, r.cacheName("FindById"),
 		gormplus.BuildArgs({{range $i, $key := .PrimaryKeys}}{{if $i}}, {{end}}"{{$key.Name}}", {{$key.ParamName}}{{end}}),
 		func() ({{.ModelNameLower}} *{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 			tx := r.source().{{.ModelName}}Entity.WithContext(ctx)
@@ -668,8 +682,8 @@ func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.M
 	if len({{.ModelNameLower}}Ids) == 0 {
 		return []*{{.ModelPkgName}}.{{.ModelName}}Entity{}, nil
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindByIdList",
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, r.cacheName("FindByIdList"),
 		gormplus.BuildArgs("ids", {{.ModelNameLower}}Ids),
 		func() ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 			{{.ModelNameLower}}List = make([]*{{.ModelPkgName}}.{{.ModelName}}Entity, 0, len({{.ModelNameLower}}Ids))
@@ -713,8 +727,8 @@ func (r *default{{.ModelName}}Repository) FindByIdList(ctx context.Context, {{.M
 	if len({{.ModelNameLower}}Ids) == 0 {
 		return []*{{.ModelPkgName}}.{{.ModelName}}Entity{}, nil
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindByIdList",
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, r.cacheName("FindByIdList"),
 		gormplus.BuildArgs("ids", {{.ModelNameLower}}Ids),
 		func() ({{.ModelNameLower}}List []*{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 			tx := r.source().{{.ModelName}}Entity.WithContext(ctx).Where(r.source().{{.ModelName}}Entity.{{.PrimaryKeyField}}.In({{.ModelNameLower}}Ids...))
@@ -749,8 +763,8 @@ func (r *default{{.ModelName}}Repository) FindOne(ctx context.Context, query ...
 	if err := r.checkTx(); err != nil {
 		return nil, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindOne", nil,
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, r.cacheName("FindOne"), nil,
 		func() ({{.ModelNameLower}} *{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 			return r.buildTx(ctx, query).First()
 		},
@@ -761,10 +775,10 @@ func (r *default{{.ModelName}}Repository) FindOneWrapper(ctx context.Context, fn
 	if err := r.checkTx(); err != nil {
 		return nil, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
 	tx := r.buildWrapperTx(ctx, fn, query)
-	opt = opt.WithLockingFrom(tx.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.FindOneWrapper", nil,
+	opt = gormplus.RepositoryQueryOptions(tx.UnderlyingDB(), opt)
+	return gormplus.ExecuteQuery(opt, r.cacheName("FindOneWrapper"), nil,
 		func() ({{.ModelNameLower}} *{{.ModelPkgName}}.{{.ModelName}}Entity, err error) {
 			return tx.First()
 		},
@@ -775,8 +789,8 @@ func (r *default{{.ModelName}}Repository) Exists(ctx context.Context, query ...g
 	if err := r.checkTx(); err != nil {
 		return false, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.Exists", nil,
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, r.cacheName("Exists"), nil,
 		func() ({{.ModelNameLower}}Exists bool, err error) {
 			tx := r.source().{{.ModelName}}Entity.WithContext(ctx)
 			if opt.Unscoped {
@@ -801,7 +815,7 @@ func (r *default{{.ModelName}}Repository) ExistsByWrapper(ctx context.Context, f
 	if err := r.checkTx(); err != nil {
 		return false, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
 	baseTx := r.source().{{.ModelName}}Entity.WithContext(ctx)
 	if opt.Unscoped {
 		baseTx = baseTx.Unscoped()
@@ -817,8 +831,8 @@ func (r *default{{.ModelName}}Repository) ExistsByWrapper(ctx context.Context, f
 		fn(tx)
 	}
 	built := tx.Apply()
-	opt = opt.WithLockingFrom(built.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.ExistsByWrapper", nil,
+	opt = gormplus.RepositoryQueryOptions(built.UnderlyingDB(), opt)
+	return gormplus.ExecuteQuery(opt, r.cacheName("ExistsByWrapper"), nil,
 		func() ({{.ModelNameLower}}Exists bool, err error) {
 			cnt, err := built.Count()
 			if err != nil {
@@ -833,8 +847,8 @@ func (r *default{{.ModelName}}Repository) Count(ctx context.Context, query ...go
 	if err := r.checkTx(); err != nil {
 		return 0, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.Count", nil,
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
+	return gormplus.ExecuteQuery(opt, r.cacheName("Count"), nil,
 		func() ({{.ModelNameLower}}Count int64, err error) {
 			tx := r.source().{{.ModelName}}Entity.WithContext(ctx)
 			if opt.Unscoped {
@@ -855,7 +869,7 @@ func (r *default{{.ModelName}}Repository) CountByWrapper(ctx context.Context, fn
 	if err := r.checkTx(); err != nil {
 		return 0, err
 	}
-	opt := gormplus.MergeQueryOptions(query...).WithLockingFrom(r.source().{{.ModelName}}Entity.UnderlyingDB())
+	opt := gormplus.RepositoryQueryOptions(r.source().{{.ModelName}}Entity.UnderlyingDB(), gormplus.MergeQueryOptions(query...))
 	baseTx := r.source().{{.ModelName}}Entity.WithContext(ctx)
 	if opt.Unscoped {
 		baseTx = baseTx.Unscoped()
@@ -871,14 +885,34 @@ func (r *default{{.ModelName}}Repository) CountByWrapper(ctx context.Context, fn
 		fn(tx)
 	}
 	built := tx.Apply()
-	opt = opt.WithLockingFrom(built.UnderlyingDB())
-	return gormplus.ExecuteQuery(opt, "{{.TableName}}.CountByWrapper", nil,
+	opt = gormplus.RepositoryQueryOptions(built.UnderlyingDB(), opt)
+	return gormplus.ExecuteQuery(opt, r.cacheName("CountByWrapper"), nil,
 		func() ({{.ModelNameLower}}Count int64, err error) {
 			return built.Count()
 		},
 	)
 }
 
-func newDefault{{.ModelName}}Repository() *default{{.ModelName}}Repository {
-	return &default{{.ModelName}}Repository{}
+func newDefault{{.ModelName}}Repository(dbs ...*gorm.DB) *default{{.ModelName}}Repository {
+	db, err := gormplus.ResolveRepositoryDB(dbs...)
+	if err != nil {
+		panic(err)
+	}
+	var base *dao.Query
+	if db != nil {
+		base = dao.Use(db)
+	} else {
+		// 兼容已有 dao.SetDefault，并固定当前快照，避免后续全局切换影响本实例。
+		snapshot := *dao.Q
+		base = &snapshot
+	}
+	r := &default{{.ModelName}}Repository{daoBase: base}
+	if base.Available() {
+		underlying := base.{{.ModelName}}Entity.UnderlyingDB()
+		if _, inTx := underlying.Statement.ConnPool.(gorm.TxCommitter); inTx {
+			r.daoTx = base
+			r.txScope, r.txErr = gormplus.RepositoryTransactionScope(underlying)
+		}
+	}
+	return r
 }
