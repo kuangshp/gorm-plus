@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 	"gorm.io/gorm/migrator"
 )
 
@@ -23,6 +21,8 @@ func TestColumnMetadata(t *testing.T) {
 		{"mysql decimal", "decimal", "decimal(12,4)", "decimal(12,4)", 0, 12, 4},
 		{"postgres numeric", "numeric", "", "numeric(18,6)", 0, 18, 6},
 		{"postgres varchar", "varchar", "", "varchar(80)", 80, 0, 0},
+		{"postgres varying alias", "varchar", "character varying(80)", "varchar(80)", 80, 0, 0},
+		{"postgres character alias", "bpchar", "character(8)", "char(8)", 8, 0, 0},
 		{"sqlserver decimal", "", "decimal", "decimal(19,4)", 0, 19, 4},
 		{"sqlserver nvarchar", "", "nvarchar", "nvarchar(120)", 120, 0, 0},
 	} {
@@ -48,6 +48,10 @@ func TestColumnMetadata(t *testing.T) {
 }
 
 func TestSQLiteGeneration(t *testing.T) {
+	testDatabaseGeneration(t, "sqlite")
+}
+
+func testDatabaseGeneration(t *testing.T, dialect string) {
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
@@ -59,21 +63,7 @@ func TestSQLiteGeneration(t *testing.T) {
 	}
 	t.Chdir(dir)
 	t.Setenv("GENERATOR_TEMPLATE_DIR", filepath.Join(root, "generator", "template"))
-	db, err := gorm.Open(sqlite.Open(filepath.Join(dir, "fixture.db")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqlDB, _ := db.DB()
-	t.Cleanup(func() { sqlDB.Close() })
-	for _, ddl := range []string{
-		`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(80) NOT NULL, amount NUMERIC(18,6), rate REAL, enabled BOOL, payload BLOB, attributes JSONB, created_at DATETIME)`,
-		`CREATE TABLE memberships (tenant_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT, PRIMARY KEY (tenant_id,user_id))`,
-		`CREATE TABLE ignored (id INTEGER PRIMARY KEY)`,
-	} {
-		if err := db.Exec(ddl).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
+	cfg, db := generationTestDatabase(t, dir, dialect)
 	cols, err := getTableColumns(db, "memberships")
 	if err != nil || len(cols) != 3 || !cols[0].IsKey || !cols[1].IsKey || cols[0].CanNull {
 		t.Fatalf("composite metadata = %+v, %v", cols, err)
@@ -85,9 +75,11 @@ func TestSQLiteGeneration(t *testing.T) {
 	t.Cleanup(func() { inputLines, inputIndex = oldLines, oldIndex })
 	run := func(table string) error {
 		inputLines, inputIndex = []string{table}, 0
-		return Generate(&Config{DBType: "sqlite", Database: filepath.Join(dir, "fixture.db"),
-			OutPath: "dao", ModelPkgPath: "model", RepoPath: "repository", DtoPath: "dto", VoPath: "vo", APIMapperPath: "mapper",
-			Package: "generationfixture", ExcludeTables: []string{"ignored"}})
+		generation := *cfg
+		generation.OutPath, generation.ModelPkgPath, generation.RepoPath = "dao", "model", "repository"
+		generation.DtoPath, generation.VoPath, generation.APIMapperPath = "dto", "vo", "mapper"
+		generation.Package, generation.ExcludeTables = "generationfixture", []string{"ignored"}
+		return Generate(&generation)
 	}
 	if err := run(""); err != nil {
 		t.Fatal(err)
@@ -95,6 +87,12 @@ func TestSQLiteGeneration(t *testing.T) {
 	for _, name := range []string{"dao/gen.go", "model/items.gen.go", "repository/items_gen.go", "dto/itemsDto.go", "vo/itemsVo.go", "mapper/itemsMapper.go", "repository/memberships_gen.go"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("missing output %s: %v", name, err)
+		}
+	}
+	if dialect == "postgres" {
+		content, err := os.ReadFile(filepath.Join(dir, "dto/itemsDto.go"))
+		if err != nil || !strings.Contains(string(content), `validate:"required,max=80"`) {
+			t.Fatalf("PostgreSQL varchar DTO missing max length: %v\n%s", err, content)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, "model/ignored.gen.go")); !os.IsNotExist(err) {
@@ -107,7 +105,7 @@ func TestSQLiteGeneration(t *testing.T) {
 	if err := os.WriteFile(extension, custom, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`CREATE TABLE notes (id INTEGER PRIMARY KEY, name TEXT)`).Error; err != nil {
+	if err := db.Exec(`CREATE TABLE notes (id BIGINT PRIMARY KEY, name TEXT)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := run("notes"); err != nil {
@@ -137,13 +135,10 @@ import (
  "generationfixture/model"
  gormplus "github.com/kuangshp/gorm-plus"
  "github.com/kuangshp/gorm-plus/query"
- "gorm.io/driver/sqlite"
  "gorm.io/gorm"
 )
 func TestConditionalWritesInvalidateTable(t *testing.T) {
- db, err := gorm.Open(sqlite.Open("../fixture.db")); if err != nil {t.Fatal(err)}
- sqlDB, _ := db.DB(); defer sqlDB.Close()
- dao.SetDefault(db)
+ db := transactionDB(t)
  ctx := context.Background()
  repo := NewItemsRepository()
  if err := db.Create(&model.ItemsEntity{ID: 1, Name: "before"}).Error; err != nil {t.Fatal(err)}
@@ -182,11 +177,13 @@ func TestConditionalWritesInvalidateTable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "repository/transactions_test.go"), txTests, 0600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "test", "-mod=mod", "./...")
+	cmd := exec.Command("go", "test", "-mod=mod", "-v", "./...")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("generated code failed compilation: %v\n%s", err, output)
+		t.Fatalf("generated repository failed: %v\n%s", err, output)
+	} else {
+		t.Logf("生成代码运行结果：\n%s", output)
 	}
 	// 模板错误必须返回到入口，不能只打印后宣称成功。
 	brokenTemplates := filepath.Join(dir, "broken_templates")

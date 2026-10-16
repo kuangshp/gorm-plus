@@ -70,8 +70,9 @@ func (t DBType) BuildDSN(cfg *Config) (string, error) {
 		if port == 0 {
 			port = 5432
 		}
+		// libpq 的空值、空格、引号和反斜杠必须转义，避免 password 误吞 dbname。
 		return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable TimeZone=Asia/Shanghai",
-			cfg.Host, port, cfg.Username, cfg.Password, cfg.Database), nil
+			postgresDSNValue(cfg.Host), port, postgresDSNValue(cfg.Username), postgresDSNValue(cfg.Password), postgresDSNValue(cfg.Database)), nil
 
 	case DBTypeSQLite:
 		// SQLite:Database 字段就是文件路径
@@ -131,4 +132,11 @@ func OpenDB(cfg *Config) (*gorm.DB, error) {
 	}
 
 	return gorm.Open(dialector)
+}
+
+// postgresDSNValue 按 libpq keyword/value 语法引用单个配置值。
+func postgresDSNValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `'`, `\'`)
+	return "'" + value + "'"
 }

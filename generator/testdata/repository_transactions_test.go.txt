@@ -1,10 +1,16 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
+	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,6 +18,9 @@ import (
 	"generationfixture/model"
 	gormplus "github.com/kuangshp/gorm-plus"
 	"github.com/kuangshp/gorm-plus/query"
+	"github.com/shopspring/decimal"
+	"gorm.io/datatypes"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -19,7 +28,50 @@ import (
 // 每个用例执行真实生成的 Repository，覆盖事务连接、缓存、扩展和复合主键。
 func transactionDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "tx.db") + "?_journal_mode=WAL&_busy_timeout=5000"))
+	var db *gorm.DB
+	var err error
+	ddl := []string{
+		"CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(80) NOT NULL, amount NUMERIC(18,6), rate REAL, enabled BOOL, payload BLOB, attributes JSONB, created_at DATETIME, deleted_at DATETIME)",
+		"CREATE TABLE notes (id BIGINT PRIMARY KEY, name TEXT)",
+		"CREATE TABLE memberships (tenant_id INTEGER, user_id INTEGER, name TEXT, PRIMARY KEY (tenant_id, user_id))",
+	}
+	if dsn := os.Getenv("GORMPLUS_FIXTURE_POSTGRES_DSN"); dsn != "" {
+		// 每个用例使用独立 schema；连接池的每条连接都有相同 search_path。
+		admin, openErr := gorm.Open(postgres.Open(dsn))
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		adminConn, openErr := admin.DB()
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		schema := fmt.Sprintf("tx_%d", time.Now().UnixNano())
+		if err := admin.Exec(`CREATE SCHEMA "` + schema + `"`).Error; err != nil {
+			adminConn.Close()
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := admin.Exec(`DROP SCHEMA "` + schema + `" CASCADE`).Error; err != nil {
+				t.Errorf("清理测试 schema: %v", err)
+			}
+			adminConn.Close()
+		})
+		u, parseErr := url.Parse(dsn)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		params := u.Query()
+		params.Set("search_path", schema)
+		u.RawQuery = params.Encode()
+		db, err = gorm.Open(postgres.Open(u.String()))
+		ddl = []string{
+			"CREATE TABLE items (id BIGSERIAL PRIMARY KEY, name VARCHAR(80) NOT NULL, amount NUMERIC(18,6), rate REAL, enabled BOOL, payload BYTEA, attributes JSONB, created_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ)",
+			"CREATE TABLE notes (id BIGINT PRIMARY KEY, name TEXT)",
+			"CREATE TABLE memberships (tenant_id BIGINT, user_id BIGINT, name TEXT, PRIMARY KEY (tenant_id, user_id))",
+		}
+	} else {
+		db, err = gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "tx.db") + "?_journal_mode=WAL&_busy_timeout=5000"))
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,12 +80,8 @@ func transactionDB(t *testing.T) *gorm.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	for _, ddl := range []string{
-		"CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(80) NOT NULL, amount NUMERIC(18,6), rate REAL, enabled BOOL, payload BLOB, attributes JSONB, created_at DATETIME)",
-		"CREATE TABLE notes (id INTEGER PRIMARY KEY, name TEXT)",
-		"CREATE TABLE memberships (tenant_id INTEGER, user_id INTEGER, name TEXT, PRIMARY KEY (tenant_id, user_id))",
-	} {
-		if err := db.Exec(ddl).Error; err != nil {
+	for _, statement := range ddl {
+		if err := db.Exec(statement).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -404,5 +452,216 @@ func TestBoundRepositoryWithoutGlobalDAOAndPreparedStatements(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestDatabaseTypesAndPaging(t *testing.T) {
+	db := transactionDB(t)
+	ctx := context.Background()
+	repo := NewItemsRepository()
+	now := time.Now().UTC().Truncate(time.Second)
+	amount := decimal.RequireFromString("12345.678901")
+	item := &model.ItemsEntity{Name: "中文 ' 商品", Amount: amount, Rate: 1.25, Enabled: true, Payload: []byte{0, 1, 127, 255}, Attributes: datatypes.JSON(`{"name":"测试","count":2}`), CreatedAt: now}
+	if err := repo.Create(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	if item.ID <= 0 {
+		t.Fatal("auto-increment ID was not returned")
+	}
+	loaded, err := repo.FindById(ctx, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Name != item.Name || !loaded.Amount.Equal(amount) || loaded.Rate != 1.25 || !loaded.Enabled || !bytes.Equal(loaded.Payload, item.Payload) || !loaded.CreatedAt.Equal(now) {
+		t.Fatalf("type round-trip mismatch: %+v", loaded)
+	}
+	var originalJSON, loadedJSON any
+	if err := json.Unmarshal(item.Attributes, &originalJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(loaded.Attributes, &loadedJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(originalJSON, loadedJSON) {
+		t.Fatalf("JSON changed: %s", loaded.Attributes)
+	}
+	if err := repo.UpdateById(ctx, item.ID, gormplus.WithUpdateColumns(dao.ItemsEntity.Enabled.Value(false), dao.ItemsEntity.Rate.Value(0), dao.ItemsEntity.Name.Value(""))); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = repo.FindById(ctx, item.ID)
+	if err != nil || loaded.Enabled || loaded.Rate != 0 || loaded.Name != "" {
+		t.Fatalf("zero-value update %+v %v", loaded, err)
+	}
+	if err := repo.CreateBatch(ctx, []*model.ItemsEntity{{Name: "second"}, {Name: "third"}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, total, err := repo.FindPage(ctx, 2, 2, query.Query().Order(dao.ItemsEntity.ID.Asc()).Build())
+	if err != nil || total != 3 || len(rows) != 1 || rows[0].Name != "third" {
+		t.Fatalf("offset paging rows=%v total=%d err=%v", rows, total, err)
+	}
+	// NUMERIC(18,6) 的大数精度有数据库差异，记录真实存储结果。
+	precise := decimal.RequireFromString("999999999999.999999")
+	edge := &model.ItemsEntity{Name: "precision", Amount: precise}
+	if err := repo.Create(ctx, edge); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = repo.FindById(ctx, edge.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%s NUMERIC(18,6): 写入=%s，读取=%s", db.Dialector.Name(), precise.String(), loaded.Amount.String())
+	if db.Dialector.Name() == "postgres" && !loaded.Amount.Equal(precise) {
+		t.Fatal("PostgreSQL numeric lost decimal precision")
+	}
+}
+
+func TestSoftAndPhysicalDeleteByDialect(t *testing.T) {
+	db := transactionDB(t)
+	ctx := context.Background()
+	repo := NewItemsRepository()
+	item := &model.ItemsEntity{Name: "soft-delete"}
+	if err := repo.Create(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	cached := query.Query().WithCache(time.Minute).Build()
+	if _, err := repo.FindById(ctx, item.ID, cached); err != nil {
+		t.Fatal(err)
+	}
+	abort := errors.New("rollback deletion")
+	err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+		bound := repo.WithTx(tx)
+		if err := bound.DeleteById(ctx, item.ID); err != nil {
+			return err
+		}
+		if _, err := bound.FindById(ctx, item.ID, cached); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("deleted row still visible: %v", err)
+		}
+		deleted, err := bound.FindById(ctx, item.ID, query.Query().WithDeleted().Build())
+		if err != nil || !deleted.DeletedAt.Valid {
+			t.Fatalf("soft delete not persisted: %+v %v", deleted, err)
+		}
+		return abort
+	})
+	if !errors.Is(err, abort) {
+		t.Fatal(err)
+	}
+	if loaded, err := repo.FindById(ctx, item.ID, cached); err != nil || loaded.DeletedAt.Valid {
+		t.Fatalf("rollback deletion leaked: %+v %v", loaded, err)
+	}
+	err = gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error { return repo.WithTx(tx).DeleteById(ctx, item.ID) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.FindById(ctx, item.ID, cached); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("commit left stale detail: %v", err)
+	}
+	if n, err := repo.Count(ctx, query.Query().WithDeleted().Build()); err != nil || n != 1 {
+		t.Fatalf("soft delete removed physical row: %d %v", n, err)
+	}
+	err = gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+		return repo.WithTx(tx).DeleteById(ctx, item.ID, gormplus.Delete().WithPhysicalDelete().Build())
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := repo.Count(ctx, query.Query().WithDeleted().Build()); err != nil || n != 0 {
+		t.Fatalf("physical delete left row: %d %v", n, err)
+	}
+}
+
+func TestNestedRepositoryTransactionsByDialect(t *testing.T) {
+	for _, rollback := range []bool{false, true} {
+		t.Run(map[bool]string{false: "commit", true: "rollback"}[rollback], func(t *testing.T) {
+			db := transactionDB(t)
+			ctx := context.Background()
+			repo := NewItemsRepository()
+			cached := query.Query().WithCache(time.Minute).Build()
+			if _, err := repo.Count(ctx, cached); err != nil {
+				t.Fatal(err)
+			}
+			abort := errors.New("abort outer")
+			err := gormplus.TransactionCtx(ctx, db, func(outer *gorm.DB) error {
+				users := repo.WithTx(dao.Use(outer))
+				if err := users.Create(ctx, &model.ItemsEntity{ID: 1, Name: "outer"}); err != nil {
+					return err
+				}
+				if err := gormplus.TransactionAs(outer, dao.Use, func(inner *dao.Query) error {
+					return repo.WithTx(inner).Create(ctx, &model.ItemsEntity{ID: 2, Name: "child"})
+				}); err != nil {
+					return err
+				}
+				var child ItemsRepository
+				innerErr := gormplus.TransactionAsCtx(ctx, outer, dao.Use, func(inner *dao.Query) error {
+					child = repo.WithTx(inner)
+					if err := child.Create(ctx, &model.ItemsEntity{ID: 3, Name: "rolled-back child"}); err != nil {
+						return err
+					}
+					// 真正的数据库唯一键错误；PostgreSQL 必须回滚到保存点才能继续查询。
+					return child.Create(ctx, &model.ItemsEntity{ID: 1, Name: "duplicate"})
+				})
+				if innerErr == nil {
+					t.Fatal("duplicate primary key unexpectedly succeeded")
+				}
+				if _, err := child.Count(ctx); !errors.Is(err, sql.ErrTxDone) {
+					t.Fatalf("child transaction escaped scope: %v", err)
+				}
+				if n, err := users.Count(ctx, cached); err != nil || n != 2 {
+					t.Fatalf("savepoint rollback failed: %d %v", n, err)
+				}
+				if n, err := repo.Count(ctx, cached); err != nil || n != 0 {
+					t.Fatalf("nested tx published early: %d %v", n, err)
+				}
+				if rollback {
+					return abort
+				}
+				return nil
+			})
+			if rollback && !errors.Is(err, abort) || !rollback && err != nil {
+				t.Fatal(err)
+			}
+			want := int64(2)
+			if rollback {
+				want = 0
+			}
+			if n, err := repo.Count(ctx, cached); err != nil || n != want {
+				t.Fatalf("nested result %d want %d %v", n, want, err)
+			}
+		})
+	}
+}
+
+func TestPostgresRowLockBlocksOtherTransaction(t *testing.T) {
+	db := transactionDB(t)
+	if db.Dialector.Name() != "postgres" {
+		t.Skip("SQLite 不提供 FOR UPDATE 行锁")
+	}
+	ctx := context.Background()
+	repo := NewItemsRepository()
+	if err := repo.Create(ctx, &model.ItemsEntity{ID: 1, Name: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
+		bound := repo.WithTx(tx)
+		if _, err := bound.FindById(ctx, 1, query.Query().ForUpdate().WithCache(time.Minute).Build()); err != nil {
+			return err
+		}
+		otherErr := gormplus.TransactionCtx(ctx, db, func(other *gorm.DB) error {
+			if err := other.Exec("SET LOCAL lock_timeout = '150ms'").Error; err != nil {
+				return err
+			}
+			return repo.WithTx(dao.Use(other)).UpdateMapById(ctx, 1, map[string]any{"name": "blocked"})
+		})
+		var state interface{ SQLState() string }
+		if !errors.As(otherErr, &state) || state.SQLState() != "55P03" {
+			t.Fatalf("FOR UPDATE did not block another connection: %v", otherErr)
+		}
+		return bound.UpdateMapById(ctx, 1, map[string]any{"name": "lock owner"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := repo.FindById(ctx, 1)
+	if err != nil || row.Name != "lock owner" {
+		t.Fatalf("locked update failed: %+v %v", row, err)
 	}
 }

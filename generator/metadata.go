@@ -77,7 +77,14 @@ func columnInfo(col gorm.ColumnType) ColumnInfo {
 	if !ok || typ == "" {
 		typ = col.DatabaseTypeName()
 	}
-	typ = strings.ToLower(typ)
+	typ = strings.ToLower(strings.TrimSpace(typ))
+	// PostgreSQL 的 format_type 返回 SQL 标准别名，统一后才能生成长度校验。
+	for _, alias := range []struct{ from, to string }{{"character varying", "varchar"}, {"character", "char"}} {
+		if typ == alias.from || strings.HasPrefix(typ, alias.from+"(") {
+			typ = alias.to + strings.TrimPrefix(typ, alias.from)
+			break
+		}
+	}
 	// PostgreSQL / SQL Server 通常将精度和长度分开返回。
 	if !strings.Contains(typ, "(") {
 		if isDecimalSQLType(typ) {

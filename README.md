@@ -267,7 +267,25 @@ func main() {
 
 常见类型别名（如 PostgreSQL 的 `int8`、`numeric`、`bool`、`jsonb`，SQL Server 的 `datetime2`、`bit`）会同步映射到 Model 和 DTO/VO/Mapper。数据库特有的数组、空间类型、自定义类型仍需按业务调整模板；API/DTO 的修改请求仍沿用默认 `id` 约定，非标准主键的请求契约需自行调整。
 
-本次回归包含 SQLite 全量/单表增量生成、生成代码编译与 Repository 实际读写；MySQL、PostgreSQL、SQL Server 的真实数据库集成需在各自环境验证。已有 DTO/VO/Mapper 按保留策略不会覆盖，升级后请对照新模板同步受影响字段。
+数据库集成回归已在 SQLite 3.45.1 和 PostgreSQL 18.1 实际执行，覆盖全量/单表增量生成、生成代码编译、CRUD、分页、关联查询、联合主键、软删除/物理删除、事务提交/回滚、嵌套保存点、事务缓存隔离和预编译语句。PostgreSQL 另验证 `FOR UPDATE` 会阻塞另一事务的冲突更新。MySQL、SQL Server 的真实数据库集成仍需在各自环境验证。已有 DTO/VO/Mapper 按保留策略不会覆盖，升级后请对照新模板同步受影响字段。
+
+PostgreSQL 连接参数会分别引用和转义，支持空密码以及含空格、单引号、反斜杠的值，避免密码配置影响目标数据库名。PostgreSQL 的 `character varying(n)` / `character(n)` 元数据统一按 `varchar(n)` / `char(n)` 生成字符串长度校验。
+
+SQLite 不支持 `FOR UPDATE` 行锁，也不提供与 PostgreSQL `NUMERIC` 相同的固定十进制精度。实际回归中，`NUMERIC(18,6)` 写入 `999999999999.999999` 后，SQLite 读回 `1000000000000`，PostgreSQL 保留原值；Go 的 `decimal.Decimal` 无法恢复数据库已经丢失的精度。SQLite 精确金额可按业务约定使用整数最小单位存储。详见 [SQLite 类型与 NUMERIC affinity](https://sqlite.org/datatype3.html#type_affinity)。
+
+#### 重跑数据库兼容测试
+
+```bash
+# 默认运行 SQLite 集成测试；没有 PostgreSQL 地址时跳过 PostgreSQL 集成测试。
+go test ./generator -run 'Test(SQLite|Postgres)Generation' -v -count=1
+
+# 使用独立 PostgreSQL 测试实例；账号须具备 CREATEDB 权限。
+# 测试会创建随机命名的临时数据库，各运行用例使用独立 schema，并在结束时清理。
+GORMPLUS_TEST_POSTGRES_DSN='postgres://postgres:password@127.0.0.1:5432/postgres?sslmode=disable' \
+  go test ./generator -run 'Test(SQLite|Postgres)Generation' -v -count=1
+```
+
+添加 `GOFLAGS=-race` 可同时对生成代码的集成测试启用竞态检测。
 
 ### 配置与运行
 
