@@ -18,17 +18,17 @@ gorm-gen 解决的是"类型安全的 ORM 代码生成"——但实际业务里�
 | **缓存击穿防护** | 自己实现 singleflight + redis 双 check | `gormplus.SF(fn, name, args, ttl)` 一行 | 一次 SQL 100 并发→只打 1 次 DB |
 | **写后失效缓存** | 手写 redis.Del 每个相关 key | generator 模板自动生成 `invalidateWriteCaches` | 11 个相关前缀一次清,零样板 |
 | **列表 cache 漂移** | 不同 Where 条件命中同一 key,串数据 | `.WithCacheArgsFromStruct(req)` DTO 一行灌入 | 自动按 query 参数隔离缓存 |
-| **多租户字段** | 每个查询/Insert 手动加 `tenant_id = ?` | 注册插件后**全自动注入**(INSERT/UPDATE/DELETE/SELECT) | 一次注册,全局生效 |
-| **数据权限** | 每个查询拼 `dept_id IN (...)` | 注册插件后从 ctx 取 dept 自动注入 | 同上 |
-| **自动填充字段** | 每个 BeforeCreate hook 手写 `created_at = now()` 等 | 注册插件后自动填充 created_at/updated_at/operator 等 | 同上 |
+| **多租户字段** | 每个查询/Insert 手动加 `tenant_id = ?` | 注册插件并提供租户 context 后注入条件及创建字段 | 一次注册,全局生效 |
+| **数据权限** | 每个查询拼 `dept_id IN (...)` | 从请求 context 取得业务注入函数，追加行级权限条件 | 同上 |
+| **自动填充字段** | 每个 BeforeCreate hook 手写 `created_at = now()` 等 | 配置 Getter 后自动填充 created_by/updated_by 等操作人字段 | 同上 |
 | **复杂 SQL 写代码里** | `db.Raw("SELECT ...").Find(...)` 字符串拼接难维护 | DAL: SQL 写 .sql 文件,go 里 `gormplus.DALQuery[T](ctx, "x.sql", args)` | 复杂 SQL/视图/JOIN 走文件,git diff 清晰 |
-| **多数据源/读写分离** | 自己包装多个 *gorm.DB | `gormplus.SwitchDB(ctx)` 按 ctx 标记自动切换 | 中间件标记一次,Repository 自动路由 |
-| **慢查询监控** | 自己写 gorm plugin 或日志解析 | 注册插件 + 设阈值/钩子,自动上报 | 0 配置接入 Prometheus/ELK |
+| **多数据源/读写分离** | 自己包装多个 *gorm.DB | `gormplus.DS.Auto(ctx)` 按 ctx 标记取得句柄 | 中间件标记,数据访问层选择并绑定句柄 |
+| **慢查询监控** | 自己写 gorm plugin 或日志解析 | 注册插件 + 设阈值/钩子,自动上报 | 自定义 Logger 对接日志或监控 |
 | **写代码 + 改字段→重写 Repo** | gorm-gen 只生成基础 DAO,Repo 全手写 | generator 一次生成完整 Repository(CRUD + 分页 + 缓存失效 + WithTx) | 改表→重跑生成器即可 |
 | **事务跨 Repo 调用** | `db.Transaction(func(tx *gorm.DB) error { dao.Use(tx).X... })` 每次手动 Use | `gormplus.TransactionAs(db, dao.Use, func(tx *dao.Query))` 类型安全 | Repository.WithTx(tx) 统一增删改查 |
 | **EXPLAIN/Debug** | 改全局 logger 配置 / 手动写 db.Debug() | `.PrintSQL() / .ToSQL() / .Explain()` 链式一行 | 排查 SQL 不动配置 |
 
-**一句话**:**gorm-gen 给你"能用"的 DAO,gorm-plus 给你"能上生产"的查询层 + 工具链**。
+gorm-gen 生成类型安全的 DAO；gorm-plus 在其上补充查询构建、仓储、事务及业务插件的接入能力。
 
 ## 目录导航
 
@@ -54,7 +54,7 @@ gorm-gen 解决的是"类型安全的 ORM 代码生成"——但实际业务里�
 
 - [二、gorm-gen 类型安全链式(GenWrap)](#二gorm-gen-类型安全链式genwrap)
 - [三、原生 gorm 链式(Query)](#三原生-gorm-链式query)
-- [四、SingleFlight + 可插拔缓存(SF)](#四singleflight-可插拔缓存sf)
+- [四、SingleFlight + 可插拔缓存(SF)](#四singleflight--可插拔缓存sf)
   - [缓存使用红线（必读）](#缓存使用红线必读)
 - [五、DAL SQL 文件化查询](#五dal-sql-文件化查询)
 - [六、事务工具](#六事务工具)
@@ -173,93 +173,39 @@ Mapper 使用两个独立输出路径：`proto_mapper_path` 输出 Entity ↔ Pr
 
 ## 快速开始
 
+按参考项目的分层，把数据库插件注册放到 `initialize`，把认证结果转换为插件 context 的逻辑放到 `internal/middleware`，最后挂载到受保护的路由组。
+
+下面的启动装配函数使用已经创建好的 `*gorm.DB`、项目已有的认证中间件和业务路由注册函数；将导入路径 `your-app` 替换为自己的 module。`RegisterAccountPlugins` 的实现见 [Context 解析器](#十一context-解析器)，两个业务中间件的完整代码见 [数据权限插件](#八数据权限插件) 和 [自动填充插件](#九自动填充插件)。
 
 ```go
-import (
-	"os"
+package initialize
 
-	gormplus "github.com/kuangshp/gorm-plus"
-	"gorm.io/driver/mysql" // 按需替换为 postgres / sqlite / sqlserver
+import (
+    "your-app/internal/middleware"
+    "github.com/gin-gonic/gin"
+    "gorm.io/gorm"
 )
 
-func main() {
-	// ① ctx 解析器（gin 项目必须注册；go-zero / fiber 跳过）
-	gormplus.RegisterCtxResolver(func(ctx context.Context) context.Context {
-		if ginCtx, ok := ctx.(*gin.Context); ok {
-			return ginCtx.Request.Context()
-		}
-		return ctx
-	})
-
-	// ② 多数据源（Dialector 外部传入，不内置任何驱动）
-	gormplus.DS.Register("default", gormplus.DataSourceGroupConfig{
-		Master: gormplus.DataSourceNodeConfig{
-			Dialector: mysql.Open("root:pwd@tcp(master:3306)/mydb?charset=utf8mb4&parseTime=True"),
-			Pool:      gormplus.DataSourcePoolConfig{MaxOpen: 50, MaxIdle: 10},
-		},
-		Slaves: []gormplus.DataSourceNodeConfig{
-			{Dialector: mysql.Open("root:pwd@tcp(slave:3306)/mydb?charset=utf8mb4&parseTime=True")},
-		},
-	})
-
-	// ③ 打开 DB
-	db, _ := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-
-	// ④ 多租户插件
-	gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-		TenantField:   "tenant_id",
-		ExcludeTables: []string{"sys_config", "sys_dict"},
-	})
-
-	// ⑤ 数据权限插件
-	gormplus.RegisterDataPermission(db, gormplus.DataPermissionConfig{
-		ExcludeTables: []string{"sys_config", "sys_dict"},
-	})
-
-	// ⑥ 自动填充插件
-	db.Use(gormplus.NewAutoFillPlugin(gormplus.AutoFillConfig{
-		Fields: []gormplus.FieldConfig{
-			{Name: "CreatedBy", Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1), OnCreate: true},
-			{Name: "UpdatedBy", Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1), OnCreate: true, OnUpdate: true},
-		},
-	}))
-
-	// ⑦ 敏感字段插件（Key 必须为 16/24/32 字节，生产环境应从 KMS/Vault 读取）
-	sensitivePlugin, err := gormplus.NewSensitivePlugin(gormplus.SensitiveConfig{
-		Key: []byte(os.Getenv("SENSITIVE_MASTER_KEY")),
-		Fields: []gormplus.SensitiveFieldConfig{{
-			PlainField:     "Phone",
-			CipherField:    "PhoneCipher",
-			IndexField:     "PhoneIndex",
-			IndexColumn:    "phone_index",
-			EncryptAtRest: false,
-			ReturnMode:     gormplus.SensitiveReturnMasked,
-		}},
-	})
-	if err != nil {
-		log.Fatalf("创建敏感字段插件失败: %v", err)
-	}
-	if err := db.Use(sensitivePlugin); err != nil {
-		log.Fatalf("注册敏感字段插件失败: %v", err)
-	}
-
-	// ⑧ 慢查询监控
-	gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
-		Threshold: 200 * time.Millisecond,
-		Logger: func(ctx context.Context, info gormplus.SlowQueryInfo) {
-			log.Printf("[慢查询] cost=%v table=%s sql=%s", info.Duration, info.Table, info.SQL)
-		},
-	})
-
-	// ⑨ 优雅退出
-	defer gormplus.StopSFCache()
-	defer gormplus.DS.Close()
-
-	r := gin.New()
-	r.Use(OperatorMiddleware(), TenantMiddleware(), DataPermissionMiddleware())
-	r.Run(":8080")
+// 启动时调用一次；数据库连接和路由 Handler 由业务项目创建。
+func SetupAccountAPI(router *gin.Engine, db *gorm.DB,
+    authMiddleware gin.HandlerFunc, registerRoutes func(*gin.RouterGroup),
+) error {
+    // ① 注册插件、Gin Context 适配和默认连接，检查初始化错误。
+    if err := RegisterAccountPlugins(db); err != nil {
+        return err
+    }
+    // ② 认证先完成，再写入操作人和数据权限 context。
+    accounts := router.Group("/account", authMiddleware,
+        middleware.OperatorMiddleware(),
+        middleware.DataPermissionMiddleware(db),
+    )
+    // ③ 挂载已有 Handler，用不同账号请求后核对 SQL、数据范围和操作人字段。
+    registerRoutes(accounts)
+    return nil
 }
 ```
+
+如使用 Casbin，将项目的接口权限中间件接在数据权限中间件之后。多租户、敏感字段和慢查询按需接入，分别见对应章节；不要把本例当成所有插件都已默认启用。
 
 ---
 
@@ -2152,33 +2098,87 @@ err := gormplus.TransactionAsCtx(ctx, db, dao.Use, func(tx *dao.Query) error {
 
 ## 七、多租户插件
 
+下面按“注册插件 → 定义并接入中间件 → 验证效果”说明。数据权限、自动填充和 Gin Context 适配参考 `gin-admin-api` 的 `initialize/db.go`、`internal/middleware`、`internal/datascope` 和账号路由；该项目当前没有注册租户、敏感字段或慢查询插件，这三部分按本库当前 API 补充。
 
-注册一次，所有数据库操作自动注入租户条件，业务代码零改动。
+参考项目依赖的是较早版本的 gorm-plus。这里沿用它的接入分层和业务字段，构造函数、事务及插件 API 以当前工具库为准。
 
-### 用法一：单字段（向后兼容）
+**共同约定：**
+
+- 数据库初始化阶段为每个实际使用的 `*gorm.DB` 注册插件，检查注册错误，再调用 `gormplus.Use(db)` 注册默认连接。
+- 认证中间件先校验登录状态，再写入 `c.Set("accountId", int64账号ID)`、`c.Set("userName", 用户名)`；租户接口还需写入可信的 `tenantId`。示例不在每个插件中重复解析 token。
+- 后续中间件把插件需要的数据写入 `c.Request.Context()`，Service / Repository 一路传递这个 context。下面的数据库片段放在 Repository 或本地验证代码中。
+- 示例验证先不启用查询缓存，确认 SQL 过滤正确后，再单独设计租户、权限及筛选条件的缓存隔离。
+
+### 1、先注册插件
+
+本节假设业务表 `sys_order` 已存在 `tenant_id` 字段，实体中也有对应字段。注册插件不会创建字段；没有租户列的表不会因此获得租户隔离。示例 SQL 按 MySQL 展示。
 
 ```go
-gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
-	TenantField:   "tenant_id",
-	ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
-})
-
-// 中间件写入
-func TenantMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tenantID := int64(1001) // 从 JWT 解析
-		ctx := gormplus.WithTenantID(c.Request.Context(), tenantID)
-		c.Request = c.Request.WithContext(ctx)
-		c.Next()
-	}
+// 数据库初始化阶段调用一次；需要导入 gormplus、gorm。
+func RegisterTenantPlugin(db *gorm.DB) error {
+    return gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
+        TenantField: "tenant_id",
+        DuplicatePolicy: gormplus.PolicyAppend,
+        ExcludeTables: []string{"sys_config", "sys_dict"},
+    })
 }
-
-// 业务代码零改动
-db.WithContext(ctx).Find(&list)      // WHERE `tenant_id` = 1001
-db.WithContext(ctx).Create(&account) // 自动填充 tenant_id 字段
 ```
 
-### 用法二：同一张表注入多个租户字段
+租户受保护接口使用 `PolicyAppend`，始终追加当前租户条件。默认 `PolicySkip` 会信任业务已有的租户 AND 条件；需要这种行为时再显式选择。下方高级配置均为注册时的可选方案，不要在同一个连接上重复注册插件。
+
+### 2、定义并接入中间件
+
+```go
+// internal/middleware/TenantMiddleware.go
+// 导入 net/http、github.com/gin-gonic/gin、gormplus。
+func TenantMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        value, exists := c.Get("tenantId") // 由认证结果或服务端租户选择逻辑写入。
+        tenantID, ok := value.(int64)
+        if !exists || !ok || tenantID <= 0 {
+            c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "缺少有效租户信息"})
+            return
+        }
+        ctx := gormplus.WithTenantID(c.Request.Context(), tenantID)
+        c.Request = c.Request.WithContext(ctx)
+        c.Next()
+    }
+}
+```
+
+```go
+// 先认证，再注入租户；authMiddleware 是项目已有的认证中间件。
+orders := router.Group("/orders", authMiddleware, middleware.TenantMiddleware())
+orders.GET("", orderHandler.List)
+```
+
+认证逻辑必须先确认账号有权使用该租户，不能直接把前端传来的任意租户 ID 写入 context。插件自身在缺少租户 context 时会跳过注入，因此受保护路由要由上述中间件拒绝缺失信息的请求。
+
+### 3、验证效果
+
+准备两个租户各自的订单，用不同租户账号访问同一列表、详情和修改接口。在 Repository 中继续使用请求 context：
+
+```go
+// sysOrderRepository 在启动时通过 repository.NewSysOrderRepository() 注入。
+list, err := sysOrderRepository.FindList(ctx)
+// tenantID=1001：WHERE tenant_id = 1001。
+// tenantID=2002：WHERE tenant_id = 2002。
+
+err = sysOrderRepository.UpdateMapById(ctx, orderID, map[string]any{"status": 2})
+// 同时带主键和 tenant_id 条件，不能更新另一租户的订单。
+```
+
+| 验证操作 | 预期结果 |
+|---|---|
+| 租户 1001 查询列表、详情 | 只能返回属于 1001 的记录 |
+| 1001 使用另一租户的订单 ID 修改 | 另一租户数据不变；更新方法本身可能返回 nil，要核对影响行数或数据库数据 |
+| 新增订单不手填 `tenant_id` | 默认创建策略将实体租户字段设置为当前租户 |
+| 不带有效 `tenantId` 访问受保护路由 | 中间件返回 403，不执行数据库操作 |
+| 租户字段放入 OR 条件 | 插件返回错误，拒绝执行 |
+
+可在本地对 Repository 使用的数据库开启 `db.Debug()` 或配置 GORM SQL logger，核对实际 SQL。联表、排除表和重复条件的进阶用法见下文。
+
+### 扩展配置：同一张表注入多个租户字段
 
 ```go
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
@@ -2198,7 +2198,7 @@ ctx = context.WithValue(ctx, "orgID", int64(200))
 // 生成：WHERE `tenant_id` = 1001 AND `org_id` = 200
 ```
 
-### 用法三：不同表用不同字段名
+### 扩展配置：不同表用不同字段名
 
 ```go
 gormplus.RegisterTenant(db, gormplus.TenantConfig[int64]{
@@ -2319,390 +2319,553 @@ tables, _ := gormplus.ExcludedTables[int64](db)
 
 ## 八、数据权限插件
 
+数据权限负责“当前账号可以操作哪些行”。参考项目把账号、角色、部门权限计算放在 `internal/datascope`，中间件只负责取得当前账号、构建权限上下文并交给插件；Casbin 中间件另行判断能否访问接口。
 
-注入逻辑由业务层定义，插件不耦合任何业务 SQL。
-
-权限条件同时应用于 Query 和 Row 查询路径：`Find`、通过 `Model` / `Table` 构建的 `Scan`、`Rows`、`Row` 均受过滤，`Scan` 的接收目标不影响权限检查。已有业务 OR 会先分组，再与权限条件通过 AND 连接。
-
-`Scan(&list)` 接收到切片，可映射多行；`Scan(&item)` 接收到结构体，只映射一行，但不会自动给 SQL 添加 `LIMIT 1`。需要数据库只查询一行时，显式使用 `Limit(1).Scan(&item)`，或使用 `First` / `Take`。使用 `Scan` 映射自定义 VO 时，应通过 `Model` / `Table` 明确源表。
-
-`Raw(sql).Scan(...)` 的 SQL 已由调用方构造，插件不会自动重写原生 SQL 来补充权限条件；此类查询必须在 SQL 中显式约束权限范围。排除表、`SkipDataPermission` 及未设置权限注入函数时的行为保持原有约定。
+### 1、先注册插件
 
 ```go
-// 注册
-gormplus.RegisterDataPermission(db, gormplus.DataPermissionConfig{
-	ExcludeTables: []string{"sys_config", "sys_dict", "sys_menu"},
-})
-
-// 中间件定义注入函数
-func DataPermissionMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		claims, err := jwt.ParseToken(c.GetHeader("Authorization"))
-		if err != nil { c.Next(); return }
-		injectFn := func(db *gorm.DB, tableName string) {
-			switch claims.DataScope {
-			case "2": // 本角色相关部门
-					db.Where(tableName+".create_by IN (SELECT sys_user.user_id FROM sys_role_dept LEFT JOIN sys_user ON sys_user.dept_id = sys_role_dept.dept_id WHERE sys_role_dept.role_id = ?)", claims.RoleId)
-				case "3": // 本部门
-						db.Where(tableName+".create_by IN (SELECT user_id FROM sys_user WHERE dept_id = ?)", claims.DeptId)
-					case "4": // 本部门及子部门
-							db.Where(tableName+".create_by IN (SELECT user_id FROM sys_user WHERE dept_id IN (SELECT dept_id FROM sys_dept WHERE dept_path LIKE ?))", "%/"+strconv.FormatInt(claims.DeptId, 10)+"/%")
-						case "5": // 仅本人
-								db.Where(tableName+".create_by = ?", claims.UserId)
-							}
-						}
-						ctx := gormplus.WithDataPermission(c.Request.Context(), injectFn)
-						c.Request = c.Request.WithContext(ctx)
-						c.Next()
-					}
-				}
-
-				// 业务代码零改动
-				db.WithContext(ctx).Find(&list) // 自动注入数据权限条件
-
-				// 超管跳过
-				ctx = gormplus.SkipDataPermission(ctx)
-				db.WithContext(ctx).Find(&allData)
+// initialize/db.go；返回错误，由启动入口决定终止初始化。
+func RegisterDataPermissionPlugin(db *gorm.DB) error {
+    return gormplus.RegisterDataPermission(db, gormplus.DataPermissionConfig{
+        ExcludeTables: []string{
+            "casbin_rule", "sys_account_post", "sys_account_role",
+            "sys_role", "sys_role_resources", "sys_role_custom_dept", "sys_resources",
+        },
+    })
+}
 ```
+
+这份排除列表来自参考项目，不是其他项目的通用权限配置。读取账号、角色、部门以构建权限时，尚未挂载本次请求的注入函数，避免权限服务查询自身时递归注入。
+
+### 2、定义并接入中间件
+
+下面的 `datascope.NewService(db).BuildContext(ctx, accountID)`、`datascope.Context` 和 `datascope.Inject` 都是**业务项目代码**，不是 gorm-plus 提供的 API。在参考项目中可直接复用；其他项目需按自己的账号、角色和部门模型实现。中间件文件需导入 `net/http`、Gin、gormplus、gorm，以及业务 `internal/datascope` 包。
+
+```go
+// internal/middleware/DataPermissionMiddleware.go
+func DataPermissionMiddleware(db *gorm.DB) gin.HandlerFunc {
+    service := datascope.NewService(db)
+    return func(c *gin.Context) {
+        value, exists := c.Get("accountId")
+        accountID, ok := value.(int64)
+        if !exists || !ok || accountID <= 0 {
+            c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "请先登录"})
+            return
+        }
+        scope, err := service.BuildContext(c.Request.Context(), accountID)
+        if err != nil {
+            c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "获取数据权限失败"})
+            return
+        }
+        reqCtx := c.Request.Context()
+        if scope.IsSuperAdmin() {
+            reqCtx = gormplus.SkipDataPermission(reqCtx)
+        } else {
+            reqCtx = gormplus.WithDataPermission(reqCtx, datascope.Inject(scope))
+        }
+        c.Request = c.Request.WithContext(reqCtx)
+        c.Set("dataScopeContext", scope) // 业务层有需要时可读取计算结果。
+        c.Next()
+    }
+}
+```
+
+`BuildContext` 从数据库读取当前账号状态、管理员标志、角色和部门范围，合并多个有效角色的权限，并对部门 ID 去重。参考项目的枚举如下，**与旧版 README 的编号不同**：
+
+| DataScope | 含义 | 权限服务的计算结果 |
+|---|---|---|
+| 1 | 全部数据 | 不追加数据范围条件 |
+| 2 | 本部门 | 把当前部门放入 `DeptIDs` |
+| 3 | 本部门及下级 | 查询本部门及子部门，合并到 `DeptIDs` |
+| 4 | 仅本人 | 使用当前 `AccountID` |
+| 5 | 自定义部门 | 从角色自定义部门关联表取得 `DeptIDs` |
+
+参考项目的 `datascope.Context` 保存 `AccountID`、`IsAdmin`、`DeptID`、`RoleIDs`、`DataScope`、`DeptIDs`；`IsSuperAdmin()` 判断 `IsAdmin == 1`。查询字段按业务表区分，不能对所有表统一追加 `created_by`：
+
+```go
+// internal/datascope/injector.go
+// 导入 gorm；Context 来自同包，DataScope 编号按上表。
+func Inject(scope *Context) func(*gorm.DB, string) {
+    return func(db *gorm.DB, tableName string) {
+        if scope == nil {
+            db.Where("1 = 0")
+            return
+        }
+        if scope.IsSuperAdmin() || scope.DataScope == 1 {
+            return
+        }
+        if scope.DataScope != 4 { // 部门权限先按业务表选择过滤列。
+            switch tableName {
+            case "sys_account", "sys_post":
+                if len(scope.DeptIDs) == 0 {
+                    db.Where("1 = 0")
+                } else {
+                    db.Where(tableName+".dept_id IN ?", scope.DeptIDs)
+                }
+                return
+            case "sys_dept":
+                if len(scope.DeptIDs) == 0 {
+                    db.Where("1 = 0")
+                } else {
+                    db.Where(tableName+".id IN ?", scope.DeptIDs)
+                }
+                return
+            }
+        }
+        // 仅本人，以及参考项目中其他受控表，按创建人过滤。
+        if scope.AccountID <= 0 {
+            db.Where("1 = 0")
+            return
+        }
+        db.Where(tableName+".created_by = ?", scope.AccountID)
+    }
+}
+```
+
+上面是便于阅读的收敛示例：部门和子部门的查询在 `BuildContext` 中完成，不在每条业务 SQL 的回调里反复查角色。`tableName` 来自插件；自定义业务表、别名或联表时，应按真实列和权限语义调整注入函数。
+
+```go
+// 参考账号路由的实际顺序。
+accounts := router.Group("/account",
+    authMiddleware,
+    middleware.OperatorMiddleware(),
+    middleware.DataPermissionMiddleware(db),
+    casbinMiddleware,
+)
+accounts.GET("/list", accountHandler.List)
+accounts.POST("/page", accountHandler.Page)
+```
+
+### 3、验证效果
+
+在本地准备不同部门、不同创建人的账号记录，分别以“全部数据”“本部门”“仅本人”的账号请求同一接口。Repository 无需重复拼权限 SQL：
+
+```go
+list, err := sysAccountRepository.FindList(ctx)
+
+// 自定义 VO 分页放在 Repository 扩展中；voList 是业务 VO 切片。
+offset, limit := gormplus.DbPage(req.PageNumber, req.PageSize)
+total, err := dao.SysAccountEntity.WithContext(ctx).ScanByPage(&voList, offset, limit)
+```
+
+| 场景 | 预期 SQL / 结果 |
+|---|---|
+| 仅本人，账号 ID=1001 | `sys_account.created_by = 1001` |
+| 本部门或自定义部门，`DeptIDs=[10,11]` | `sys_account.dept_id IN (10,11)` |
+| 同一部门范围查询 `sys_dept` | `sys_dept.id IN (10,11)`，不是 `sys_dept.dept_id` |
+| 查询按部门过滤的表，但部门范围为空 | `1 = 0`，返回零行 |
+| 超级管理员 / 全部数据 | 不追加数据权限范围；其他租户、软删除等条件仍独立生效 |
+| 修改或删除其他权限范围的 ID | 原记录不变；同时核对 SQL 条件和数据库数据 |
+| 缺少登录账号 / 权限服务失败 | 在中间件终止，不进入业务查询 |
+
+#### Find、Scan 与原生 SQL 的边界
+
+权限条件覆盖 `Find`、通过 `Model` / `Table` 构建的 `Scan`、`Rows`、`Row`、更新和删除。业务 OR 会先分组，再通过 AND 连接权限条件。
+
+`Scan(&list)` 接收到切片可映射多行；`Scan(&item)` 接收到结构体只映射一行，SQL 不会因此自动增加 `LIMIT 1`，需要单条时使用 `Limit(1).Scan(&item)`。自定义 VO 应明确源 `Model` / `Table`。
+
+`Raw(sql).Scan(...)` 和 DAL 原生 SQL 不会自动重写 SQL 来补权限条件，需要在 SQL 中显式约束。没有挂载注入函数、排除表或使用 `SkipDataPermission` 时不会添加权限范围；受保护接口由中间件把关。
 
 ---
 
 ## 九、自动填充插件
 
+参考项目使用 `accountId → CtxContextKey1 → CreatedBy / UpdatedBy`，避免每个新增、修改接口手动填写操作人。
+
+### 1、先注册插件
 
 ```go
-// 中间件写入操作人信息
-func OperatorMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		claims, _ := jwt.ParseToken(c.GetHeader("Authorization"))
-		ctx := context.WithValue(c.Request.Context(), gormplus.CtxContextKey1, claims.UserID)   // 操作人 ID
-		ctx  = context.WithValue(ctx,                 gormplus.CtxContextKey2, claims.Username) // 操作人姓名
-		c.Request = c.Request.WithContext(ctx)
-		c.Next()
-	}
+// initialize/db.go
+func RegisterAutoFillPlugin(db *gorm.DB) error {
+    return db.Use(gormplus.NewAutoFillPlugin(gormplus.AutoFillConfig{
+        Fields: []gormplus.FieldConfig{
+            {Name: "CreatedBy", Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1), OnCreate: true},
+            {Name: "UpdatedBy", Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1), OnCreate: true, OnUpdate: true},
+        },
+    }))
 }
-
-// 注册插件
-db.Use(gormplus.NewAutoFillPlugin(gormplus.AutoFillConfig{
-	Fields: []gormplus.FieldConfig{
-		{Name: "CreatedBy",   Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1),  OnCreate: true},
-		{Name: "UpdatedBy",   Getter: gormplus.CtxGetter[int64](gormplus.CtxContextKey1),  OnCreate: true, OnUpdate: true},
-		{Name: "CreatedName", Getter: gormplus.CtxGetter[string](gormplus.CtxContextKey2), OnCreate: true},
-		{Name: "UpdatedName", Getter: gormplus.CtxGetter[string](gormplus.CtxContextKey2), OnCreate: true, OnUpdate: true},
-	},
-}))
-
-// 业务代码零改动
-db.WithContext(ctx).Create(&account)              // CreatedBy / CreatedName 自动填充
-db.WithContext(ctx).Model(&account).Updates(data) // UpdatedBy / UpdatedName 自动填充
 ```
+
+`Name` 是实体字段名，也支持数据库列名。参考实体包含 `CreatedBy int64` / `UpdatedBy int64`，对应 `created_by` / `updated_by`。Getter 的类型必须与中间件写入的值一致，不能一个写 `int`、另一个读 `int64`。创建和更新时间由 GORM 的时间字段约定另行处理。
+
+### 2、定义并接入中间件
+
+```go
+// internal/middleware/OperatorMiddleware.go
+// 导入 context、net/http、Gin、gormplus。
+func OperatorMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        value, exists := c.Get("accountId")
+        accountID, ok := value.(int64)
+        if !exists || !ok || accountID <= 0 {
+            c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "请先登录"})
+            return
+        }
+        ctx := context.WithValue(c.Request.Context(), gormplus.CtxContextKey1, accountID)
+        c.Request = c.Request.WithContext(ctx)
+        c.Next()
+    }
+}
+```
+
+```go
+accounts := router.Group("/account", authMiddleware, middleware.OperatorMiddleware())
+accounts.POST("", accountHandler.Create)
+accounts.PUT("/:id", accountHandler.Update)
+```
+
+需要同时使用数据权限时，按上一节的顺序把 `DataPermissionMiddleware` 放到操作人中间件之后。直接把 `*gin.Context` 传入仓储的项目，再按 [Context 解析器](#十一context-解析器) 注册适配。
+
+### 3、验证效果
+
+通过两个不同账号新增和修改同一条业务数据，新增/修改请求 DTO 都不要接收 `CreatedBy` / `UpdatedBy`，让操作人来自认证上下文。
+
+```go
+// Repository 使用请求 context，业务代码不手填操作人。
+err := sysAccountRepository.Create(ctx, accountEntity)
+err = sysAccountRepository.UpdateMapById(ctx, accountID, map[string]any{"nickname": "新昵称"})
+```
+
+| 操作 | 数据库中应看到的值 |
+|---|---|
+| 账号 1001 新增 | `created_by=1001`，`updated_by=1001` |
+| 账号 2002 修改 | `created_by` 保留 1001，`updated_by=2002` |
+| 配置 `CtxContextKey2` 对应姓名字段 | 中间件还需写入 `string` 类型姓名，并为实体姓名字段增加 `FieldConfig` |
+
+缺少操作人 context 或类型不匹配时，`CtxGetter` 返回零值，插件不会代替认证中间件报错。原生 `Exec` / DAL SQL 没有实体 Schema，不会自动补操作人字段；这类 SQL 要显式传参。
 
 ---
 
 ## 十、多数据源管理
 
+数据源管理器通过 `Dialector` 接收驱动和连接配置。它负责选择句柄，具体的租户、数据权限及自动填充插件仍需注册到每个实际使用的数据库连接。
 
-不内置任何驱动依赖，通过 `Dialector` 字段外部传入，支持任意 gorm 驱动。
-
-### 注册数据源
+### 1、先注册数据源
 
 ```go
-// MySQL
-import "gorm.io/driver/mysql"
+// 启动阶段；mainDSN、replicaDSN、analyticsDSN 来自项目配置。
+// 导入 MySQL 驱动、gormplus。
 gormplus.DS.Register("default", gormplus.DataSourceGroupConfig{
-	Master: gormplus.DataSourceNodeConfig{
-		Dialector: mysql.Open("root:pwd@tcp(master:3306)/mydb?charset=utf8mb4&parseTime=True"),
-		Pool:      gormplus.DataSourcePoolConfig{MaxOpen: 50, MaxIdle: 10},
-	},
-	Slaves: []gormplus.DataSourceNodeConfig{
-		{Dialector: mysql.Open("root:pwd@tcp(slave1:3306)/mydb?charset=utf8mb4&parseTime=True")},
-		{Dialector: mysql.Open("root:pwd@tcp(slave2:3306)/mydb?charset=utf8mb4&parseTime=True")},
-	},
+    Master: gormplus.DataSourceNodeConfig{
+        Dialector: mysql.Open(mainDSN),
+        Pool: gormplus.DataSourcePoolConfig{MaxOpen: 50, MaxIdle: 10},
+    },
+    Slaves: []gormplus.DataSourceNodeConfig{
+        {Dialector: mysql.Open(replicaDSN)},
+    },
 })
-
-// PostgreSQL
-import "gorm.io/driver/postgres"
-gormplus.DS.Register("pg", gormplus.DataSourceGroupConfig{
-	Master: gormplus.DataSourceNodeConfig{
-		Dialector: postgres.Open("host=localhost user=root password=pwd dbname=mydb port=5432 sslmode=disable"),
-	},
-})
-
-// SQLite（适合单元测试）
-import "gorm.io/driver/sqlite"
-gormplus.DS.Register("test", gormplus.DataSourceGroupConfig{
-	Master: gormplus.DataSourceNodeConfig{Dialector: sqlite.Open(":memory:")},
-})
-
-// 多数据源混用
 gormplus.DS.Register("analytics", gormplus.DataSourceGroupConfig{
-	Master: gormplus.DataSourceNodeConfig{Dialector: postgres.Open(analyticsDSN)},
+    Master: gormplus.DataSourceNodeConfig{Dialector: mysql.Open(analyticsDSN)},
 })
 ```
 
-### 中间件标记读写
+PostgreSQL、SQLite、SQL Server 分别传入对应驱动的 Dialector 即可。仅配置 Dialector 的从库也会注册；空从库配置跳过，没有有效从库时读操作回退到主库。
+
+### 2、定义并接入中间件
 
 ```go
+// internal/middleware/DSMiddleware.go；导入 net/http、Gin、gormplus。
 func DSMiddleware(name string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ctx := gormplus.DSWithName(c.Request.Context(), name)
-		if c.Request.Method == http.MethodGet {
-			ctx = gormplus.DSWithRead(ctx) // GET → 从库
-		} else {
-			ctx = gormplus.DSWithWrite(ctx) // 其他 → 主库
-		}
-		c.Request = c.Request.WithContext(ctx)
-		c.Next()
-	}
+    return func(c *gin.Context) {
+        ctx := gormplus.DSWithName(c.Request.Context(), name)
+        if c.Request.Method == http.MethodGet {
+            ctx = gormplus.DSWithRead(ctx)
+        } else {
+            ctx = gormplus.DSWithWrite(ctx)
+        }
+        c.Request = c.Request.WithContext(ctx)
+        c.Next()
+    }
 }
 ```
-
-### Repository 层获取 DB
 
 ```go
-// 推荐：Auto 自动读取 context 决定数据源和读写
-func (r *OrderRepo) List(ctx context.Context) ([]*Order, error) {
-	db, err := gormplus.DS.Auto(ctx)
-	if err != nil { return nil, err }
-	var list []*Order
-	return list, db.WithContext(ctx).Find(&list).Error
-}
-
-// 显式指定
-db, err := gormplus.DS.Write("default")              // 主库
-db, err := gormplus.DS.Read("default")               // 从库
-db, err := gormplus.DS.WriteCtx(ctx, "analytics")    // 指定数据源主库
-
-// 健康检查
-results := gormplus.DS.Ping()
-// map[string]error{"default:master": nil, "default:slave0": nil}
+reports := router.Group("/reports", authMiddleware, middleware.DSMiddleware("analytics"))
+reports.GET("", reportHandler.List)
 ```
+
+`GET → 从库` 是示例策略。POST 分页等读取接口、写后立即读取、事务和要求读到最新值的接口，按业务显式选择主库或从库。
+
+### 3、验证效果
+
+生成的仓储固定使用构造时的句柄。中间件只写 context 标记，**不会自动改变已经构造好的 Repository**；需要动态路由时，在业务的数据访问工厂 / Repository 扩展层解析句柄后再构造相应仓储：
+
+```go
+db, err := gormplus.DS.Auto(ctx)
+if err != nil {
+    return nil, err
+}
+repo := repository.NewSysAccountRepository(db)
+return repo.FindList(ctx)
+```
+
+固定三个业务库时，也可在启动阶段分别构造仓储并注入 Service，无需每次动态选择，见 [Repository 默认连接与多数据源](#repository-默认连接与多数据源)。
+
+| 请求 / 调用 | 应选择的句柄 |
+|---|---|
+| `default` + 读标记 | default 从库，多个从库轮询 |
+| `default` + 写标记 | default 主库 |
+| `analytics` + 读标记，未配置从库 | analytics 主库 |
+| 没有读标记 | 默认走所选数据源的主库 |
+
+在本地给各库放入可区分的数据，核对返回结果和 SQL 日志中的目标实例。`gormplus.DS.Ping()` 可查看 `default:master`、`default:slave0` 等节点状态，应用退出时调用 `gormplus.DS.Close()` 释放管理器已打开的连接。
 
 ---
 
 ## 十一、Context 解析器
 
+这是 Gin 请求上下文与租户、权限、自动填充插件之间的适配步骤。参考项目在 `initialize/db.go` 注册一次；不是每个请求注册一次。
 
-插件读取 ctx 数据前先调用解析器，屏蔽不同框架的 ctx 类型差异。
-
-| 框架 | 是否需要注册 | 业务代码传 ctx |
-|------|------------|--------------|
-| gin | **必须注册** | `db.WithContext(c)` 直接传 `*gin.Context` |
-| go-zero | 无需注册 | `db.WithContext(r.Context())` |
-| fiber | 无需注册 | `db.WithContext(c.UserContext())` |
+### 1、先注册解析器
 
 ```go
-gormplus.RegisterCtxResolver(func(ctx context.Context) context.Context {
-	if ginCtx, ok := ctx.(*gin.Context); ok {
-		return ginCtx.Request.Context()
-	}
-	return ctx
-})
-
-// 注册后可直接传 *gin.Context，无需手动 c.Request.Context()
-db.WithContext(c).Find(&list)
-dao.Entity.WithContext(c).Find()
+// initialize/db.go；导入 context、Gin、gormplus。
+func RegisterGinContextResolver() {
+    gormplus.RegisterCtxResolver(func(ctx context.Context) context.Context {
+        if c, ok := ctx.(*gin.Context); ok && c.Request != nil {
+            return c.Request.Context()
+        }
+        return ctx
+    })
+}
 ```
+
+参考项目的启动装配可以写成下面这样；这些注册函数对应本页各插件章节，由业务初始化包提供：
+
+```go
+func RegisterAccountPlugins(db *gorm.DB) error {
+    RegisterGinContextResolver()
+    if err := RegisterDataPermissionPlugin(db); err != nil {
+        return err
+    }
+    if err := RegisterAutoFillPlugin(db); err != nil {
+        return err
+    }
+    // 租户、慢查询、敏感字段按业务需要在这里另行注册并检查错误。
+    gormplus.Use(db)
+    return nil
+}
+```
+
+### 2、定义并接入中间件
+
+复用 [操作人中间件](#九自动填充插件) 和 [数据权限中间件](#八数据权限插件)，它们都更新 `c.Request`。认证先于两者执行：
+
+```go
+accounts := router.Group("/account",
+    authMiddleware,
+    middleware.OperatorMiddleware(),
+    middleware.DataPermissionMiddleware(db),
+    casbinMiddleware,
+)
+accounts.GET("/list", accountHandler.List)
+
+// Handler 调用 Service 时优先传标准请求 context。
+list, err := accountService.List(c.Request.Context())
+```
+
+始终传 `c.Request.Context()` 的 Gin 项目无需额外解析器；项目习惯直接把 `c` 传给 Repository / DAO 时，解析器让上述三个插件能读到 Request.Context 中的值。敏感字段返回模式及慢查询 trace 示例使用标准请求 context，不依赖这个解析器。
+
+### 3、验证效果
+
+在完成认证和操作人中间件之后，临时检查两种传法读取到的操作人是否一致：
+
+```go
+getter := gormplus.CtxGetter[int64](gormplus.CtxContextKey1)
+fromRequest := getter(c.Request.Context())
+fromGin := getter(c)
+// 当前账号是 1001 时，两者都应该是 int64(1001)。
+```
+
+然后执行一次新增、修改和权限列表请求，核对操作人字段及 SQL 权限范围。若只有 `getter(c)` 为零值，检查是否注册解析器；两种传法都为零值时，检查中间件顺序、`accountId` 值类型及是否更新了 `c.Request`。
+
+| 传入数据库层的 context | 是否需要 Gin 解析器 |
+|---|---|
+| Gin 的 `c.Request.Context()` | 不需要 |
+| 直接传 `*gin.Context` | 对上述插件需要注册 |
+| go-zero 的 `r.Context()` / Logic 的标准 `ctx` | 不需要 |
+| Fiber 的 `c.UserContext()` | 不需要 |
 
 ---
 
 ## 十二、慢查询监控
 
+慢查询插件在数据库操作结束后记录耗时，不需要权限注入函数。中间件的作用是给 SQL 日志补上当前请求的 trace ID。
+
+### 1、先注册插件
 
 ```go
-gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
-	Threshold: 200 * time.Millisecond, // 超过此阈值记录，0 时自动设为 200ms
-	Logger: func(ctx context.Context, info gormplus.SlowQueryInfo) {
-		zap.L().Warn("慢查询",
-			zap.Duration("cost", info.Duration),
-			zap.String("table", info.Table),
-			zap.String("sql", info.SQL), // 已替换 ?，可直接 EXPLAIN
-			zap.Int64("rows", info.RowsAffected),
-			zap.Error(info.Error),
-		)
-	},
-})
+// initialize/db.go；导入 context、log、time、gormplus、gorm 和业务 middleware 包。
+func RegisterSlowQueryPlugin(db *gorm.DB) error {
+    return gormplus.RegisterSlowQuery(db, gormplus.SlowQueryConfig{
+        Threshold: 200 * time.Millisecond,
+        Logger: func(ctx context.Context, info gormplus.SlowQueryInfo) {
+            traceID, _ := ctx.Value(middleware.SQLTraceKey{}).(string)
+            log.Printf("[SLOW SQL] trace=%s cost=%v table=%s rows=%d err=%v",
+                traceID, info.Duration, info.Table, info.RowsAffected, info.Error)
+        },
+    })
+}
 ```
+
+阈值不大于 0 时使用默认的 200ms。`info.SQL` 是替换了参数的完整 SQL，需要排查时可在受控日志中输出；生产日志应按业务处理其中的敏感参数。Query、Create、Update、Delete、Row、Raw 均注册了耗时回调。
+
+### 2、定义并接入中间件
+
+```go
+// internal/middleware/TraceMiddleware.go
+// 导入 context、strconv、time、Gin。
+type SQLTraceKey struct{}
+
+func TraceMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        traceID := c.GetString("requestId") // 优先沿用项目日志中间件生成的请求 ID。
+        if traceID == "" {
+            traceID = strconv.FormatInt(time.Now().UnixNano(), 10)
+        }
+        ctx := context.WithValue(c.Request.Context(), SQLTraceKey{}, traceID)
+        c.Request = c.Request.WithContext(ctx)
+        c.Next()
+    }
+}
+```
+
+```go
+router.Use(middleware.TraceMiddleware())
+// 如果项目已有 trace 中间件，直接复用它的 key 和请求 context，无需重复生成。
+```
+
+### 3、验证效果
+
+在本地 MySQL 测试连接中，使用经过中间件的请求 context 执行一次可控慢 SQL；这只是验证片段，不需要新增业务接口：
+
+```go
+err := db.WithContext(ctx).Exec("SELECT SLEEP(?)", 0.25).Error
+// 预期出现 [SLOW SQL]，cost 约 250ms，trace 与当前请求一致。
+```
+
+正常耗时低于阈值的 SQL 不应触发这个慢查询回调。SQL 本身出错时 `info.Error` 可携带错误，但只有耗时达到阈值才会进入这个 Logger；它不能代替完整的错误日志。`SLEEP` 是 MySQL 验证语法，其他数据库使用各自的测试方式。
 
 ---
 
 ## 十三、敏感字段加密
 
-敏感字段插件使用随机 nonce 的 AES-GCM 保存密文，使用独立的 HMAC-SHA256 盲索引完成等值查询。相同手机号的密文每次都不同，但查询索引相同。
+敏感字段插件负责写入时生成存储值和盲索引，实体查询后按请求权限返回脱敏值或明文。本节是按当前库补充的示例；参考项目没有配置这些密文列，接入前要先完成自己的表结构和实体生成。
 
-代码生成器支持通过 `GeneratorConfig.SensitiveFields` 指定表和字段，并自动生成类似下面的业务字段 tag：
+### 1、先注册插件
+
+本节采用**加密存储**模式。实体包含一个业务展示字段和两个数据库字段：
 
 ```go
-Phone string `gorm:"-" json:"phone" gormplus:"type:phone;cipher:phone_cipher;index:phone_index;encrypt:false"`
+type SensitiveAccount struct {
+    ID          int64  `gorm:"primaryKey" json:"id"`
+    Phone       string `gorm:"-" json:"phone"`
+    PhoneCipher string `gorm:"column:phone_cipher" json:"-"`
+    PhoneIndex  string `gorm:"column:phone_index;index" json:"-"`
+}
 ```
 
-生成配置和完整 CRUD 示例见 [plugin/sensitive.md](plugin/sensitive.md)。
-
-gorm-gen Repository 按手机号查询使用：
+`Phone` 不直接映射数据库；`phone_cipher`、`phone_index` 列需要预先存在。密文和盲索引字段通过 `json:"-"` 隐藏，不能随实体响应直接返回。
 
 ```go
-list, err := a.SysUserRepository.FindList(
-	ctx,
-	gormplus.QueryOpt().Where(
-		a.SensitivePlugin.PhoneEq(dao.SysUserEntity.PhoneIndex, phone),
-	).Build(),
+// initialize/db.go
+func RegisterSensitivePlugin(db *gorm.DB, secretKey []byte) (*gormplus.SensitivePlugin, error) {
+    phone := gormplus.PhoneField("Phone")
+    phone.EncryptAtRest = true
+    return gormplus.RegisterSensitive(db, gormplus.SensitiveConfig{
+        Key: secretKey,
+        Fields: []gormplus.SensitiveFieldConfig{phone},
+    })
+}
+```
+
+主密钥从业务安全配置中读取，至少 16 字节；插件派生独立的加密密钥和 HMAC 索引密钥。将返回的 `*gormplus.SensitivePlugin` 注入 Service / Repository，后续使用同一个实例构造手机号索引条件。
+
+`PhoneField("Phone")` 默认匹配 `PhoneCipher`、`PhoneIndex` 和列 `phone_index`，规范化空格、横线及 `+86`，默认返回脱敏手机号。**`EncryptAtRest` 默认是 false，必须显式设 true 才保存 AES-GCM 密文。** false 模式下，虽然列名仍叫 `phone_cipher`，存储内容其实是规范化明文；已有数据不能直接切换模式，需先迁移。
+
+通过生成器配置敏感字段时，也要保持一致：
+
+```go
+SensitiveFields: []gormplus.GeneratorSensitiveField{
+    {Table: "sys_user", Field: "phone", Type: "phone", EncryptAtRest: true},
+},
+// 业务字段的生成 tag 将包含 encrypt:true。
+```
+
+### 2、定义并接入中间件
+
+```go
+// internal/middleware/SensitiveReturnMiddleware.go
+// 导入 Gin、gormplus。
+func SensitiveReturnMiddleware() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        ctx := c.Request.Context()
+        // 该标志必须由服务端鉴权结果设置，不读取前端的“显示明文”参数。
+        if c.GetBool("canViewSensitive") {
+            ctx = gormplus.WithSensitivePlaintext(ctx)
+        } else {
+            ctx = gormplus.WithSensitiveMasked(ctx)
+        }
+        c.Request = c.Request.WithContext(ctx)
+        c.Next()
+    }
+}
+```
+
+```go
+accounts := router.Group("/account", authMiddleware, sensitiveAuthorizationMiddleware,
+    middleware.SensitiveReturnMiddleware())
+accounts.GET("/detail/:id", accountHandler.Detail)
+```
+
+`sensitiveAuthorizationMiddleware` 是项目自己的鉴权逻辑，校验查看敏感明文的权限后设置 `canViewSensitive`。Repository 使用 `c.Request.Context()` 对应的标准 context，返回模式才能跟随本次请求；未设置标志默认脱敏。
+
+### 3、验证效果
+
+下面是放在 Repository / 本地验证代码中的实体操作；请求 DTO 只接收原始手机号，不接收密文和索引。
+
+```go
+account := SensitiveAccount{Phone: "13800138000"}
+if err := db.WithContext(ctx).Create(&account).Error; err != nil {
+    return err
+}
+
+var found SensitiveAccount
+err := sensitive.WhereEqual(db.WithContext(ctx), "Phone", "13800138000").First(&found).Error
+// 普通请求：found.Phone == "138****8000"。
+// 有明文权限的请求：found.Phone == "13800138000"。
+```
+
+使用生成仓储时，索引条件写法如下；`sysUserRepository` 和 `sensitive` 都由业务初始化注入：
+
+```go
+list, err := sysUserRepository.FindList(ctx,
+    gormplus.QueryOpt().Where(
+        sensitive.PhoneEq(dao.SysUserEntity.PhoneIndex, phone),
+    ).Build(),
 )
 ```
 
-默认返回脱敏手机号；完成权限校验后，可将第一个参数换成 `gormplus.WithSensitivePlaintext(ctx)` 返回明文。
-
-无条件列表查询并返回明文：
+更新时传入原始明文，不能把查询出来的 `138****8000` 再保存：
 
 ```go
-list, err := a.SysUserRepository.FindList(
-	gormplus.WithSensitivePlaintext(ctx),
-)
+update := SensitiveAccount{ID: accountID, Phone: "13900139000"}
+err := db.WithContext(ctx).Model(&update).
+    Select("PhoneCipher", "PhoneIndex").Updates(&update).Error
 ```
 
-`WithSensitivePlaintext` 必须在服务端确认当前用户具有查看敏感数据明文的权限后使用。
+| 验证位置 / 操作 | 加密存储模式的预期效果 |
+|---|---|
+| 数据库 `phone_cipher` | AES-GCM 密文，不等于原手机号 |
+| 数据库 `phone_index` | HMAC 查询索引，不等于原手机号 |
+| 同一手机号再次写入 | 密文可以变化，规范化后的索引保持一致 |
+| 普通账号查询、序列化为 JSON | `phone` 脱敏，不出现 `phone_cipher` / `phone_index` |
+| 有明文权限的账号查询 | `phone` 返回完整手机号 |
+| 更新为新手机号 | 新手机号能查到，旧手机号不再匹配该记录 |
 
-模型建议将业务展示字段排除在数据库映射之外，并隐藏密文和索引字段：
+插件通过 Query 回调处理实体的 `Find` / `First` 等查询；不要假设任意 `Raw`、`Scan` 或自定义 VO 都会自动填充敏感展示字段。示例不启用缓存；开启后要把权限和返回模式纳入缓存隔离，避免有权限与无权限请求共享结果。
 
-```go
-type User struct {
-	ID          int64  `json:"id"`
-	Phone       string `gorm:"-" json:"phone"`
-	PhoneCipher string `gorm:"column:phone_cipher" json:"-"`
-	PhoneIndex  string `gorm:"column:phone_index;uniqueIndex" json:"-"`
-}
-```
-
-创建并注册插件。一个主密钥会自动派生相互独立的加密密钥和查询索引密钥：
-
-```go
-sensitive, err := gormplus.RegisterSensitive(db, gormplus.SensitiveConfig{
-	// 应从 KMS、Vault 或安全环境变量读取，不要写死在源码中。
-	Key: secretKey,
-	Fields: []gormplus.SensitiveFieldConfig{
-		{
-			PlainField:     "Phone",
-			CipherField:    "PhoneCipher",
-			IndexField:     "PhoneIndex",
-			IndexColumn:    "phone_index",
-			EncryptAtRest: false, // 当前字段默认保存明文
-			ReturnMode:     gormplus.SensitiveReturnMasked,
-		},
-	},
-})
-if err != nil {
-	return err
-}
-```
-
-`PhoneField("Phone")` 默认使用 `PhoneCipher`、`PhoneIndex` 和数据库列 `phone_index`，自动清理手机号中的空格、横线及 `+86`，查询后默认返回 `138****8000`。
-
-`EncryptAtRest` 位于每个 `SensitiveFieldConfig` 中，默认为 `false`。因此可以让手机号保存明文、身份证号保存 AES-GCM 密文。已有数据的生产环境不能直接切换字段模式，必须先迁移存储数据。
-
-### 插入数据
-
-给业务字段 `Phone` 传入原始明文，插件会自动生成随机密文和查询索引，并分别写入 `phone_cipher`、`phone_index`：
-
-```go
-user := User{Phone: "13800138000"}
-if err := db.WithContext(ctx).Create(&user).Error; err != nil {
-	return err
-}
-```
-
-不要自行给 `PhoneCipher` 和 `PhoneIndex` 赋值。数据库不会保存 `Phone` 明文。
-
-### 按手机号查询
-
-随机密文不能使用 `WHERE phone_cipher = ?` 查询，应通过盲索引等值查询：
-
-```go
-var user User
-err = sensitive.WhereEqual(db, "Phone", "13800138000").First(&user).Error
-// 默认 user.Phone == "138****8000"
-```
-
-列表查询不需要额外处理，插件会逐条设置返回字段：
-
-```go
-var users []User
-err := db.WithContext(ctx).Find(&users).Error
-// users[i].Phone 默认是类似 138****8000 的脱敏值
-```
-
-### 更新手机号
-
-更新时必须传入新的原始手机号。建议创建一个只包含主键和新手机号的独立对象，避免误用查询结果中的脱敏值：
-
-```go
-update := User{
-	ID:    userID,
-	Phone: "13900139000",
-}
-
-err := db.WithContext(ctx).
-	Model(&update).
-	Select("PhoneCipher", "PhoneIndex").
-	Updates(&update).Error
-```
-
-插件会同时更新：
-
-```text
-phone_cipher = 新手机号的随机 AES-GCM 密文
-phone_index  = 新手机号的 HMAC 查询索引
-```
-
-更新完成后，旧手机号将无法再查到该记录：
-
-```go
-var user User
-err := sensitive.
-	WhereEqual(db.WithContext(ctx), "Phone", "13900139000").
-	First(&user).Error
-```
-
-禁止把查询得到的脱敏对象直接保存：
-
-```go
-// 错误：user.Phone 可能已经是 138****8000
-db.Save(&user)
-```
-
-如果只更新其他普通字段，应明确指定需要更新的字段，避免触碰敏感字段：
-
-```go
-err := db.Model(&User{}).
-	Where("id = ?", userID).
-	Update("nickname", nickname).Error
-```
-
-### 控制返回内容
-
-有权限的接口通过 Context 指定返回明文：
-
-```go
-ctx = gormplus.WithSensitivePlaintext(ctx)
-err = sensitive.WhereEqual(db.WithContext(ctx), "Phone", phone).First(&user).Error
-```
-
-Context 返回策略：
-
-- 默认或 `WithSensitiveMasked(ctx)`：返回 `138****8000`。
-- `WithSensitivePlaintext(ctx)`：返回完整明文。
-- `WithSensitiveCiphertext(ctx)`：返回数据库密文。
-
-字段级高级配置也可以直接使用返回模式常量：
-
-```go
-ReturnMode: gormplus.SensitiveReturnMasked
-// 可选值：SensitiveReturnMasked、SensitiveReturnPlain、SensitiveReturnCipher
-```
-
-注册返回值类型为 `*gormplus.SensitivePlugin`，建议保存到 ServiceContext，供 `PhoneEq`、`IndexValue` 等查询方法复用。
-
-需要自定义字段名、手机号规范化、掩码长度或按权限动态判断时，仍可直接填写 `SensitiveFieldConfig` 的高级配置。
-
-返回模式必须由服务端权限判断，不应直接信任前端传入的“显示明文”参数。插件当前支持精确等值查询；模糊、后四位和号段查询需要单独设计对应的索引列。更新时必须传入原始明文，不能把脱敏值再次作为手机号保存。
+更多生成配置及 CRUD 说明见 [敏感字段完整文档](plugin/sensitive.md)。模糊、后四位和号段查询需要另行设计索引，当前盲索引提供精确等值匹配。
 
 ---
 
