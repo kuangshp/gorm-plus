@@ -1024,7 +1024,7 @@ func (h *orderHook) After(ctx context.Context, sqlFile string, args []any, cost 
 /////////////////////////////// CacheCleanup /////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-func TestWithCacheCleanup_ClearsCache(t *testing.T) {
+func TestWithCacheCleanup_ClearsCache(t *testing.T) { // 验证后台清理，并同步读取测试状态。
 	loader := newMockLoader(map[string]string{
 		"account/list.sql": "SELECT id, username, status, balance FROM account WHERE status = ?",
 	})
@@ -1043,12 +1043,15 @@ func TestWithCacheCleanup_ClearsCache(t *testing.T) {
 	// 等待定时清理触发
 	time.Sleep(120 * time.Millisecond)
 
-	if !loader.cleared {
+	loader.mu.RLock()
+	cleared := loader.cleared
+	loader.mu.RUnlock()
+	if !cleared {
 		t.Fatal("expect cache to be cleared by background goroutine")
 	}
 }
 
-func TestClose_StopsCacheCleanup(t *testing.T) {
+func TestClose_StopsCacheCleanup(t *testing.T) { // 验证关闭后停止清理，同步访问清理状态。
 	loader := newMockLoader(map[string]string{})
 
 	db := setupDB(t)
@@ -1060,12 +1063,17 @@ func TestClose_StopsCacheCleanup(t *testing.T) {
 	d.Close() // 立即关闭
 
 	// 重置 cleared 标志
+	loader.mu.Lock()
 	loader.cleared = false
+	loader.mu.Unlock()
 
 	// 等待超过一个清理周期，确认不再触发
 	time.Sleep(120 * time.Millisecond)
 
-	if loader.cleared {
+	loader.mu.RLock()
+	cleared := loader.cleared
+	loader.mu.RUnlock()
+	if cleared {
 		t.Fatal("expect no cache cleanup after Close")
 	}
 }

@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"github.com/kuangshp/gorm-plus"
 	"gorm.io/gen"
 	"gorm.io/gorm"
@@ -17,10 +18,24 @@ func init() {
 }
 
 type default{{.ModelName}}Repository struct {
-	daoBase *dao.Query
-	daoTx *dao.Query
-	txScope *gormplus.TransactionScope
-	txErr error
+	daoBase *atomic.Pointer[{{.ModelNameLower}}RepositorySource] // 副本共享首次成功绑定的连接状态，避免复制锁。
+	daoTx *dao.Query // WithTx 显式绑定的事务查询对象。
+	txScope *gormplus.TransactionScope // 显式绑定事务的生命周期。
+	txErr error // 显式事务绑定失败时返回的错误。
+}
+
+type {{.ModelNameLower}}RepositorySource struct {
+	query *dao.Query // 固定的数据源快照。
+	scope *gormplus.TransactionScope // 数据源本身是事务时的生命周期。
+	err error // 事务来源或绑定校验错误。
+}
+
+func new{{.ModelName}}RepositorySource(base *dao.Query) *{{.ModelNameLower}}RepositorySource { // 为已初始化连接保存事务校验结果。
+	source := &{{.ModelNameLower}}RepositorySource{query: base}
+	if _, inTx := base.{{.ModelName}}Entity.UnderlyingDB().Statement.ConnPool.(gorm.TxCommitter); inTx {
+		source.scope, source.err = gormplus.RepositoryTransactionScope(base.{{.ModelName}}Entity.UnderlyingDB())
+	}
+	return source
 }
 
 // WithTx 返回绑定事务的仓储副本，保留业务扩展和注入依赖，原仓储不变。
@@ -38,11 +53,35 @@ func (r *customer{{.ModelName}}Repository) WithTx(tx *dao.Query) {{.ModelName}}R
 	return &clone
 }
 
-func (r *default{{.ModelName}}Repository) source() *dao.Query {
+func (r *default{{.ModelName}}Repository) source() *dao.Query { // 返回固定连接，未初始化的默认连接允许稍后重试绑定。
 	if r.daoTx != nil {
 		return r.daoTx
 	}
-	return r.daoBase
+	if source := r.daoBase.Load(); source != nil {
+		return source.query
+	}
+	var base *dao.Query
+	if db := gormplus.DefaultDB(); db != nil {
+		base = dao.Use(db)
+	} else {
+		snapshot := *dao.Q
+		base = &snapshot
+	}
+	if !base.Available() {
+		return nil
+	}
+	r.daoBase.CompareAndSwap(nil, new{{.ModelName}}RepositorySource(base))
+	return r.daoBase.Load().query
+}
+
+func (r *default{{.ModelName}}Repository) transactionScope() *gormplus.TransactionScope { // 获取显式绑定或默认连接的事务生命周期。
+	if r.daoTx != nil {
+		return r.txScope
+	}
+	if source := r.daoBase.Load(); source != nil {
+		return source.scope
+	}
+	return nil
 }
 
 func (r *default{{.ModelName}}Repository) cacheName(method string) string {
@@ -51,15 +90,23 @@ func (r *default{{.ModelName}}Repository) cacheName(method string) string {
 	return table+"."+method
 }
 
-func (r *default{{.ModelName}}Repository) checkTx() error {
+func (r *default{{.ModelName}}Repository) checkTx() error { // 校验默认连接及事务来源、绑定状态和生命周期。
 	if r.txErr != nil {
 		return r.txErr
 	}
 	if r.txScope != nil {
 		return r.txScope.Check()
 	}
-	if r.source() == nil || !r.source().Available() {
+	if source := r.source(); source == nil || !source.Available() {
 		return gorm.ErrInvalidDB
+	}
+	if source := r.daoBase.Load(); source != nil && r.daoTx == nil {
+		if source.err != nil {
+			return source.err
+		}
+		if source.scope != nil {
+			return source.scope.Check()
+		}
 	}
 	return nil
 }
@@ -146,9 +193,9 @@ type iDefault{{.ModelName}}Repository interface {
 
 // invalidateWriteCaches 失效所有受写操作影响的缓存（List / Page / Count / Exists + 衍生方法）。
 // 用于 Create / Update / Delete 三类已知 ID 的写操作。
-func (r *default{{.ModelName}}Repository) invalidateWriteCaches() {
-	if r.txScope != nil {
-		r.txScope.InvalidateTable(r.cacheName(""))
+func (r *default{{.ModelName}}Repository) invalidateWriteCaches() { // 普通写入立即失效，事务写入登记到提交阶段。
+	if scope := r.transactionScope(); scope != nil {
+		scope.InvalidateTable(r.cacheName(""))
 		return
 	}
 	gormplus.SFInvalidatePrefixes([]string{
@@ -168,17 +215,17 @@ func (r *default{{.ModelName}}Repository) invalidateWriteCaches() {
 
 // invalidateAllTableCaches 失效整张表所有缓存（用于条件 Update / Delete，无法预知影响的 ID）。
 // 包括 FindById 在内的所有方法都会被清掉。
-func (r *default{{.ModelName}}Repository) invalidateAllTableCaches() {
-	if r.txScope != nil {
-		r.txScope.InvalidateTable(r.cacheName(""))
+func (r *default{{.ModelName}}Repository) invalidateAllTableCaches() { // 按当前连接失效整表缓存，事务内延迟到提交。
+	if scope := r.transactionScope(); scope != nil {
+		scope.InvalidateTable(r.cacheName(""))
 		return
 	}
 	gormplus.SFInvalidatePrefix(r.cacheName("")+".")
 }
 
-func (r *default{{.ModelName}}Repository) invalidateById(args map[string]any) {
-	if r.txScope != nil {
-		r.txScope.InvalidateTable(r.cacheName(""))
+func (r *default{{.ModelName}}Repository) invalidateById(args map[string]any) { // 立即失效主键缓存，事务内合并为表级失效。
+	if scope := r.transactionScope(); scope != nil {
+		scope.InvalidateTable(r.cacheName(""))
 		return
 	}
 	gormplus.SFInvalidate(r.cacheName("FindById"), args)
@@ -893,26 +940,17 @@ func (r *default{{.ModelName}}Repository) CountByWrapper(ctx context.Context, fn
 	)
 }
 
-func newDefault{{.ModelName}}Repository(dbs ...*gorm.DB) *default{{.ModelName}}Repository {
+func newDefault{{.ModelName}}Repository(dbs ...*gorm.DB) *default{{.ModelName}}Repository { // 固定可用连接，默认连接尚未初始化时延迟绑定。
 	db, err := gormplus.ResolveRepositoryDB(dbs...)
 	if err != nil {
 		panic(err)
 	}
-	var base *dao.Query
+	r := &default{{.ModelName}}Repository{daoBase: new(atomic.Pointer[{{.ModelNameLower}}RepositorySource])}
 	if db != nil {
-		base = dao.Use(db)
+		r.daoBase.Store(new{{.ModelName}}RepositorySource(dao.Use(db)))
 	} else {
-		// 兼容已有 dao.SetDefault，并固定当前快照，避免后续全局切换影响本实例。
-		snapshot := *dao.Q
-		base = &snapshot
-	}
-	r := &default{{.ModelName}}Repository{daoBase: base}
-	if base.Available() {
-		underlying := base.{{.ModelName}}Entity.UnderlyingDB()
-		if _, inTx := underlying.Statement.ConnPool.(gorm.TxCommitter); inTx {
-			r.daoTx = base
-			r.txScope, r.txErr = gormplus.RepositoryTransactionScope(underlying)
-		}
+		// 已初始化的旧版 dao.SetDefault 立即固定；未初始化时保留重试机会。
+		r.source()
 	}
 	return r
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,8 +16,95 @@ import (
 	"generationfixture/model"
 	gormplus "github.com/kuangshp/gorm-plus"
 	"github.com/kuangshp/gorm-plus/query"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+var startupItemsRepository = NewItemsRepository() // 模拟业务包在数据库初始化前创建仓储。
+var startupNotesRepository = NewNotesRepository() // 并发首次使用时仍需只绑定一个连接。
+
+func TestRepositoryBeforeDatabaseInitialization(t *testing.T) { // 独立进程验证两种启动方式，避免其他测试的默认连接影响结果。
+	mode := os.Getenv("GORMPLUS_REPOSITORY_STARTUP_MODE")
+	if mode == "" {
+		for _, mode := range []string{"legacy", "default", "unmanaged"} {
+			t.Run(mode, func(t *testing.T) {
+				command := exec.Command(os.Args[0], "-test.run=^TestRepositoryBeforeDatabaseInitialization$", "-test.v")
+				command.Env = append(os.Environ(), "GORMPLUS_REPOSITORY_STARTUP_MODE="+mode)
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("startup mode %s: %v\n%s", mode, err, output)
+				}
+			})
+		}
+		return
+	}
+	ctx := context.Background()
+	if _, err := startupItemsRepository.Count(ctx); !errors.Is(err, gorm.ErrInvalidDB) {
+		t.Fatalf("uninitialized connection: %v", err)
+	}
+	open := func(name string) *gorm.DB {
+		t.Helper()
+		db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), name+".db")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := db.DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		for _, table := range []string{"items", "notes"} {
+			if err := db.Exec("CREATE TABLE " + table + " (id INTEGER PRIMARY KEY, name TEXT, deleted_at DATETIME)").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Exec("INSERT INTO "+table+" (id, name) VALUES (1, ?)", name).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		return db
+	}
+	primary := open("primary")
+	switch mode {
+	case "legacy":
+		dao.SetDefault(primary)
+	case "default":
+		gormplus.Use(primary)
+	case "unmanaged":
+		tx := primary.Begin()
+		if tx.Error != nil {
+			t.Fatal(tx.Error)
+		}
+		defer tx.Rollback()
+		dao.SetDefault(tx)
+		if _, err := startupItemsRepository.Count(ctx); !errors.Is(err, gormplus.ErrUnmanagedTransaction) {
+			t.Fatalf("lazy binding accepted unmanaged transaction: %v", err)
+		}
+		return
+	default:
+		t.Fatalf("unexpected startup mode %q", mode)
+	}
+	if row, err := startupItemsRepository.FindById(ctx, 1); err != nil || row.Name != "primary" {
+		t.Fatalf("early repository failed after initialization: %+v %v", row, err)
+	}
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if row, err := startupNotesRepository.FindById(ctx, 1); err != nil || row.Name != "primary" {
+				t.Errorf("concurrent first binding: %+v %v", row, err)
+			}
+		}()
+	}
+	wg.Wait()
+	other := open("other")
+	gormplus.Use(other)
+	if row, err := startupItemsRepository.FindById(ctx, 1); err != nil || row.Name != "primary" {
+		t.Fatalf("late default switch changed bound items repository: %+v %v", row, err)
+	}
+	if row, err := startupNotesRepository.FindById(ctx, 1); err != nil || row.Name != "primary" {
+		t.Fatalf("late default switch changed bound notes repository: %+v %v", row, err)
+	}
+}
 
 func TestThreeRepositoryDataSources(t *testing.T) {
 	dbs := []*gorm.DB{transactionDB(t), transactionDB(t), transactionDB(t)}
