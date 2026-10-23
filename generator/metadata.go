@@ -69,6 +69,9 @@ WHERE ep.class = 1 AND ep.name = 'MS_Description' AND ep.major_id = OBJECT_ID(?)
 			result[i].Comment = byName[result[i].Name]
 		}
 	}
+	if err := loadNativeEnums(db, tableName, result); err != nil {
+		return nil, fmt.Errorf("读取原生枚举失败: %w", err)
+	}
 	return result, nil
 }
 

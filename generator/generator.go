@@ -140,6 +140,7 @@ var embeddedEntityProtoMapperTemplate string
 var embeddedAPIProtoMapperTemplate string
 
 var embeddedTemplates = map[string]string{
+	"enum_template.txt":                embeddedEnumTemplate,
 	"api_template.txt":                 embeddedApiTemplate,
 	"proto_template.txt":               embeddedProtoTemplate,
 	"base_proto_template.txt":          embeddedBaseProtoTemplate,
@@ -377,6 +378,8 @@ type ColumnInfo struct {
 	IsTimeType, IsAuditField         bool
 	IsDecimalType, IsFloatType       bool
 	IsBytesType, IsJSONType          bool
+	EnumValues                       []string // 数据库原生 ENUM 的有序合法值；普通字段为空。
+	EnumTypeName                     string   // 实体同包的表名、字段名及 Enum 组成的类型名称。
 }
 
 type ApiTemplateData struct {
@@ -436,6 +439,7 @@ type ProtoMapperTemplateData struct {
 func loadTemplate(templatePath string) (*template.Template, error) {
 	templateName := filepath.Base(templatePath)
 	funcMap := template.FuncMap{
+		"quoteEnum": quoteEnumValue,
 		"hasJSON": func(columns []ColumnInfo) bool { // 按字段决定 JSON 类型导入，兼容自定义模板数据。
 			for _, column := range columns {
 				if column.IsJSONType {
@@ -490,7 +494,13 @@ func buildProtoValidationOptions(col ColumnInfo, required bool) string {
 	if isDecimalSQLType(col.Type) && col.FieldType == "double" {
 		options = append(options, "(buf.validate.field).double.finite = true")
 	}
-	if enumValues := extractEnumValuesFromComment(col.Comment); len(enumValues) > 0 {
+	if len(col.EnumValues) > 0 {
+		quoted := make([]string, len(col.EnumValues))
+		for i, value := range col.EnumValues {
+			quoted[i] = quoteEnumValue(value)
+		}
+		options = append(options, fmt.Sprintf("(buf.validate.field).string = {in: [%s]}", strings.Join(quoted, ", ")))
+	} else if enumValues := extractEnumValuesFromComment(col.Comment); len(enumValues) > 0 {
 		ruleType := col.FieldType
 		if ruleType == "double" {
 			ruleType = "double"
@@ -578,11 +588,8 @@ func getProtoPackage(packageName string) string {
 	return pkg
 }
 
-func getGoTypeForApiDto(sqlType string) string { // 普通 DTO 使用原始 JSON，go-zero 的接口字段在 buildApiColumns 中适配。
+func getGoTypeForApiDto(sqlType string) string { // DTO 和 API 的 JSON 字段使用字符串，时间与小数使用字符串入参。
 	s := strings.ToLower(sqlType)
-	if strings.Contains(s, "json") {
-		return "json.RawMessage"
-	}
 	if isTimeSQLType(s) {
 		return "string"
 	}
@@ -719,7 +726,7 @@ func extractEnumValuesFromComment(comment string) []string {
 	return vals
 }
 
-func generateValidateRule(col ColumnInfo) string {
+func generateValidateRule(col ColumnInfo) string { // 根据数据库字段生成入参校验，JSON 字符串校验内部语法。
 	var rules []string
 	fieldType := col.FieldType
 	if fieldType == "" {
@@ -730,7 +737,7 @@ func generateValidateRule(col ColumnInfo) string {
 	if !col.CanNull {
 		rules = appendRule(rules, "required")
 	}
-	if fieldType == "string" {
+	if fieldType == "string" && !strings.Contains(sqlType, "json") {
 		switch {
 		case strings.Contains(colName, "email"):
 			rules = appendRule(rules, "email")
@@ -770,9 +777,16 @@ func generateValidateRule(col ColumnInfo) string {
 	if isDecimalSQLType(col.Type) {
 		rules = appendRule(rules, "decimal")
 	}
-	// JSON 字段由解析器校验语法；validator 的 json 规则只适用于字符串。
+	if strings.Contains(sqlType, "json") {
+		rules = appendRule(rules, "json")
+	}
 	enumVals := extractEnumValuesFromComment(col.Comment)
-	if len(enumVals) > 0 {
+	if len(col.EnumValues) > 0 {
+		enumVals = col.EnumValues
+		if rule := nativeEnumOneof(col.EnumValues); rule != "" {
+			rules = appendRule(rules, rule)
+		}
+	} else if len(enumVals) > 0 {
 		rules = appendRule(rules, "oneof="+strings.Join(enumVals, " "))
 	}
 	if isIntegerSQLType(col.Type) {
@@ -874,18 +888,16 @@ func buildApiColumns(columns []ColumnInfo) []ColumnInfo {
 		columnData[i] = ColumnInfo{
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForApiDto(col.Type),
-			IsJSONType:    strings.Contains(strings.ToLower(col.Type), "json"), // API JSON 字段保留原生值。
+			IsJSONType:    strings.Contains(strings.ToLower(col.Type), "json"), // JSON 字段以字符串形式暴露给 API。
 			IsDecimalType: isDecimalInputSQLType(col.Type),
 			JsonTag:       LowerCamelCase(Case2Camel(col.Name)), JsonTagOpt: jsonTagOpt,
 			CanNull: col.CanNull, IsKey: col.IsKey, Extra: col.Extra, Comment: col.Comment,
 			Validate: generateValidateRule(ColumnInfo{
-				CanNull: col.CanNull, IsKey: col.IsKey,
+				EnumValues: col.EnumValues, // 原生枚举以数据库合法值校验，不猜备注数字。
+				CanNull:    col.CanNull, IsKey: col.IsKey,
 				Type: col.Type, FieldType: getGoTypeForApiDto(col.Type),
 				Name: col.Name, Extra: col.Extra, Comment: col.Comment,
 			}),
-		}
-		if columnData[i].IsJSONType {
-			columnData[i].FieldType = "interface{}"
 		}
 	}
 	return columnData
@@ -919,7 +931,8 @@ func generateProtoFile(tableName string, columns []ColumnInfo, modelName string,
 	writableColumns := make([]ColumnInfo, 0, len(columns))
 	for _, col := range columns {
 		modelColumn := ColumnInfo{
-			Name: col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
+			EnumValues: col.EnumValues, // 原生 ENUM 在 Proto 中仍为字符串，生成字符串集合校验。
+			Name:       col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
 			ParamName: LowerCamelCase(Case2Camel(col.Name)),
 			FieldType: getProtoType(col.Type), CanNull: col.CanNull, IsKey: col.IsKey,
 			Extra: col.Extra, Comment: col.Comment,
@@ -953,7 +966,7 @@ func generateVoFile(tableName string, columns []ColumnInfo, modelName string, db
 		columnData[i] = ColumnInfo{
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForVo(col.Type),
-			IsJSONType: strings.Contains(strings.ToLower(col.Type), "json"), // 响应使用原始 JSON，避免二次编码。
+			IsJSONType: strings.Contains(strings.ToLower(col.Type), "json"), // 响应中的 JSON 内容使用字符串。
 			CanNull:    col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 		}
 	}
@@ -974,7 +987,7 @@ func generateDtoFile(tableName string, columns []ColumnInfo, modelName string, d
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForApiDto(col.Type),
 			IsDecimalType: isDecimalInputSQLType(col.Type),
-			IsJSONType:    strings.Contains(strings.ToLower(col.Type), "json"), // 请求直接接收 JSON 值。
+			IsJSONType:    strings.Contains(strings.ToLower(col.Type), "json"), // 请求中的 JSON 内容使用字符串。
 			CanNull:       col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 			Validate: generateValidateRule(col),
 		}
@@ -1011,7 +1024,8 @@ func buildMapperData(tableName string, columns []ColumnInfo, modelName string, d
 		columnData[i] = ColumnInfo{
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoType(col.Type),
-			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
+			EnumTypeName: col.EnumTypeName, // Model 枚举与接口字符串之间显式转换。
+			CanNull:      col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 			IsTimeType: isTime, IsAuditField: auditFields[col.Name], IsDecimalType: isDecimal, IsFloatType: isFloat, IsJSONType: isJSON,
 		}
 	}
@@ -1052,8 +1066,9 @@ func buildProtoMapperData(tableName string, columns []ColumnInfo, modelName stri
 		hasFloat = hasFloat || isFloat
 		item := ColumnInfo{
 			Name: col.Name, Type: col.Type, FieldName: Case2Camel(col.Name),
-			ParamName:  normalizeAcronyms(Case2Camel(col.Name)),
-			IsTimeType: isTime, IsDecimalType: isDecimal, IsFloatType: isFloat, IsJSONType: isJSON, IsBytesType: isBytes,
+			EnumTypeName: col.EnumTypeName, // RPC 字符串契约保持不变。
+			ParamName:    normalizeAcronyms(Case2Camel(col.Name)),
+			IsTimeType:   isTime, IsDecimalType: isDecimal, IsFloatType: isFloat, IsJSONType: isJSON, IsBytesType: isBytes,
 			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 		}
 		if col.Name != "deleted_at" {
@@ -1262,6 +1277,7 @@ func Generate(cfg *Config) error {
 	mapperTmplPath := filepath.Join(templateDir, "mapper_template.txt")
 	entityProtoMapperTmplPath := filepath.Join(templateDir, "entity_proto_mapper_template.txt")
 	apiProtoMapperTmplPath := filepath.Join(templateDir, "api_proto_mapper_template.txt")
+	enumTmplPath := filepath.Join(templateDir, "enum_template.txt") // 实体同包的原生枚举模板。
 
 	// gorm-gen 配置
 	g := gen.NewGenerator(gen.Config{
@@ -1393,12 +1409,34 @@ func Generate(cfg *Config) error {
 
 	// 在 gorm-gen 写文件前检查所有表，避免元数据失败留下不完整产物。
 	columnsByTable := make(map[string][]ColumnInfo, len(modelTables))
+	enumsByTable := make(map[string][]enumDefinition, len(modelTables)) // 先验证所有枚举，再写生成文件。
+	enumSymbols := make(map[string]string)                              // 检查跨表的 Go 符号冲突。
 	for _, tbl := range modelTables {
 		columns, err := getTableColumns(db, tbl)
 		if err != nil {
 			return fmt.Errorf("[%s] 获取表结构失败: %w", tbl, err)
 		}
 		columnsByTable[tbl] = columns
+		definitions, err := buildEnumDefinitions(tbl, columns)
+		if err != nil {
+			return fmt.Errorf("[%s] 枚举定义失败: %w", tbl, err)
+		}
+		for _, definition := range definitions {
+			symbols := []string{definition.Name, "Get" + definition.Name + "Label"}
+			if definition.HasLabels {
+				symbols = append(symbols, definition.LabelMap)
+			}
+			for _, member := range definition.Members {
+				symbols = append(symbols, member.Name)
+			}
+			for _, symbol := range symbols {
+				if previous, exists := enumSymbols[symbol]; exists {
+					return fmt.Errorf("枚举符号 %s 在表 %s 与 %s 之间冲突", symbol, previous, tbl)
+				}
+				enumSymbols[symbol] = tbl
+			}
+		}
+		enumsByTable[tbl] = definitions
 	}
 	for _, dir := range []string{cfg.OutPath, cfg.ModelPkgPath, cfg.RepoPath, cfg.ApiPath, cfg.ProtoPath, cfg.VoPath, cfg.DtoPath, cfg.APIMapperPath, cfg.ProtoMapperPath} {
 		if dir != "" {
@@ -1407,11 +1445,21 @@ func Generate(cfg *Config) error {
 			}
 		}
 	}
+	for _, tbl := range modelTables {
+		path := enumFilePath(cfg, tbl)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return fmt.Errorf("创建枚举目录失败: %w", err)
+		}
+		if err := writeEnumFile(path, enumTmplPath, getLastPathSegment(filepath.Dir(path)), enumsByTable[tbl]); err != nil {
+			return fmt.Errorf("[%s] 生成枚举文件失败: %w", tbl, err)
+		}
+	}
 
 	// ③ 统一生成（含所有历史表 + 新表）
 	allModels := make([]interface{}, 0, len(modelTables))
 	for _, tbl := range modelTables {
 		tableFieldOpts := append([]gen.ModelOpt{}, fieldOpts...)
+		tableFieldOpts = append(tableFieldOpts, enumModelOptions(columnsByTable[tbl])...)
 		tableFieldOpts = append(tableFieldOpts, sensitiveModelOpts(tbl, cfg.SensitiveFields)...)
 		allModels = append(allModels, g.GenerateModel(tbl, tableFieldOpts...))
 	}

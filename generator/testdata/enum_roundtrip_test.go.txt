@@ -1,0 +1,98 @@
+package enumfixture_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"enumfixture/dao"
+	"enumfixture/dto"
+	"enumfixture/mapper"
+	"enumfixture/model"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestEnums(t *testing.T) { // 类型、翻译、并发只读和序列化保持数据库原值。
+	if model.GetOrderStatusEnumLabel(model.OrderStatusEnumPending) != "待支付" || model.OrderStatusEnumPaid.Label() != "已支付" {
+		t.Fatal("status translation")
+	}
+	if model.GetOrderStageEnumLabel(model.OrderStageEnumValue1) != "待支付" {
+		t.Fatal("numeric string translation")
+	}
+	if model.OrderStatusEnum("future").Label() != "future" || model.OrderStatusEnum("future").Valid() || !model.OrderStatusEnumPaid.Valid() {
+		t.Fatal("unknown value handling")
+	}
+	if model.TestStatusEnumPending.Label() != "pending" || model.GetTestStageEnumLabel(model.TestStageEnumValue3) != "已取消" {
+		t.Fatal("table naming")
+	}
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 1000 {
+				if model.OrderStatusEnumPaid.Label() != "已支付" {
+					t.Error("concurrent label")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	data, err := json.Marshal(model.OrderStatusEnumPaid)
+	if err != nil || string(data) != `"paid"` {
+		t.Fatalf("%s %v", data, err)
+	}
+	data, err = json.Marshal(model.OrderStageEnumValue1)
+	if err != nil || string(data) != `"1"` {
+		t.Fatalf("numeric ENUM changed: %s %v", data, err)
+	}
+}
+
+func TestEnumDatabaseMapperAndDAO(t *testing.T) { // 实际生成 Model 支持写入、查询、更新及 DTO/VO 的显式转换。
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "roundtrip.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, _ := db.DB()
+	t.Cleanup(func() { pool.Close() })
+	if err := db.Exec(`CREATE TABLE "order" (id INTEGER PRIMARY KEY, status TEXT NOT NULL CHECK (status IN ('pending','paid','cancelled')), stage TEXT)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := mapper.NewOrderMapper()
+	entity := m.DtoToEntity(&dto.CreateOrderDTO{Status: "pending", Stage: "1"})
+	entity.ID = 1
+	if entity.Status != model.OrderStatusEnumPending || entity.Stage != model.OrderStageEnumValue1 {
+		t.Fatal(entity)
+	}
+	q := dao.Use(db)
+	if err := q.OrderEntity.Create(entity); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := q.OrderEntity.WithContext(context.Background()).Where(q.OrderEntity.Status.Eq(string(model.OrderStatusEnumPending))).First()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != model.OrderStatusEnumPending || m.EntityToVO(loaded).Status != "pending" {
+		t.Fatal(loaded)
+	}
+	if _, err := q.OrderEntity.Where(q.OrderEntity.ID.Eq(1)).UpdateSimple(q.OrderEntity.Status.Value(string(model.OrderStatusEnumPaid))); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = q.OrderEntity.Where(q.OrderEntity.ID.Eq(1)).First()
+	if err != nil || loaded.Status != model.OrderStatusEnumPaid {
+		t.Fatalf("%+v %v", loaded, err)
+	}
+	if err := db.Model(&model.OrderEntity{}).Where("id = ?", 1).Update("status", model.OrderStatusEnumCancelled).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.OrderEntity{}).Where("id = ?", 1).Update("status", model.OrderStatusEnum("invalid")).Error; err == nil {
+		t.Fatal("database accepted invalid enum")
+	}
+	if got := fmt.Sprint(model.OrderStatusEnumCancelled); got != "cancelled" {
+		t.Fatal(got)
+	}
+}

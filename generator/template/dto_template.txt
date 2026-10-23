@@ -1,9 +1,6 @@
 package dto
 
 import (
-{{- if hasJSON .Columns}}
- "encoding/json"
-{{- end}}
  "github.com/kuangshp/gorm-plus/decimaljson"
 )
 
@@ -14,7 +11,7 @@ type Create{{.ModelName}}DTO struct {
 {{- $fieldName := lowerFirst .FieldName}}
 {{- $validate := .Validate}}
 {{- $comment := .Comment}}
-	{{.FieldName}} {{if .IsJSONType}}json.RawMessage{{else}}{{.FieldType}}{{end}} {{if $validate}}`json:"{{$fieldName}}" validate:"{{$validate}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{else}}`json:"{{$fieldName}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{end}} // {{$comment}}
+	{{.FieldName}} {{.FieldType}} {{if $validate}}`json:"{{$fieldName}}" validate:"{{$validate}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{else}}`json:"{{$fieldName}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{end}} // {{$comment}}
 {{- end}}
 {{- end}}
 }

@@ -42,6 +42,8 @@ func (m *{{.ModelNameLower}}Mapper) CreateReqToEntity(req *{{.ProtoPkgName}}.Cre
 		{{.FieldName}}: decimal.NewFromFloat(req.Get{{.ParamName}}()),
 {{- else if .IsJSONType}}
 		{{.FieldName}}: datatypes.JSON(req.Get{{.ParamName}}()),
+{{- else if .EnumTypeName}}
+		{{.FieldName}}: {{$.ModelPkgName}}.{{.EnumTypeName}}(req.Get{{.ParamName}}()),
 {{- else}}
 		{{.FieldName}}: req.Get{{.ParamName}}(),
 {{- end}}
@@ -73,6 +75,8 @@ func (m *{{.ModelNameLower}}Mapper) EntityToProto(entity *{{.ModelPkgName}}.{{.M
 {{- else if .IsDecimalType}}
 		{{.ParamName}}: entity.{{.FieldName}}.InexactFloat64(),
 {{- else if .IsJSONType}}
+		{{.ParamName}}: string(entity.{{.FieldName}}),
+{{- else if .EnumTypeName}}
 		{{.ParamName}}: string(entity.{{.FieldName}}),
 {{- else}}
 		{{.ParamName}}: entity.{{.FieldName}},

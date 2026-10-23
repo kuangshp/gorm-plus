@@ -777,27 +777,92 @@ return httpresponse.NewError(response.AuthSessionInvalidCode, "请先登录")
 GORMPLUS_GOCTL_INTEGRATION=1 go test ./httpresponse ./httpcors ./httpstatic ./generator/gozero
 ```
 
-### JSON / JSONB 字段直接收发对象
+### 数据库原生 ENUM 自动生成
 
-数据库 `json` / `jsonb` 列的 Model 使用 `datatypes.JSON`，普通 DTO、VO 使用 `json.RawMessage`，Mapper 在两者之间转换。前端直接传对象或数组，查询结果直接返回 JSON，不需要 `JSON.stringify` 或二次 `JSON.parse`：
+MySQL 的原生 `ENUM(...)` 和 PostgreSQL 的 `CREATE TYPE ... AS ENUM` 会从数据库目录读取有序合法值，在实体同一个包内生成独立的 `<表名>_enum.gen.go`。普通整数、字符串字段不会仅凭注释变成枚举。
 
-```json
-{
-  "attributes": {
-    "color": "red",
-    "spec": {"size": 10},
-    "labels": ["new", "sale"]
-  }
+例如 `order.status` 定义为 `ENUM('pending','paid','cancelled')`，生成 `OrderStatusEnum`；`test.status` 生成 `TestStatusEnum`，即使 PostgreSQL 两列共用同一个数据库枚举类型，也各自按表字段命名。`purchase_order.payment_status` 对应 `PurchaseOrderPaymentStatusEnum`。Model 字段同步使用该具名字符串类型。
+
+```text
+query/model/
+├── order.gen.go
+├── order_enum.gen.go
+├── test.gen.go
+└── test_enum.gen.go
+```
+
+字段注释可以写明确的值与文案映射，例如：
+
+```text
+订单状态：pending=待支付，paid=已支付，cancelled=已取消
+订单状态：1、待支付，2、已支付，3、已取消
+状态：1是启用，2是禁用
+```
+
+第一种备注会生成以下代码；翻译 map 为包内私有，生成后只读，可并发查询：
+
+```go
+type OrderStatusEnum string // 订单状态。
+
+const (
+    OrderStatusEnumPending   OrderStatusEnum = "pending"   // 待支付。
+    OrderStatusEnumPaid      OrderStatusEnum = "paid"      // 已支付。
+    OrderStatusEnumCancelled OrderStatusEnum = "cancelled" // 已取消。
+)
+
+var orderStatusEnumLabels = map[OrderStatusEnum]string{
+    OrderStatusEnumPending:   "待支付",
+    OrderStatusEnumPaid:      "已支付",
+    OrderStatusEnumCancelled: "已取消",
 }
 ```
 
-对象、数组、空对象、空数组和 `null` 均可传输；普通 DTO/VO 保留原始 JSON 的数字文本。JSON 语法由请求解析器校验，字段不再生成仅适用于字符串的 `validate:"json"`；业务字段的内部结构和规则仍需业务层校验。
+生成器同时提供函数、实例方法及合法值检查：
 
-go-zero `.api` 的 JSON 字段生成为 `interface{}`，并带 `jsonvalue:"true"` 及 `json:",optional"` 标记。现有内嵌 Handler 调用 `decimaljson.PrepareRequest` 时，先把这些字段保存为 `json.RawMessage` 并从交给 `httpx.Parse` 的请求体中移除；路径、表单和其他字段继续使用原解析器。必填 JSON 字段由 `validate:"required"` 检查。该路径不经过 float64，保留 JSON 内的大整数和小数精度。手写 Handler 也需要在 `httpx.Parse` 前调用 `PrepareRequest`，单独调用 `httpx.Parse` 无法解析这些动态字段。
+```go
+model.GetOrderStatusEnumLabel(model.OrderStatusEnumPaid) // "已支付"
+model.OrderStatusEnumPaid.Label()                       // "已支付"
+model.OrderStatusEnumPaid.Valid()                       // true
+model.OrderStatusEnum("future").Label()                // "future"
+model.OrderStatusEnum("future").Valid()                // false
+```
 
-无 RPC 的 go-zero JSON Mapper 的 `DtoToEntity` 返回 `(*Entity, error)`，调用方必须处理 JSON 编码错误。API → RPC Mapper 自动编码 JSON 值，RPC → API 恢复 `json.RawMessage`，RPC 空字符串输出 `null`；内部 Proto 仍保持原来的 `string` 字段，避免修改现有 RPC 协议。
+没有值说明的字段仍生成枚举类型、常量和方法，但不生成翻译 map；部分值未注明翻译或遇到未知值时返回原值，不猜测中文含义。`ENUM('1','2','3')` 的类型仍为 `string`，常量分别命名为 `OrderStatusEnumValue1`、`OrderStatusEnumValue2`、`OrderStatusEnumValue3`，原值为 `"1"`、`"2"`、`"3"`。普通 `INT` 不在此自动识别范围。
 
-**升级已有项目时需同步生成契约**：生成器按原有策略保留已存在的 DTO、VO、`.api`、Mapper 和 Handler，不会自动覆盖。请保留业务扩展后同步上述类型、标签、转换和方法签名，并重新生成 go-zero types；旧的字符串形式不是对象，会作为 JSON 字符串存储。已有数据库中的 JSON 对象无需数据迁移。库更新和模板调整不等于已有业务文件已经更新。
+DAO 保留字符串字段表达式，查询时转换具名常量即可；生成的 DTO/VO/API/Proto 仍使用字符串，Mapper 自动转换实体枚举，HTTP JSON 仍返回 `"status":"paid"`：
+
+```go
+dao.OrderEntity.Status.Eq(string(model.OrderStatusEnumPaid))
+dao.OrderEntity.Status.Value(string(model.OrderStatusEnumCancelled))
+```
+
+原生 ENUM 的合法值用于生成接口校验，不把备注里的无关数字当枚举值。无法安全表达成 validator `oneof` 的特殊标签（例如含单引号）不生成该规则，调用方可使用 `Valid()` 检查，数据库继续负责原生约束。Proto 的枚举字段保持字符串并生成字符串集合校验，不改成数字 enum。
+
+修改数据库枚举或字段备注后重新运行项目的 `generator.go`，枚举文件会更新；字段不再是 ENUM 时，清理该表由本生成器创建的枚举文件。已有非生成同名文件会报错并保留。常量规范化后重名时也会明确报错，不默默替换成员。重新生成 Model 后，已有业务 Mapper 按保留策略不会覆盖，需要同步枚举类型转换；不要手改 Model 或枚举生成文件。
+
+```bash
+GOFLAGS=-race go test ./generator -run 'Test(ParseMySQLEnum|NativeEnum|Enum|GeneratedEnum)'
+# 配置独立 PostgreSQL 测试实例后运行完整原生 ENUM 生成、读写测试：
+go test ./generator -run '^TestPostgresEnumGeneration$' -v -count=1
+```
+
+### JSON / JSONB 字段默认使用字符串
+
+数据库 `json` / `jsonb` 列的 Model 使用 `datatypes.JSON`，生成的 `.api`、DTO、VO 统一使用 `string`。请求和响应中的字段都是 JSON 字符串：
+
+```json
+{
+  "attributes": "{\"color\":\"red\",\"labels\":[\"new\",\"sale\"]}"
+}
+```
+
+前端可用 `JSON.stringify` 构造字段值，读取后按需 `JSON.parse`。生成器不推断内部对象结构；必填 JSON 字段生成 `validate:"required,json"`，可空字段生成 `validate:"omitempty,json"`。非空字符串必须包含合法 JSON；可空字段允许省略或传空字符串。字段内可保存对象、数组或其他合法 JSON 值的文本。
+
+Mapper 将字符串直接转换为 `datatypes.JSON`，读取时转换回字符串，不对字符串再次 `json.Marshal`，因此不会在数据库中多存一层引号，也不会把内部数字转换为 float64。调用 Mapper 前需执行项目的参数校验。无 RPC 的 go-zero `DtoToEntity` 恢复返回单个 `*Entity`；API 与 RPC 的 JSON 字符串直接传递，内部 Proto 同样使用 `string`。
+
+业务需要直接收发对象时，可自行调整 `.api`、DTO、VO 的字段类型、校验及 Mapper 转换。go-zero 应修改 `.api` 后重新生成 types，不要只修改生成的 `types.go`。结构化对象无需添加 `jsonvalue:"true"`；手动使用动态 `interface{}` 字段时，可配合该标签及 `decimaljson.PrepareRequest` 处理原始 JSON。
+
+**已有项目需手动同步**：生成器保留已存在的 DTO、VO、`.api`、Mapper 和 Handler，不会自动覆盖。曾使用对象模式的项目需要同步字段类型、删除动态 JSON 标签、恢复字符串校验及 Mapper 转换和方法签名，并重新生成 go-zero types。数据库中已有的合法 JSON 无需迁移；仅更新库不会改变现有业务文件。
 
 ```bash
 GOFLAGS=-race GORMPLUS_GOCTL_INTEGRATION=1 go test ./generator ./decimaljson

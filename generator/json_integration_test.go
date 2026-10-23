@@ -12,7 +12,7 @@ import (
 	gozerogen "github.com/kuangshp/gorm-plus/generator/gozero"
 )
 
-func TestGeneratedJSONGoZero(t *testing.T) { // 验证实际生成的 go-zero 类型、解析器及两类 Mapper 保留 JSON 对象。
+func TestGeneratedJSONGoZero(t *testing.T) { // 验证实际生成的 go-zero 字符串类型、解析器及两类 Mapper 保留 JSON 文本。
 	if os.Getenv("GORMPLUS_GOCTL_INTEGRATION") != "1" {
 		t.Skip("set GORMPLUS_GOCTL_INTEGRATION=1 to run JSON goctl integration")
 	}
@@ -41,7 +41,7 @@ func TestGeneratedJSONGoZero(t *testing.T) { // 验证实际生成的 go-zero �
 	pool, _ := db.DB()
 	t.Cleanup(func() { pool.Close() })
 	// 先建表并读取真实元数据，再运行项目生成器。
-	ddl := "CREATE TABLE samples (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, attributes JSONB, metadata JSON)"
+	ddl := "CREATE TABLE samples (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, attributes JSONB NOT NULL, metadata JSON)"
 	write("sql/20261023JSON集成测试.sql", ddl)
 	if err := db.Exec(ddl).Error; err != nil {
 		t.Fatal(err)

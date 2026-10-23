@@ -17,7 +17,7 @@ type Create{{.ModelName}}Req {
 {{- $jsonTagOpt := .JsonTagOpt}}
 {{- $validate := .Validate}}
 {{- $comment := .Comment}}
-	{{$fieldName}} {{.FieldType}} `json:"{{$jsonTag}}{{if .IsJSONType}},optional{{else}}{{$jsonTagOpt}}{{end}}"{{if $validate}} validate:"{{$validate}}"{{end}}{{if .IsDecimalType}} decimal:"true"{{end}}{{if .IsJSONType}} jsonvalue:"true"{{end}}` // {{.Comment}}
+	{{$fieldName}} {{.FieldType}} `json:"{{$jsonTag}}{{$jsonTagOpt}}"{{if $validate}} validate:"{{$validate}}"{{end}}{{if .IsDecimalType}} decimal:"true"{{end}}` // {{.Comment}}
 {{- end}}
 {{- end}}
 }
@@ -35,7 +35,7 @@ type (
 {{- $fieldName := .FieldName}}
 {{- $jsonTag := .JsonTag}}
 {{- $comment := .Comment}}
-		{{$fieldName}} {{.FieldType}} `json:"{{$jsonTag}},optional"{{if .IsDecimalType}} decimal:"true"{{end}}{{if .IsJSONType}} jsonvalue:"true"{{end}}` // {{.Comment}}
+		{{$fieldName}} {{.FieldType}} `json:"{{$jsonTag}},optional"{{if .IsDecimalType}} decimal:"true"{{end}}` // {{.Comment}}
 {{- end}}
 {{- end}}
 	}

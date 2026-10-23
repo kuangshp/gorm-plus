@@ -19,7 +19,7 @@ import (
 	"jsonfixture/model"
 )
 
-func TestJSONGoZeroRoundTrip(t *testing.T) { // 经真实 HTTP 解析器、数据库、响应和 RPC 边界验证对象、数组及精度。
+func TestJSONGoZeroRoundTrip(t *testing.T) { // 经真实 HTTP 解析器、数据库和 RPC 边界验证 JSON 字符串不重复编码或损失精度。
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "json.db")))
 	if err != nil {
 		t.Fatal(err)
@@ -30,10 +30,13 @@ func TestJSONGoZeroRoundTrip(t *testing.T) { // 经真实 HTTP 解析器、数�
 		t.Fatal(err)
 	}
 	m, rpc := mapper.NewSamplesMapper(), apiproto.NewSamplesMapper()
-	for _, raw := range []string{`{"id":9007199254740993,"nested":{"amount":12.34567890123456789},"list":[true,null,"红色"]}`, `[1,2,{"x":true}]`, `{}`, `[]`, `null`} {
+	for _, raw := range []string{`{"id":9007199254740993,"nested":{"amount":12.34567890123456789},"list":[true,null,"红色"]}`, `[1,2,{"x":true}]`, `{}`, `[]`, `null`, `"hello"`} {
 		t.Run(raw, func(t *testing.T) {
-			body := `{"name":"test","attributes":` + raw + `,"metadata":{"ok":true}}`
-			r := httptest.NewRequest("POST", "/", strings.NewReader(body))
+			body, err := json.Marshal(map[string]string{"name": "test", "attributes": raw, "metadata": `{"ok":true}`})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest("POST", "/", strings.NewReader(string(body)))
 			r.Header.Set("Content-Type", "application/json")
 			var req types.CreateSamplesReq
 			if err := decimaljson.PrepareRequest(r, &req); err != nil {
@@ -45,9 +48,12 @@ func TestJSONGoZeroRoundTrip(t *testing.T) { // 经真实 HTTP 解析器、数�
 			if err := validation.Validate(&req); err != nil {
 				t.Fatal(err)
 			}
-			entity, err := m.DtoToEntity(&req)
-			if err != nil {
-				t.Fatal(err)
+			if req.Attributes != raw || req.Metadata != `{"ok":true}` {
+				t.Fatalf("parsed strings changed: %+v", req)
+			}
+			entity := m.DtoToEntity(&req)
+			if string(entity.Attributes) != raw {
+				t.Fatalf("database JSON encoded twice: %s", entity.Attributes)
 			}
 			if err := db.Create(entity).Error; err != nil {
 				t.Fatal(err)
@@ -66,20 +72,12 @@ func TestJSONGoZeroRoundTrip(t *testing.T) { // 经真实 HTTP 解析器、数�
 				if err := json.Unmarshal(response, &fields); err != nil {
 					t.Fatal(err)
 				}
-				var want, got any
-				decode := func(data []byte, dest *any) {
-					dec := json.NewDecoder(strings.NewReader(string(data)))
-					dec.UseNumber()
-					if err := dec.Decode(dest); err != nil {
-						t.Fatal(err)
-					}
+				var got string
+				if err := json.Unmarshal(fields["attributes"], &got); err != nil {
+					t.Fatalf("response must contain a string: %s, %v", response, err)
 				}
-				decode([]byte(raw), &want)
-				decode(fields["attributes"], &got)
-				wantBytes, _ := json.Marshal(want)
-				gotBytes, _ := json.Marshal(got)
-				if string(wantBytes) != string(gotBytes) {
-					t.Fatalf("JSON quoted or precision lost: want %s got %s", wantBytes, response)
+				if got != raw {
+					t.Fatalf("JSON string changed: want %q got %s", raw, response)
 				}
 			}
 			check(response)
@@ -87,27 +85,78 @@ func TestJSONGoZeroRoundTrip(t *testing.T) { // 经真实 HTTP 解析器、数�
 			if err != nil {
 				t.Fatal(err)
 			}
+			if message.Attributes == nil || *message.Attributes != raw {
+				t.Fatalf("RPC string encoded twice: %+v", message)
+			}
 			response, err = json.Marshal(rpc.ProtoToVO(&pb.SamplesModel{Attributes: *message.Attributes, Metadata: *message.Metadata}))
 			if err != nil {
 				t.Fatal(err)
 			}
 			check(response)
-			if _, err := rpc.ModifyReqToProto(&types.ModifySamplesReq{CreateSamplesReq: req}); err != nil {
-				t.Fatal(err)
+			modified, err := rpc.ModifyReqToProto(&types.ModifySamplesReq{CreateSamplesReq: req})
+			if err != nil || modified.Attributes == nil || *modified.Attributes != raw {
+				t.Fatalf("modify RPC string: %+v, %v", modified, err)
 			}
-			if _, err := rpc.PageReqToProto(&types.PageSamplesReq{Attributes: req.Attributes}); err != nil {
-				t.Fatal(err)
+			page, err := rpc.PageReqToProto(&types.PageSamplesReq{Attributes: req.Attributes})
+			if err != nil || page.Attributes == nil || *page.Attributes != raw {
+				t.Fatalf("page RPC string: %+v, %v", page, err)
 			}
 		})
 	}
-	if _, err := json.Marshal(rpc.ProtoToVO(&pb.SamplesModel{})); err != nil {
-		t.Fatalf("empty RPC field: %v", err)
+	if response := rpc.ProtoToVO(&pb.SamplesModel{}); response.Attributes != "" || response.Metadata != "" {
+		t.Fatalf("empty RPC string changed: %+v", response)
 	}
-	bad := &types.CreateSamplesReq{Name: "bad", Attributes: make(chan int)}
-	if _, err := m.DtoToEntity(bad); err == nil {
-		t.Fatal("ignored JSON encoding error")
+}
+
+func TestJSONGoZeroStringParsing(t *testing.T) { // 原生解析支持 JSON 字符串，必填、可选和内部 JSON 语法仍按生成规则校验。
+	parse := func(body string) (*types.CreateSamplesReq, error) {
+		r := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		var req types.CreateSamplesReq
+		if err := httpx.Parse(r, &req); err != nil {
+			return nil, err
+		}
+		if err := validation.Validate(&req); err != nil {
+			return nil, err
+		}
+		return &req, nil
 	}
-	if _, err := rpc.CreateReqToProto(bad); err == nil {
-		t.Fatal("ignored RPC JSON encoding error")
+	for _, body := range []string{
+		`{"name":"native","attributes":"{}"}`,
+		`{"name":"native","attributes":"{}","metadata":""}`,
+		`{"name":"native","attributes":"{}","metadata":null}`,
+	} {
+		if req, err := parse(body); err != nil || req.Attributes != "{}" || req.Metadata != "" {
+			t.Fatalf("native string parser: %+v, %v", req, err)
+		}
+	}
+	// 纯数字 JSON 只验证边界转换，SQLite JSONB 的数值亲和性会改变数据库返回类型。
+	req, err := parse(`{"name":"scalar","attributes":"9007199254740993"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, rpc := mapper.NewSamplesMapper(), apiproto.NewSamplesMapper()
+	if response := m.EntityToVO(m.DtoToEntity(req)); response.Attributes != "9007199254740993" {
+		t.Fatalf("scalar JSON text changed: %+v", response)
+	}
+	message, err := rpc.CreateReqToProto(req)
+	if err != nil || message.Attributes == nil || *message.Attributes != "9007199254740993" {
+		t.Fatalf("scalar RPC text changed: %+v, %v", message, err)
+	}
+	if response := rpc.ProtoToVO(&pb.SamplesModel{Attributes: *message.Attributes}); response.Attributes != "9007199254740993" {
+		t.Fatalf("scalar RPC response changed: %+v", response)
+	}
+	for _, body := range []string{
+		`{"name":"invalid"}`,
+		`{"name":"invalid","attributes":""}`,
+		`{"name":"invalid","attributes":null}`,
+		`{"name":"invalid","attributes":{"color":"red"}}`,
+		`{"name":"invalid","attributes":[1,2]}`,
+		`{"name":"invalid","attributes":"{bad}"}`,
+		`{"name":"invalid","attributes":"{}","metadata":"{bad}"}`,
+	} {
+		if _, err := parse(body); err == nil {
+			t.Fatalf("accepted invalid string request: %s", body)
+		}
 	}
 }

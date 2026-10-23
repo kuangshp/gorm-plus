@@ -3,7 +3,6 @@ package generationfixture_test
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -16,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestJSONRequestDatabaseResponse(t *testing.T) { // 验证实际生成的 DTO、Mapper 和 VO 保留原始 JSON 及数值精度。
+func TestJSONRequestDatabaseResponse(t *testing.T) { // 验证生成的字符串 DTO、Mapper 和 VO 经数据库往返不重复编码或损失精度。
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "json.db")))
 	if err != nil {
 		t.Fatal(err)
@@ -29,12 +28,21 @@ func TestJSONRequestDatabaseResponse(t *testing.T) { // 验证实际生成的 DT
 	m := mapper.NewItemsMapper()
 	for _, raw := range []string{
 		`{"color":"红色","nested":{"id":9007199254740993,"amount":12.34567890123456789},"list":[true,null,"x"]}`,
-		`[{"id":1},{"id":2}]`, `{}`, `[]`, `null`,
+		`[{"id":1},{"id":2}]`, `{}`, `[]`, `null`, `"hello"`,
 	} {
 		t.Run(raw, func(t *testing.T) {
 			var req dto.CreateItemsDTO
-			body := fmt.Sprintf(`{"name":"JSON test","attributes":%s}`, raw)
-			if err := json.Unmarshal([]byte(body), &req); err != nil {
+			body, err := json.Marshal(map[string]string{"name": "JSON test", "attributes": raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatal(err)
+			}
+			if req.Attributes != raw {
+				t.Fatalf("DTO string changed: %q", req.Attributes)
+			}
+			if err := validation.Validate(&req); err != nil {
 				t.Fatal(err)
 			}
 			entity := m.DtoToEntity(&req, decimal.Zero, 0)
@@ -56,23 +64,50 @@ func TestJSONRequestDatabaseResponse(t *testing.T) { // 验证实际生成的 DT
 			if err := json.Unmarshal(response, &fields); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(fields["attributes"], []byte(raw)) {
-				t.Fatalf("JSON was quoted or changed: %s", response)
+			var value string
+			if err := json.Unmarshal(fields["attributes"], &value); err != nil {
+				t.Fatalf("response must contain a string: %s, %v", response, err)
+			}
+			if value != raw {
+				t.Fatalf("JSON string changed: %s", response)
 			}
 		})
 	}
-	var req dto.ModifyItemsDTO
-	if err := json.Unmarshal([]byte(`{"id":"17","name":"JSON test","attributes":{"enabled":true}}`), &req); err != nil {
+	// SQLite 的 JSONB 声明具有数值亲和性；纯数字 JSON 单独验证转换，避免数据库改写字段类型。
+	var scalar dto.CreateItemsDTO
+	if err := json.Unmarshal([]byte(`{"name":"scalar","attributes":"9007199254740993"}`), &scalar); err != nil {
 		t.Fatal(err)
 	}
-	if req.ID != 17 || string(req.Attributes) != `{"enabled":true}` {
+	if err := validation.Validate(&scalar); err != nil {
+		t.Fatal(err)
+	}
+	if response := m.EntityToVO(m.DtoToEntity(&scalar, decimal.Zero, 0)); response.Attributes != "9007199254740993" {
+		t.Fatalf("scalar JSON text changed: %+v", response)
+	}
+	var req dto.ModifyItemsDTO
+	if err := json.Unmarshal([]byte(`{"id":"17","name":"JSON test","attributes":"{\"enabled\":true}"}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.ID != 17 || req.Attributes != `{"enabled":true}` {
 		t.Fatalf("modify fields lost: %+v", req)
 	}
 	if err := validation.Validate(&req.CreateItemsDTO); err != nil {
 		t.Fatalf("JSON field validation: %v", err)
 	}
-	if err := json.Unmarshal([]byte(`{"attributes":{"bad":}}`), &req); err == nil {
-		t.Fatal("accepted malformed JSON")
+	for _, attributes := range []string{`{"bad":}`, `plain text`} {
+		if err := validation.Validate(&dto.CreateItemsDTO{Name: "invalid", Attributes: attributes}); err == nil {
+			t.Fatalf("accepted malformed JSON string: %q", attributes)
+		}
+	}
+	var empty dto.CreateItemsDTO
+	if err := json.Unmarshal([]byte(`{"name":"optional"}`), &empty); err != nil {
+		t.Fatal(err)
+	}
+	if err := validation.Validate(&empty); err != nil {
+		t.Fatalf("optional JSON string: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"attributes":{"enabled":true}}`), &empty); err == nil {
+		t.Fatal("accepted object for a string field")
 	}
 	if _, err := json.Marshal(m.EntityToVO(&model.ItemsEntity{})); err != nil {
 		t.Fatalf("SQL NULL response: %v", err)

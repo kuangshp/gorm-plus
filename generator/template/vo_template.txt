@@ -1,12 +1,10 @@
 package vo
 
-{{if hasJSON .Columns}}import "encoding/json"{{end}}
-
 // {{.ModelName}}VO {{.TableComment}}视图对象
 type {{.ModelName}}VO struct {
 {{- range .Columns}}
 {{- if ne .Name "deleted_at"}}
-	{{.FieldName}} {{if .IsJSONType}}json.RawMessage{{else}}{{.FieldType}}{{end}} `json:"{{lowerFirst .FieldName}}"` // {{.Comment}}
+	{{.FieldName}} {{.FieldType}} `json:"{{lowerFirst .FieldName}}"` // {{.Comment}}
 {{- end}}
 {{- end}}
 }
