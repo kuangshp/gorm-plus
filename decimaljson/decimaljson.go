@@ -57,11 +57,86 @@ func PrepareRequest(r *http.Request, target any) error {
 	if err != nil {
 		return err
 	}
+	normalized, err = prepareJSONValues(normalized, reflect.ValueOf(target))
+	if err != nil {
+		return err
+	}
 	if err := r.Body.Close(); err != nil {
 		return err
 	}
 	r.Body = io.NopCloser(bytes.NewReader(normalized))
 	r.ContentLength = int64(len(normalized))
+	return nil
+}
+
+func prepareJSONValues(data []byte, target reflect.Value) ([]byte, error) { // 为 go-zero 的 jsonvalue 字段保留原始 JSON，其余字段继续交给原解析器。
+	for target.IsValid() && target.Kind() == reflect.Pointer {
+		if target.IsNil() {
+			return data, nil
+		}
+		target = target.Elem()
+	}
+	if !target.IsValid() || target.Kind() != reflect.Struct {
+		return data, nil
+	}
+	var fields map[string]json.RawMessage
+	// 仅对含标记的类型解析对象，普通请求不增加 JSON 重编码。
+	if !hasJSONValues(target.Type()) {
+		return data, nil
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	if err := assignJSONValues(fields, target); err != nil {
+		return nil, err
+	}
+	return json.Marshal(fields)
+}
+
+func hasJSONValues(typ reflect.Type) bool { // 检查当前请求及嵌入字段中的 JSON 标记。
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.Tag.Get("jsonvalue") == "true" {
+			return true
+		}
+		if field.Anonymous && field.Type.Kind() == reflect.Struct && hasJSONValues(field.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func assignJSONValues(fields map[string]json.RawMessage, target reflect.Value) error { // 提前填充原生 JSON 字段，从后续解析的请求体移除对应键。
+	typ := target.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		field, value := typ.Field(i), target.Field(i)
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if field.Anonymous && name == "" && field.Type.Kind() == reflect.Struct {
+			if err := assignJSONValues(fields, value); err != nil {
+				return err
+			}
+			continue
+		}
+		if field.Tag.Get("jsonvalue") != "true" || name == "-" {
+			continue
+		}
+		if !value.CanSet() || field.Type != reflect.TypeOf((*any)(nil)).Elem() {
+			return fmt.Errorf("decimaljson: jsonvalue field %s must be an exported interface{}", field.Name)
+		}
+		if name == "" {
+			name = field.Name
+		}
+		raw, exists := fields[name]
+		if !exists {
+			continue
+		}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			value.SetZero()
+		} else {
+			value.Set(reflect.ValueOf(json.RawMessage(raw)))
+		}
+		delete(fields, name)
+	}
 	return nil
 }
 

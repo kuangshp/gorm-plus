@@ -1,6 +1,12 @@
 package mapper
 
 import (
+{{- if .HasJSONField}}
+	"encoding/json"
+{{- end}}
+{{- if and .HasJSONField .IsGoZero}}
+	"fmt"
+{{- end}}
 {{- if .HasFloatField}}
 	"strconv"
 {{- end}}
@@ -27,7 +33,7 @@ import (
 // I{{.ModelName}}Mapper {{.TableComment}} mapper 接口
 type I{{.ModelName}}Mapper interface {
 	// DtoToEntity 将请求结构体映射到数据库实体
-	DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsFloatType}}, {{lowerFirst .FieldName}} float64{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity
+	DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsFloatType}}, {{lowerFirst .FieldName}} float64{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) {{if and .HasJSONField .IsGoZero}}(*{{.ModelPkgName}}.{{.ModelName}}Entity, error){{else}}*{{.ModelPkgName}}.{{.ModelName}}Entity{{end}}
 	// EntityToVO 将数据库实体映射到响应结构体
 	EntityToVO(e *{{.ModelPkgName}}.{{.ModelName}}Entity) *{{if .IsGoZero}}types.{{.VoStructName}}{{else}}{{.VoPkgName}}.{{.ModelName}}VO{{end}}
 }
@@ -41,11 +47,19 @@ func New{{.ModelName}}Mapper() I{{.ModelName}}Mapper {
 }
 
 // DtoToEntity 将 {{.DtoStructName}} 映射到 {{.ModelName}}Entity
-func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsFloatType}}, {{lowerFirst .FieldName}} float64{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) *{{.ModelPkgName}}.{{.ModelName}}Entity {
+func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d *{{if .IsGoZero}}types{{else}}{{.DtoPkgName}}{{end}}.{{.DtoStructName}}{{range .Columns}}{{if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by"))}}{{if .IsTimeType}}, {{lowerFirst .FieldName}} time.Time{{end}}{{if .IsDecimalType}}, {{lowerFirst .FieldName}} decimal.Decimal{{end}}{{if .IsFloatType}}, {{lowerFirst .FieldName}} float64{{end}}{{if .IsAuditField}}, {{lowerFirst .FieldName}} int64{{end}}{{end}}{{end}}) {{if and .HasJSONField .IsGoZero}}(*{{.ModelPkgName}}.{{.ModelName}}Entity, error){{else}}*{{.ModelPkgName}}.{{.ModelName}}Entity{{end}} { // 转换请求，go-zero JSON 编码错误返回调用方。
+{{- if and .HasJSONField .IsGoZero}}
+{{- range .Columns}}
+{{- if and .IsJSONType (not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by")))}}
+	{{lowerFirst .FieldName}}JSON, err := json.Marshal(d.{{.FieldName}})
+	if err != nil { return nil, fmt.Errorf("字段 {{.FieldName}}: %w", err) }
+{{- end}}
+{{- end}}
+{{- end}}
 	e := &{{.ModelPkgName}}.{{.ModelName}}Entity{
 {{- range .Columns}}
 {{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by") .IsTimeType .IsDecimalType .IsFloatType .IsAuditField)}}
-		{{.FieldName}}: {{if .IsJSONType}}datatypes.JSON(d.{{.FieldName}}){{else}}d.{{.FieldName}}{{end}}, {{if .Comment}}// {{.Comment}}{{end}}
+		{{.FieldName}}: {{if .IsJSONType}}{{if $.IsGoZero}}datatypes.JSON({{lowerFirst .FieldName}}JSON){{else}}datatypes.JSON(d.{{.FieldName}}){{end}}{{else}}d.{{.FieldName}}{{end}}, {{if .Comment}}// {{.Comment}}{{end}}
 {{- end}}
 {{- if not (or (eq .Name "id") (eq .Name "created_at") (eq .Name "updated_at") (eq .Name "deleted_at") (eq .Name "created_by") (eq .Name "updated_by") )}}
 {{- if .IsTimeType}}
@@ -63,7 +77,7 @@ func (m *{{.ModelNameLower}}Mapper) DtoToEntity(d *{{if .IsGoZero}}types{{else}}
 {{- end}}
 {{- end}}
 	}
-	return e
+	return e{{if and .HasJSONField .IsGoZero}}, nil{{end}}
 }
 
 // EntityToVO 将 {{.ModelName}}Entity 映射到 {{if .IsGoZero}}{{.VoStructName}}{{else}}{{.ModelName}}VO{{end}}
@@ -74,7 +88,7 @@ func (m *{{.ModelNameLower}}Mapper) EntityToVO(e *{{.ModelPkgName}}.{{.ModelName
 	return &{{if .IsGoZero}}types.{{.VoStructName}}{{else}}{{.VoPkgName}}.{{.ModelName}}VO{{end}}{
 {{- range .Columns}}
 {{- if not (or (eq .Name "deleted_at") .IsTimeType .IsDecimalType .IsFloatType)}}
-		{{.FieldName}}: {{if .IsJSONType}}string(e.{{.FieldName}}){{else}}e.{{.FieldName}}{{end}}, {{if .Comment}}// {{.Comment}}{{end}}
+		{{.FieldName}}: {{if .IsJSONType}}json.RawMessage(e.{{.FieldName}}){{else}}e.{{.FieldName}}{{end}}, {{if .Comment}}// {{.Comment}}{{end}}
 {{- end}}
 {{- if not (or (eq .Name "deleted_at") )}}
 		{{- if .IsTimeType}}

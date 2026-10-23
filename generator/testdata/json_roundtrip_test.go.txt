@@ -1,0 +1,80 @@
+package generationfixture_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"testing"
+
+	"generationfixture/dto"
+	"generationfixture/mapper"
+	"generationfixture/model"
+	"github.com/kuangshp/gorm-plus/validation"
+	"github.com/shopspring/decimal"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestJSONRequestDatabaseResponse(t *testing.T) { // 验证实际生成的 DTO、Mapper 和 VO 保留原始 JSON 及数值精度。
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "json.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, _ := db.DB()
+	t.Cleanup(func() { pool.Close() })
+	if err := db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, amount NUMERIC, rate REAL, enabled BOOL, payload BLOB, attributes JSONB, created_at DATETIME, deleted_at DATETIME)").Error; err != nil {
+		t.Fatal(err)
+	}
+	m := mapper.NewItemsMapper()
+	for _, raw := range []string{
+		`{"color":"红色","nested":{"id":9007199254740993,"amount":12.34567890123456789},"list":[true,null,"x"]}`,
+		`[{"id":1},{"id":2}]`, `{}`, `[]`, `null`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			var req dto.CreateItemsDTO
+			body := fmt.Sprintf(`{"name":"JSON test","attributes":%s}`, raw)
+			if err := json.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatal(err)
+			}
+			entity := m.DtoToEntity(&req, decimal.Zero, 0)
+			if !bytes.Equal(entity.Attributes, []byte(raw)) {
+				t.Fatalf("input changed: %s", entity.Attributes)
+			}
+			if err := db.Create(entity).Error; err != nil {
+				t.Fatal(err)
+			}
+			var loaded model.ItemsEntity
+			if err := db.First(&loaded, entity.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			response, err := json.Marshal(m.EntityToVO(&loaded))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(response, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(fields["attributes"], []byte(raw)) {
+				t.Fatalf("JSON was quoted or changed: %s", response)
+			}
+		})
+	}
+	var req dto.ModifyItemsDTO
+	if err := json.Unmarshal([]byte(`{"id":"17","name":"JSON test","attributes":{"enabled":true}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.ID != 17 || string(req.Attributes) != `{"enabled":true}` {
+		t.Fatalf("modify fields lost: %+v", req)
+	}
+	if err := validation.Validate(&req.CreateItemsDTO); err != nil {
+		t.Fatalf("JSON field validation: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"attributes":{"bad":}}`), &req); err == nil {
+		t.Fatal("accepted malformed JSON")
+	}
+	if _, err := json.Marshal(m.EntityToVO(&model.ItemsEntity{})); err != nil {
+		t.Fatalf("SQL NULL response: %v", err)
+	}
+}

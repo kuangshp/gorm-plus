@@ -436,6 +436,14 @@ type ProtoMapperTemplateData struct {
 func loadTemplate(templatePath string) (*template.Template, error) {
 	templateName := filepath.Base(templatePath)
 	funcMap := template.FuncMap{
+		"hasJSON": func(columns []ColumnInfo) bool { // 按字段决定 JSON 类型导入，兼容自定义模板数据。
+			for _, column := range columns {
+				if column.IsJSONType {
+					return true
+				}
+			}
+			return false
+		},
 		"lowerFirst": lowerFirst,
 		"add":        func(a, b int) int { return a + b },
 		"protoValidation": func(col ColumnInfo, required bool) string {
@@ -570,8 +578,11 @@ func getProtoPackage(packageName string) string {
 	return pkg
 }
 
-func getGoTypeForApiDto(sqlType string) string {
+func getGoTypeForApiDto(sqlType string) string { // 普通 DTO 使用原始 JSON，go-zero 的接口字段在 buildApiColumns 中适配。
 	s := strings.ToLower(sqlType)
+	if strings.Contains(s, "json") {
+		return "json.RawMessage"
+	}
 	if isTimeSQLType(s) {
 		return "string"
 	}
@@ -759,9 +770,7 @@ func generateValidateRule(col ColumnInfo) string {
 	if isDecimalSQLType(col.Type) {
 		rules = appendRule(rules, "decimal")
 	}
-	if strings.Contains(sqlType, "json") {
-		rules = appendRule(rules, "json")
-	}
+	// JSON 字段由解析器校验语法；validator 的 json 规则只适用于字符串。
 	enumVals := extractEnumValuesFromComment(col.Comment)
 	if len(enumVals) > 0 {
 		rules = appendRule(rules, "oneof="+strings.Join(enumVals, " "))
@@ -865,6 +874,7 @@ func buildApiColumns(columns []ColumnInfo) []ColumnInfo {
 		columnData[i] = ColumnInfo{
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForApiDto(col.Type),
+			IsJSONType:    strings.Contains(strings.ToLower(col.Type), "json"), // API JSON 字段保留原生值。
 			IsDecimalType: isDecimalInputSQLType(col.Type),
 			JsonTag:       LowerCamelCase(Case2Camel(col.Name)), JsonTagOpt: jsonTagOpt,
 			CanNull: col.CanNull, IsKey: col.IsKey, Extra: col.Extra, Comment: col.Comment,
@@ -873,6 +883,9 @@ func buildApiColumns(columns []ColumnInfo) []ColumnInfo {
 				Type: col.Type, FieldType: getGoTypeForApiDto(col.Type),
 				Name: col.Name, Extra: col.Extra, Comment: col.Comment,
 			}),
+		}
+		if columnData[i].IsJSONType {
+			columnData[i].FieldType = "interface{}"
 		}
 	}
 	return columnData
@@ -940,7 +953,8 @@ func generateVoFile(tableName string, columns []ColumnInfo, modelName string, db
 		columnData[i] = ColumnInfo{
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForVo(col.Type),
-			CanNull: col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
+			IsJSONType: strings.Contains(strings.ToLower(col.Type), "json"), // 响应使用原始 JSON，避免二次编码。
+			CanNull:    col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 		}
 	}
 	tableComment := getTableComment(db, tableName)
@@ -960,6 +974,7 @@ func generateDtoFile(tableName string, columns []ColumnInfo, modelName string, d
 			Name: col.Name, Type: col.Type,
 			FieldName: Case2Camel(col.Name), FieldType: getGoTypeForApiDto(col.Type),
 			IsDecimalType: isDecimalInputSQLType(col.Type),
+			IsJSONType:    strings.Contains(strings.ToLower(col.Type), "json"), // 请求直接接收 JSON 值。
 			CanNull:       col.CanNull, IsKey: col.IsKey, Comment: col.Comment,
 			Validate: generateValidateRule(col),
 		}

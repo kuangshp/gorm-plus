@@ -777,6 +777,32 @@ return httpresponse.NewError(response.AuthSessionInvalidCode, "请先登录")
 GORMPLUS_GOCTL_INTEGRATION=1 go test ./httpresponse ./httpcors ./httpstatic ./generator/gozero
 ```
 
+### JSON / JSONB 字段直接收发对象
+
+数据库 `json` / `jsonb` 列的 Model 使用 `datatypes.JSON`，普通 DTO、VO 使用 `json.RawMessage`，Mapper 在两者之间转换。前端直接传对象或数组，查询结果直接返回 JSON，不需要 `JSON.stringify` 或二次 `JSON.parse`：
+
+```json
+{
+  "attributes": {
+    "color": "red",
+    "spec": {"size": 10},
+    "labels": ["new", "sale"]
+  }
+}
+```
+
+对象、数组、空对象、空数组和 `null` 均可传输；普通 DTO/VO 保留原始 JSON 的数字文本。JSON 语法由请求解析器校验，字段不再生成仅适用于字符串的 `validate:"json"`；业务字段的内部结构和规则仍需业务层校验。
+
+go-zero `.api` 的 JSON 字段生成为 `interface{}`，并带 `jsonvalue:"true"` 及 `json:",optional"` 标记。现有内嵌 Handler 调用 `decimaljson.PrepareRequest` 时，先把这些字段保存为 `json.RawMessage` 并从交给 `httpx.Parse` 的请求体中移除；路径、表单和其他字段继续使用原解析器。必填 JSON 字段由 `validate:"required"` 检查。该路径不经过 float64，保留 JSON 内的大整数和小数精度。手写 Handler 也需要在 `httpx.Parse` 前调用 `PrepareRequest`，单独调用 `httpx.Parse` 无法解析这些动态字段。
+
+无 RPC 的 go-zero JSON Mapper 的 `DtoToEntity` 返回 `(*Entity, error)`，调用方必须处理 JSON 编码错误。API → RPC Mapper 自动编码 JSON 值，RPC → API 恢复 `json.RawMessage`，RPC 空字符串输出 `null`；内部 Proto 仍保持原来的 `string` 字段，避免修改现有 RPC 协议。
+
+**升级已有项目时需同步生成契约**：生成器按原有策略保留已存在的 DTO、VO、`.api`、Mapper 和 Handler，不会自动覆盖。请保留业务扩展后同步上述类型、标签、转换和方法签名，并重新生成 go-zero types；旧的字符串形式不是对象，会作为 JSON 字符串存储。已有数据库中的 JSON 对象无需数据迁移。库更新和模板调整不等于已有业务文件已经更新。
+
+```bash
+GOFLAGS=-race GORMPLUS_GOCTL_INTEGRATION=1 go test ./generator ./decimaljson
+```
+
 ### 数字与字符串入参自动兼容
 
 普通 DTO 和内嵌 go-zero Handler 模板已接入 `github.com/kuangshp/gorm-plus/decimaljson`，不依赖 HTTP 框架。普通 `string` 字段无需额外标签，就能自动接收 JSON 数字：

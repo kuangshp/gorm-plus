@@ -185,6 +185,13 @@ func TestConditionalWritesInvalidateTable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "repository/datasources_test.go"), sourceTests, 0600); err != nil {
 		t.Fatal(err)
 	}
+	jsonTests, err := os.ReadFile(filepath.Join(root, "generator/testdata/json_roundtrip_test.go.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "json_roundtrip_test.go"), jsonTests, 0600); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command("go", "test", "-mod=mod", "-v", "./...")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")

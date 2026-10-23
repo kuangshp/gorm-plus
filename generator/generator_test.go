@@ -418,7 +418,7 @@ func TestGenerateValidateRuleAddsFormatRules(t *testing.T) {
 		{
 			name: "json",
 			col:  ColumnInfo{Name: "extra", Type: "json", CanNull: true},
-			want: "omitempty,json",
+			want: "",
 		},
 	}
 

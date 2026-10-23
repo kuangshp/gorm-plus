@@ -1,6 +1,11 @@
 package dto
 
-import "github.com/kuangshp/gorm-plus/decimaljson"
+import (
+{{- if hasJSON .Columns}}
+ "encoding/json"
+{{- end}}
+ "github.com/kuangshp/gorm-plus/decimaljson"
+)
 
 // Create{{.ModelName}}DTO 创建{{.TableComment}}请求
 type Create{{.ModelName}}DTO struct {
@@ -9,7 +14,7 @@ type Create{{.ModelName}}DTO struct {
 {{- $fieldName := lowerFirst .FieldName}}
 {{- $validate := .Validate}}
 {{- $comment := .Comment}}
-	{{.FieldName}} {{.FieldType}} {{if $validate}}`json:"{{$fieldName}}" validate:"{{$validate}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{else}}`json:"{{$fieldName}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{end}} // {{$comment}}
+	{{.FieldName}} {{if .IsJSONType}}json.RawMessage{{else}}{{.FieldType}}{{end}} {{if $validate}}`json:"{{$fieldName}}" validate:"{{$validate}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{else}}`json:"{{$fieldName}}"{{if .IsDecimalType}} decimal:"true"{{end}}`{{end}} // {{$comment}}
 {{- end}}
 {{- end}}
 }
