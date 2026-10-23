@@ -860,6 +860,24 @@ go test ./generator -run '^TestPostgresEnumGeneration$' -v -count=1
 
 Mapper 将字符串直接转换为 `datatypes.JSON`，读取时转换回字符串，不对字符串再次 `json.Marshal`，因此不会在数据库中多存一层引号，也不会把内部数字转换为 float64。调用 Mapper 前需执行项目的参数校验。无 RPC 的 go-zero `DtoToEntity` 恢复返回单个 `*Entity`；API 与 RPC 的 JSON 字符串直接传递，内部 Proto 同样使用 `string`。
 
+业务代码也可使用 `github.com/kuangshp/gorm-plus/jsonutil` 的两个转换方法，双向转换都会校验非空内容是否为完整、合法的 JSON：
+
+```go
+attributes, err := jsonutil.ParseJSON(req.Attributes)
+if err != nil {
+    return err
+}
+entity.Attributes = attributes
+
+text, err := jsonutil.JSONString(entity.Attributes)
+if err != nil {
+    return err
+}
+resp.Attributes = text
+```
+
+`ParseJSON("")` 返回 `nil, nil`，用于可选空值；`JSONString(nil)` 和零长度 JSON 返回 `"", nil`。文本 `null` 保留为 JSON `null`，不会变成空值；仅包含空白的文本属于非法 JSON。非法内容返回 `jsonutil.ErrInvalidJSON`，可通过 `errors.Is` 判断。转换保留原始空白及数字文本，不重复编码；是否必填及内部业务结构由业务层校验。返回给前端的字段仍为字符串。
+
 业务需要直接收发对象时，可自行调整 `.api`、DTO、VO 的字段类型、校验及 Mapper 转换。go-zero 应修改 `.api` 后重新生成 types，不要只修改生成的 `types.go`。结构化对象无需添加 `jsonvalue:"true"`；手动使用动态 `interface{}` 字段时，可配合该标签及 `decimaljson.PrepareRequest` 处理原始 JSON。
 
 **已有项目需手动同步**：生成器保留已存在的 DTO、VO、`.api`、Mapper 和 Handler，不会自动覆盖。曾使用对象模式的项目需要同步字段类型、删除动态 JSON 标签、恢复字符串校验及 Mapper 转换和方法签名，并重新生成 go-zero types。数据库中已有的合法 JSON 无需迁移；仅更新库不会改变现有业务文件。
