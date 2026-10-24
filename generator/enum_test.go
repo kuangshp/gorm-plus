@@ -239,7 +239,7 @@ func TestGeneratedEnumModelRoundTrip(t *testing.T) { // 使用 SQLite 的真实 
 	}
 	dir := t.TempDir()
 	t.Chdir(dir)
-	if err := os.WriteFile("go.mod", []byte(fmt.Sprintf("module enumfixture\n\ngo 1.25.5\nrequire github.com/kuangshp/gorm-plus v0.0.0\nreplace github.com/kuangshp/gorm-plus => %s\n", root)), 0600); err != nil {
+	if err := os.WriteFile("go.mod", []byte(fmt.Sprintf("module enumfixture\n\ngo 1.26.10\nrequire github.com/kuangshp/gorm-plus v0.0.0\nreplace github.com/kuangshp/gorm-plus => %s\n", root)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	db, err := gorm.Open(sqlite.Open(filepath.Join(dir, "enum.db")))
@@ -342,7 +342,7 @@ func TestPostgresEnumGeneration(t *testing.T) { // 配置独立测试 DSN 时验
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(fmt.Sprintf("module enumfixture\n\ngo 1.25.5\nrequire github.com/kuangshp/gorm-plus v0.0.0\nreplace github.com/kuangshp/gorm-plus => %s\n", root)), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(fmt.Sprintf("module enumfixture\n\ngo 1.26.10\nrequire github.com/kuangshp/gorm-plus v0.0.0\nreplace github.com/kuangshp/gorm-plus => %s\n", root)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, db := generationTestDatabase(t, dir, "postgres")

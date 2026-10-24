@@ -27,7 +27,7 @@ func TestGoctlDecimalIntegration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "decimal.api"), []byte(spec), 0600); err != nil {
 		t.Fatal(err)
 	}
-	mod := fmt.Sprintf("module decimalfixture\n\ngo 1.25.5\n\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root)
+	mod := fmt.Sprintf("module decimalfixture\n\ngo 1.26.10\n\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root)
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0600); err != nil {
 		t.Fatal(err)
 	}

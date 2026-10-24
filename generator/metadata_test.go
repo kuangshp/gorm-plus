@@ -57,7 +57,7 @@ func testDatabaseGeneration(t *testing.T, dialect string) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	mod := fmt.Sprintf("module generationfixture\n\ngo 1.25.5\n\nrequire github.com/kuangshp/gorm-plus v0.0.0\nreplace github.com/kuangshp/gorm-plus => %s\n", root)
+	mod := fmt.Sprintf("module generationfixture\n\ngo 1.26.10\n\nrequire github.com/kuangshp/gorm-plus v0.0.0\nreplace github.com/kuangshp/gorm-plus => %s\n", root)
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0600); err != nil {
 		t.Fatal(err)
 	}

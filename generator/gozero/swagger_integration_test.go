@@ -32,7 +32,7 @@ func TestGoctlSwaggerIntegration(t *testing.T) {
 	spec := "syntax = \"v1\"\ntype Output {\n ID int64 `json:\"id\"`\n}\nservice sample-api {\n @handler Echo\n get /echo returns (Output)\n @handler Remove\n delete /remove\n @handler Download\n get /download returns (string)\n}\n"
 	for name, value := range map[string]string{
 		"sample.api": "import \"./desc/routes.api\"\n", "desc/routes.api": spec,
-		"go.mod": fmt.Sprintf("module swaggerfixture\n\ngo 1.25.5\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root),
+		"go.mod": fmt.Sprintf("module swaggerfixture\n\ngo 1.26.10\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root),
 	} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0755); err != nil {
 			t.Fatal(err)

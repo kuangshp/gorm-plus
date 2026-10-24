@@ -30,7 +30,7 @@ func TestGoctlHTTPIntegration(t *testing.T) {
 	}
 	dir := t.TempDir()
 	spec := "syntax = \"v1\"\ntype Input {\n Name string `json:\"name\" validate:\"required\"`\n}\ntype Output {\n Message string `json:\"message\"`\n}\nservice sample-api {\n @handler Echo\n post /echo (Input) returns (Output)\n @handler Remove\n delete /remove\n @handler Health\n get /health\n}\n"
-	mod := fmt.Sprintf("module httpfixture\n\ngo 1.25.5\n\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root)
+	mod := fmt.Sprintf("module httpfixture\n\ngo 1.26.10\n\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root)
 	for name, content := range map[string]string{"sample.api": spec, "go.mod": mod} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
 			t.Fatal(err)

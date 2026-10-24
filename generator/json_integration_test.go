@@ -31,7 +31,7 @@ func TestGeneratedJSONGoZero(t *testing.T) { // 验证实际生成的 go-zero �
 			t.Fatal(err)
 		}
 	}
-	write("go.mod", fmt.Sprintf("module jsonfixture\n\ngo 1.25.5\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root))
+	write("go.mod", fmt.Sprintf("module jsonfixture\n\ngo 1.26.10\nrequire (\n github.com/kuangshp/gorm-plus v0.0.0\n github.com/zeromicro/go-zero v1.10.2\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root))
 	t.Chdir(dir)
 	cfg := &Config{DBType: "sqlite", Database: filepath.Join(dir, "json.db"), OutPath: "dao", ModelPkgPath: "model", Package: "jsonfixture"}
 	db, err := OpenDB(cfg)

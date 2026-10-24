@@ -31,7 +31,7 @@ func TestGeneratedDecimalDTO(t *testing.T) {
 	}
 	dir := t.TempDir()
 	files := map[string]string{
-		"go.mod":   fmt.Sprintf("module decimalfixture\n\ngo 1.25.5\n\nrequire github.com/kuangshp/gorm-plus v0.0.0\nreplace github.com/kuangshp/gorm-plus => %s\n", root),
+		"go.mod":   fmt.Sprintf("module decimalfixture\n\ngo 1.26.10\n\nrequire github.com/kuangshp/gorm-plus v0.0.0\nreplace github.com/kuangshp/gorm-plus => %s\n", root),
 		"price.go": source,
 		"price_test.go": `package dto
 import ("encoding/json"; "testing")

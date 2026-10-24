@@ -25,7 +25,7 @@ func TestGinIntegration(t *testing.T) {
 	}
 	dir := t.TempDir()
 	files := map[string]string{
-		"go.mod":              fmt.Sprintf("module flycos\n\ngo 1.25.5\n\nrequire (\n github.com/gin-gonic/gin v1.12.0\n github.com/kuangshp/gorm-plus v0.0.0\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root),
+		"go.mod":              fmt.Sprintf("module flycos\n\ngo 1.26.10\n\nrequire (\n github.com/gin-gonic/gin v1.12.0\n github.com/kuangshp/gorm-plus v0.0.0\n)\nreplace github.com/kuangshp/gorm-plus => %s\n", root),
 		"validators/rules.go": ginProjectRules,
 		"gin_test.go":         ginBindingTests,
 	}
